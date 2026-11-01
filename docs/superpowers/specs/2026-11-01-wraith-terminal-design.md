@@ -12,6 +12,7 @@ Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 - Built on `libghostty-vt` (https://docs.rs/libghostty-vt).
 - Multiple tabs. Multiple workspaces, each grouping its own tabs.
 - Split panes inside a tab in v1.
+- Inline images (photos, agent screenshots) rendered in the terminal through the Kitty graphics protocol, e.g. `kitten icat`, `chafa`, `yazi`, and AI harnesses that show screenshots inline.
 - AI harness integration: a harness icon next to the tab title, and detection of "needs user input" with toasts, tab flash, or similar.
 - Detection is hook-first with passive fallback.
 - Harnesses at launch: Claude Code, OpenAI Codex CLI, and others (Aider, OpenCode, Copilot CLI, cursor-agent, Gemini CLI, ...) through passive detection and a generic hook.
@@ -75,7 +76,7 @@ If no server is running, the client spawns `wraith.exe --server` detached. The s
 - Pipe name `\\.\pipe\wraith-<user-SID>`. Its security descriptor grants access to the current user SID only. The server rejects connections whose client token SID differs.
 - Handshake: `Hello{proto_version, client_kind: Gui|Cli|Hook}` → `Welcome{server_version}` or `VersionMismatch`.
 - Client → server: `Input{pane, KeyEvent|MouseEvent|Text|Paste}`, `Resize{pane, cols, rows, cell_w, cell_h}`, `Subscribe{panes}`, `Ready{pane, frame_seq}`, `Scroll{pane, delta|to}`, `SetSelection{pane, range|none}`, `Copy{pane}`, `Command{Action}`, `AgentEvent{...}` (hooks), `Query{...}` (cli).
-- Server → client: `ModelSnapshot` then `ModelEvent`s (workspace/tab/pane created, closed, renamed, moved; agent state; attention), `FrameDelta{pane, seq, full: bool, rows: [(y, cells)], cursor, colors, scrollbar}`, `Clipboard{text}`, `Bell{pane}`, `Notify{pane, title, body}`.
+- Server → client: `ModelSnapshot` then `ModelEvent`s (workspace/tab/pane created, closed, renamed, moved; agent state; attention), `FrameDelta{pane, seq, full: bool, rows: [(y, cells)], cursor, colors, scrollbar}`, `Clipboard{text}`, `Bell{pane}`, `Notify{pane, title, body}`, `ImageUpload{image_id, width, height, rgba}` (sent once per image per client), `ImageDelete{image_id}`. `FrameDelta` also carries the visible image placements `{image_id, cell rect, source rect, z}`.
 - **Encoding happens on the server.** It holds the terminal modes, so the client sends abstract key and mouse events.
 - **Backpressure:** at most one unacknowledged `FrameDelta` per pane per client. While waiting for `Ready`, the pane thread keeps dirty state and sends one merged delta when the credit arrives. Floods (`cat` of a large file) cost CPU on the server, never pipe memory.
 - **Cell encoding:** per row, a list of style runs `{fg, bg, flags, hyperlink_id, text}`, where `text` is a UTF-8 string of graphemes with per-cell width implied by Unicode width. Wide characters occupy two cells.
@@ -208,6 +209,7 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 - D3D11 device, `DXGI_SWAP_CHAIN_EFFECT_FLIP_DISCARD`, waitable swap chain for latency (`SetMaximumFrameLatency(1)`). Composition with Mica through DirectComposition when `background-opacity < 1`.
 - Per pane: instanced quad pass for cell backgrounds and decorations (underline styles, strikethrough, cursor, selection), then instanced glyph pass sampling a glyph atlas. Chrome uses the same pipeline plus a rounded-rect pass.
 - Text: DirectWrite `IDWriteTextAnalyzer` for shaping runs (ligatures on by default, `font-feature` configurable), `IDWriteFontFallback` for fallback, `IDWriteFactory4::TranslateColorGlyphRun` for color emoji. Atlas key = (font face, glyph id, size, subpixel x offset quantized to 1/4 px). Grayscale antialiasing with gamma/contrast matched to DirectWrite defaults.
+- **Inline images (Kitty graphics):** libghostty-vt (`kitty-graphics` feature, `png` decoding) stores the images and placements on the server. The client keeps one D3D11 texture per `image_id` and draws a textured-quad pass per placement, below or above text by `z`. Image memory is capped by `image-storage-limit` (Ghostty key, default 320 MB per pane), and the oldest images are evicted first. Sixel and iTerm2 OSC 1337 images are not supported, because libghostty-vt does not implement them.
 - Only rows marked dirty in `FrameDelta` are re-shaped. The cached per-row geometry is reused otherwise.
 - Frame-time overlay (`ctrl+shift+f12`): input-to-present latency, frame time, atlas usage.
 
@@ -221,7 +223,7 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 ## 7. Configuration
 
 - Path: `%APPDATA%\wraith\config`, plus `config-file = path` includes. Ghostty syntax: `key = value`, `#` comments, repeated keys for lists.
-- **Ghostty key names and semantics where they overlap**: `font-family`, `font-size`, `font-feature`, `theme`, `background`, `foreground`, `palette`, `background-opacity`, `cursor-style`, `cursor-style-blink`, `window-padding-x/y`, `scrollback-limit`, `copy-on-select`, `confirm-close-surface`, `unfocused-split-opacity`, `keybind`, `command`, `shell-integration`.
+- **Ghostty key names and semantics where they overlap**: `font-family`, `font-size`, `font-feature`, `theme`, `background`, `foreground`, `palette`, `background-opacity`, `cursor-style`, `cursor-style-blink`, `window-padding-x/y`, `scrollback-limit`, `image-storage-limit`, `copy-on-select`, `confirm-close-surface`, `unfocused-split-opacity`, `keybind`, `command`, `shell-integration`.
 - Wraith-specific: `workspace`, `profile`, `default-profile`, `sidebar-visible`, `sidebar-width`, `agent-*` (§5.4), `agent-detect`, `close-on-exit`.
 - Themes: Ghostty theme file format. The Ghostty theme set is bundled.
 - Keybinds: Ghostty syntax including sequences (`ctrl+a>c=new_tab`) and `unbind`. Defaults follow Windows Terminal conventions (`ctrl+shift+t`, `ctrl+shift+w`, `ctrl+tab`, `alt+shift+plus/minus` for splits, `alt+arrow` focus).
@@ -255,17 +257,17 @@ Each milestone gets its own implementation plan.
 
 | # | Scope | Exit criteria |
 |---|---|---|
-| M0 | Spike: build `libghostty-vt` on `x86_64-pc-windows-msvc` with Zig 0.17. Spawn `cmd.exe` in ConPTY, `vt_write` its output, read the grid through `RenderState`, encode a key. | Test passes on the dev machine and CI. If the crate fails on MSVC: patch upstream or build libghostty-vt from Ghostty source with Zig directly. Decide before M1. |
+| M0 | Spike: build `libghostty-vt` on `x86_64-pc-windows-msvc` with Zig 0.17. Spawn `cmd.exe` in ConPTY, `vt_write` its output, read the grid through `RenderState`, encode a key. Verify that a Kitty graphics APC sequence (`ESC _ G … ESC \`) and OSC 9/777/133 pass through ConPTY intact, both from a native process and from WSL. | Test passes on the dev machine and CI. If the crate fails on MSVC: patch upstream or build libghostty-vt from Ghostty source with Zig directly. Decide before M1. |
 | M1 | Single-process, single-pane terminal: Win32 window, D3D11 renderer, DirectWrite, input + IME, selection/clipboard, config + themes + hot reload. | Usable as a daily driver for a single shell. Latency target met. |
 | M2 | Server/client split: `proto`, named pipe, pane threads, backpressure, reattach, `wr ctl` basics. | Close window → reopen → same shells and screens. |
-| M3 | Workspaces, tabs, splits, sidebar, palette, workspace picker, profiles, shell integration, layout persistence, multiple windows. | Full chrome works. Server restart restores layout. |
+| M3 | Workspaces, tabs, splits, sidebar, palette, workspace picker, profiles, shell integration, layout persistence, multiple windows. Inline images (Kitty graphics, §6.1). | Full chrome works. Server restart restores layout. `kitten icat photo.jpg` shows the photo inline, and it scrolls with the text. |
 | M4 | Agent integration: `agent` crate, hooks + installers, passive detection, attention roll-up, taskbar + Windows toasts. | Claude Code and Codex in hidden tabs produce a toast within 1 s of asking. Clicking it focuses the pane. |
-| M5 | Backlog: Kitty graphics, scrollback search, quake/drop-down window, settings GUI, installer + winget + auto-update, ARM64, scrollback persistence. | Prioritized after M4. |
+| M5 | Backlog: scrollback search, quake/drop-down window, settings GUI, installer + winget + auto-update, ARM64, scrollback persistence. | Prioritized after M4. |
 
 ## 11. Known risks
 
 1. **libghostty-vt on Windows is untested** (docs.rs builds only for Linux, and the API is pre-1.0). M0 de-risks this. Pin the crate version and wrap it in the `server` crate so API breaks stay local.
 2. **Zig version:** the crate needs Zig 0.17.x. The dev machine has 0.16.0 and must upgrade.
 3. **No OSC 9/777/133 callbacks in libghostty-vt:** handled with a sidecar `osc::Parser` fed from the byte stream. It must handle OSC split across read chunks.
-4. **ConPTY quirks:** ConPTY re-renders and can reorder or rewrite sequences, and passthrough of some OSCs varies by Windows build. Verify that OSC 9/777/133 survive ConPTY in M0. If they don't, use hook/pipe signals only for those and document it.
+4. **ConPTY quirks:** ConPTY re-renders and can reorder or rewrite sequences, and passthrough of some OSCs varies by Windows build. Verify in M0 that OSC 9/777/133 and Kitty graphics APC sequences survive ConPTY. If the OSCs don't, use hook/pipe signals only for those and document it. If the APC sequences don't, inline images need a ConPTY bypass (e.g. reading the child's raw output for WSL/SSH). That is a significant redesign, so decide it at the end of M0.
 5. **Unpackaged toasts** require an AUMID shortcut. Without the installer, first run creates it.
