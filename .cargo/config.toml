@@ -1,0 +1,3 @@
+[env]
+# libghostty-vt in Zig Debug mode is too slow for the latency tests (spec 6.3); always link it optimized.
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseFast"

@@ -1,0 +1,279 @@
+//! Pane engine: ConPTY + libghostty Terminal on its own thread, emitting FrameDeltas.
+#![cfg(windows)]
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use wraith_proto::{FrameDelta, KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
+use wraith_server::pane::{PaneCmd, PaneEvent, PaneHandle, PaneOptions, WheelAction, spawn_pane, wheel_action};
+
+fn secs(n: u64) -> Duration {
+    Duration::from_secs(n)
+}
+
+fn emit(args: &str) -> String {
+    format!("\"{}\" {args}", env!("CARGO_BIN_EXE_emit-seq"))
+}
+
+fn opts(cmdline: &str) -> PaneOptions {
+    PaneOptions {
+        cmdline: cmdline.into(),
+        cwd: None,
+        env: vec![],
+        cols: 80,
+        rows: 24,
+        cell_w_px: 8,
+        cell_h_px: 16,
+        scrollback_lines: 1000,
+        default_fg: (255, 255, 255),
+        default_bg: (0, 0, 0),
+        palette: vec![(1, 2, 3); 256],
+    }
+}
+
+/// Client-side mirror of the screen, fed by frames.
+#[derive(Default)]
+struct Mirror {
+    rows: BTreeMap<u16, String>,
+    last: Option<FrameDelta>,
+    first: Option<FrameDelta>,
+}
+
+impl Mirror {
+    fn apply(&mut self, f: FrameDelta) {
+        if f.full {
+            self.rows.clear();
+        }
+        for r in &f.dirty_rows {
+            self.rows.insert(r.y, r.runs.iter().map(|s| s.text.as_str()).collect());
+        }
+        if self.first.is_none() {
+            self.first = Some(f.clone());
+        }
+        self.last = Some(f);
+    }
+    fn contains(&self, needle: &str) -> bool {
+        self.rows.values().any(|r| r.contains(needle))
+    }
+    /// Highest `line-N` visible; floods skip intermediate screens, so wait on this, not an exact line.
+    fn max_line(&self) -> u64 {
+        self.rows
+            .values()
+            .filter_map(|r| r.trim_start().strip_prefix("line-")?.split(' ').next()?.parse().ok())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// Pump events, acking every frame, until `pred` holds or `timeout`. Returns non-frame events seen.
+fn pump(
+    h: &PaneHandle,
+    m: &mut Mirror,
+    timeout: Duration,
+    mut pred: impl FnMut(&Mirror, &[PaneEvent]) -> bool,
+) -> (bool, Vec<PaneEvent>) {
+    let deadline = Instant::now() + timeout;
+    let mut seen = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match h.events.recv_timeout(left) {
+            Ok(PaneEvent::Frame(f)) => {
+                let seq = f.seq;
+                m.apply(f);
+                h.send(PaneCmd::Ready(seq)).unwrap();
+            }
+            Ok(ev) => seen.push(ev),
+            Err(_) => break,
+        }
+        if pred(m, &seen) {
+            return (true, seen);
+        }
+    }
+    (false, seen)
+}
+
+fn wait_text(h: &PaneHandle, needle: &str, timeout: Duration) -> bool {
+    pump(h, &mut Mirror::default(), timeout, |m, _| m.contains(needle)).0
+}
+
+fn key(code: KeyCode, text: Option<&str>) -> KeyEvent {
+    KeyEvent { code, mods: Mods(0), text: text.map(Into::into), action: KeyAction::Press, composing: false }
+}
+
+fn waits(ev: Vec<PaneEvent>) -> impl Iterator<Item = Duration> {
+    ev.into_iter().filter_map(|e| match e {
+        PaneEvent::InputWritten { waited } => Some(waited),
+        _ => None,
+    })
+}
+
+#[test]
+fn echo_reaches_frame() {
+    let h = spawn_pane(opts(&emit("print pane-ok"))).unwrap();
+    assert!(wait_text(&h, "pane-ok", secs(5)));
+}
+
+#[test]
+fn typed_keys_reach_shell() {
+    let h = spawn_pane(opts("cmd.exe /k")).unwrap();
+    h.send(PaneCmd::Text("echo typed-".into())).unwrap();
+    h.send(PaneCmd::Key(key(KeyCode::KeyO, Some("o")))).unwrap();
+    h.send(PaneCmd::Key(key(KeyCode::KeyK, Some("k")))).unwrap();
+    h.send(PaneCmd::Key(key(KeyCode::Enter, None))).unwrap();
+    // cmd echoes the command line too, so require the output line on its own.
+    let (ok, _) = pump(&h, &mut Mirror::default(), secs(5), |m, _| m.rows.values().any(|r| r.trim_end() == "typed-ok"));
+    assert!(ok);
+}
+
+#[test]
+fn flood_coalesces_to_one_pending_frame() {
+    let h = spawn_pane(opts(&emit("flood 20000"))).unwrap();
+    std::thread::sleep(secs(3)); // never send Ready
+    let mut seqs = Vec::new();
+    while let Ok(ev) = h.events.try_recv() {
+        if let PaneEvent::Frame(f) = ev {
+            seqs.push(f.seq);
+        }
+    }
+    assert_eq!(seqs.len(), 1, "only one frame may be sent without credit");
+    h.send(PaneCmd::Ready(seqs[0])).unwrap();
+    assert!(wait_text(&h, "line-20000 ", secs(10)), "merged frame must carry the final state");
+}
+
+#[test]
+fn first_frame_is_full_and_has_palette() {
+    let h = spawn_pane(opts(&emit("print x"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.first.is_some()).0);
+    let first = m.first.unwrap();
+    assert!(first.full);
+    assert_eq!(first.colors.palette.len(), 256);
+    assert_eq!((first.cols, first.rows), (80, 24));
+}
+
+#[test]
+fn resize_zero_is_clamped() {
+    let h = spawn_pane(opts("cmd.exe /k")).unwrap();
+    let mut m = Mirror::default();
+    pump(&h, &mut m, secs(5), |m, _| m.last.is_some());
+    h.send(PaneCmd::Resize { cols: 0, rows: 0, cell_w_px: 8, cell_h_px: 16 }).unwrap();
+    let (ok, _) = pump(&h, &mut m, secs(5), |m, _| {
+        m.last.as_ref().is_some_and(|f| f.full && (f.cols, f.rows) == (2, 1))
+    });
+    assert!(ok);
+}
+
+#[test]
+fn exit_is_reported_and_restart_works() {
+    let exited = |_: &Mirror, ev: &[PaneEvent]| ev.iter().any(|e| matches!(e, PaneEvent::Exited(3)));
+    let h = spawn_pane(opts("cmd.exe /c exit 3")).unwrap();
+    assert!(pump(&h, &mut Mirror::default(), secs(5), exited).0, "expected Exited(3)");
+    h.send(PaneCmd::Restart).unwrap();
+    assert!(pump(&h, &mut Mirror::default(), secs(5), exited).0, "restarted process must run and exit again");
+}
+
+#[test]
+fn multiline_paste_needs_confirm() {
+    let h = spawn_pane(opts("cmd.exe /k")).unwrap();
+    h.send(PaneCmd::Paste("echo a\necho b".into())).unwrap();
+    let (ok, _) = pump(&h, &mut Mirror::default(), secs(3), |_, ev| {
+        ev.iter().any(|e| matches!(e, PaneEvent::PasteNeedsConfirm(t) if t == "echo a\necho b"))
+    });
+    assert!(ok);
+}
+
+#[test]
+fn wide_char_run_text() {
+    let h = spawn_pane(opts(&emit("print 日本x"))).unwrap();
+    let mut m = Mirror::default();
+    let (ok, _) = pump(&h, &mut m, secs(5), |m, _| m.contains("日本x"));
+    assert!(ok, "rows: {:?}", m.rows);
+}
+
+#[test]
+fn title_event() {
+    let h = spawn_pane(opts(&emit("title"))).unwrap();
+    let (ok, _) = pump(&h, &mut Mirror::default(), secs(5), |_, ev| {
+        ev.iter().any(|e| matches!(e, PaneEvent::Title(t) if t == "wraith-title"))
+    });
+    assert!(ok);
+}
+
+#[test]
+fn copy_selection_returns_text() {
+    let h = spawn_pane(opts(&emit("print hello-copy"))).unwrap();
+    let mut m = Mirror::default();
+    pump(&h, &mut m, secs(5), |m, _| m.contains("hello-copy"));
+    let y = *m.rows.iter().find(|(_, r)| r.contains("hello-copy")).unwrap().0;
+    h.send(PaneCmd::SelectLine { y }).unwrap();
+    h.send(PaneCmd::CopySelection).unwrap();
+    let (ok, ev) = pump(&h, &mut m, secs(3), |_, ev| ev.iter().any(|e| matches!(e, PaneEvent::Copied(_))));
+    assert!(ok);
+    assert!(ev.iter().any(|e| matches!(e, PaneEvent::Copied(t) if t.trim_end() == "hello-copy")), "{ev:?}");
+}
+
+#[test]
+fn wheel_scrolls_viewport_on_primary_screen() {
+    let h = spawn_pane(opts(&emit("flood 200"))).unwrap();
+    let mut m = Mirror::default();
+    pump(&h, &mut m, secs(5), |m, _| m.contains("line-200 "));
+    let before = m.last.as_ref().unwrap().scrollbar.offset;
+    let wheel = MouseEvent {
+        x_px: 1.0,
+        y_px: 1.0,
+        button: Some(MouseButton::WheelUp),
+        action: MouseAction::Press,
+        mods: Mods(0),
+    };
+    h.send(PaneCmd::Mouse(wheel)).unwrap();
+    let (ok, _) = pump(&h, &mut m, secs(3), |m, _| m.last.as_ref().unwrap().scrollbar.offset + 3 == before);
+    assert!(ok, "offset before {before}, after {}", m.last.unwrap().scrollbar.offset);
+}
+
+#[test]
+fn wheel_action_rules() {
+    // (alt_screen, mouse_tracking, up)
+    assert_eq!(wheel_action(false, false, true), WheelAction::Scroll(-3));
+    assert_eq!(wheel_action(false, false, false), WheelAction::Scroll(3));
+    assert_eq!(wheel_action(true, false, true), WheelAction::Arrows { up: true, count: 3 });
+    assert_eq!(wheel_action(false, true, true), WheelAction::Report);
+    assert_eq!(wheel_action(true, true, false), WheelAction::Report);
+}
+
+#[test]
+fn input_not_starved_by_flood() {
+    let h = spawn_pane(opts(&emit("flood"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.max_line() >= 1000).0);
+    let mut all = Vec::new();
+    for _ in 0..50 {
+        h.send(PaneCmd::Text("x".into())).unwrap();
+        all.extend(waits(pump(&h, &mut m, Duration::from_millis(20), |_, _| false).1));
+    }
+    all.extend(waits(pump(&h, &mut m, Duration::from_millis(300), |_, _| false).1));
+    assert_eq!(all.len(), 50);
+    all.sort();
+    assert!(all[49] < Duration::from_millis(5), "max wait {:?}", all[49]);
+    assert!(all[48] < Duration::from_millis(2), "p99 wait {:?}", all[48]);
+}
+
+fn working_set() -> usize {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    let mut c = PROCESS_MEMORY_COUNTERS::default();
+    unsafe {
+        GetProcessMemoryInfo(GetCurrentProcess(), &mut c, size_of::<PROCESS_MEMORY_COUNTERS>() as u32).unwrap();
+    }
+    c.WorkingSetSize
+}
+
+#[test]
+fn memory_flat_after_scrollback_full() {
+    let mut o = opts(&emit("flood 200000"));
+    o.scrollback_lines = 10_000;
+    let h = spawn_pane(o).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(60), |m, _| m.max_line() >= 50_000).0);
+    let at_50k = working_set();
+    assert!(pump(&h, &mut m, secs(120), |m, _| m.contains("line-200000 ")).0);
+    let growth = working_set().saturating_sub(at_50k);
+    assert!(growth < 16 << 20, "grew {} MiB after scrollback was full", growth >> 20);
+}
