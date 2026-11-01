@@ -1,5 +1,5 @@
 //! Typed key table: key name → setter on `Config`.
-use crate::{Config, CursorStyle, Rgb, RightClick};
+use crate::{Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
 
 /// Set `key` from `value`. An empty value resets the key to its default.
 pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
@@ -75,10 +75,58 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
         }),
         "command" => set!(command, |v: &str| Ok::<_, String>(Some(v.to_string()))),
         "close-on-exit" => set!(close_on_exit, boolean),
+        "workspace" => {
+            if value.is_empty() {
+                c.workspaces.clear();
+            } else {
+                c.workspaces.push(workspace(value)?);
+            }
+        }
+        "profile" => {
+            if value.is_empty() {
+                c.profiles.clear();
+            } else {
+                let (n, cmd) = value.split_once(':').filter(|(n, cmd)| !n.is_empty() && !cmd.is_empty()).ok_or_else(|| bad(value))?;
+                c.profiles.retain(|(p, _)| p != n);
+                c.profiles.push((n.to_string(), cmd.to_string()));
+            }
+        }
+        "default-profile" => set!(default_profile, |v: &str| Ok::<_, String>(Some(v.to_string()))),
+        "shell-integration" => set!(shell_integration, |v: &str| match v {
+            "none" => Ok(false),
+            "detect" | "pwsh" | "bash" | "zsh" => Ok(true),
+            _ => Err(bad(v)),
+        }),
+        "sidebar-visible" => set!(sidebar_visible, boolean),
+        "sidebar-width" => set!(sidebar_width, |v: &str| v.parse::<u16>().map(|n| n.clamp(10, 60)).map_err(|_| bad(v))),
+        "unfocused-split-opacity" => set!(unfocused_split_opacity, |v: &str| num(v).map(|n| n.clamp(0.15, 1.0)).ok_or_else(|| bad(v))),
+        "image-storage-limit" => set!(image_storage_limit, |v: &str| v.parse::<u64>().map_err(|_| bad(v))),
         "keybind" => crate::keybind::apply(&mut c.keybinds, value)?,
         _ => return Err(format!("unknown key `{key}`")),
     }
     Ok(())
+}
+
+const LAYOUTS: [&str; 4] = ["single", "cols", "rows", "grid"];
+
+/// `name[:dir[:layout]]`. The directory may hold a drive colon, so the layout is the last segment
+/// only when it has no path separator.
+fn workspace(v: &str) -> Result<WorkspaceDef, String> {
+    let (name, rest) = v.split_once(':').unwrap_or((v, ""));
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(bad(v));
+    }
+    let (dir, layout) = match rest.rsplit_once(':') {
+        Some((d, l)) if !l.is_empty() && !l.contains(['\\', '/']) => {
+            if !LAYOUTS.contains(&l) {
+                return Err(format!("unknown workspace layout `{l}` (single, cols, rows, grid)"));
+            }
+            (d, l)
+        }
+        _ => (rest, "single"),
+    };
+    Ok(WorkspaceDef { name: name.to_string(), dir: (!dir.is_empty()).then(|| dir.to_string()), layout: layout.to_string() })
 }
 
 fn bad(v: &str) -> String {

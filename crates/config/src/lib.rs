@@ -6,7 +6,7 @@ mod theme;
 
 use std::path::{Path, PathBuf};
 
-pub use keybind::{Action, Keybind, Trigger, TriggerKey, parse_keybind};
+pub use keybind::{Action, Keybind, SplitTarget, Trigger, TriggerKey, all_actions, parse_keybind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -51,6 +51,26 @@ pub struct Config {
     pub command: Option<String>,
     pub close_on_exit: bool,
     pub keybinds: Vec<Keybind>,
+    pub workspaces: Vec<WorkspaceDef>,
+    /// `(name, command)` from `profile = name:command`.
+    pub profiles: Vec<(String, String)>,
+    pub default_profile: Option<String>,
+    pub shell_integration: bool,
+    pub sidebar_visible: bool,
+    /// Cells.
+    pub sidebar_width: u16,
+    pub unfocused_split_opacity: f32,
+    /// Bytes per pane.
+    pub image_storage_limit: u64,
+}
+
+/// `workspace = name:dir[:layout]`
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceDef {
+    pub name: String,
+    pub dir: Option<String>,
+    /// `single`, `cols`, `rows` or `grid`.
+    pub layout: String,
 }
 
 impl Default for Config {
@@ -79,6 +99,14 @@ impl Default for Config {
             command: None,
             close_on_exit: false,
             keybinds: keybind::defaults(),
+            workspaces: Vec::new(),
+            profiles: Vec::new(),
+            default_profile: None,
+            shell_integration: true,
+            sidebar_visible: true,
+            sidebar_width: 24,
+            unfocused_split_opacity: 0.85,
+            image_storage_limit: 320 * 1024 * 1024,
         }
     }
 }

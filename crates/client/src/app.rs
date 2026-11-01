@@ -340,6 +340,8 @@ impl App {
             }
             Action::CloseSurface => self.close(),
             Action::ReloadConfig | Action::ToggleFrameOverlay | Action::Unbind => crate::reload::action(self, a),
+            // M3 chrome actions are wired in the window view (Task 8).
+            _ => {}
         }
     }
 

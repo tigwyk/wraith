@@ -1,5 +1,6 @@
 //! Ghostty keybind syntax: `mods+key[>mods+key...]=action[:param]`.
 use wraith_proto::Mods;
+use wraith_proto::model::Dir;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keybind {
@@ -40,6 +41,134 @@ pub enum Action {
     ToggleFrameOverlay,
     CloseSurface,
     Unbind,
+    NewTab,
+    CloseTab,
+    NextTab,
+    PreviousTab,
+    /// 1-based.
+    GotoTab(u8),
+    NewSplit(Dir),
+    GotoSplit(SplitTarget),
+    ToggleSplitZoom,
+    ResizeSplit(Dir, u16),
+    EqualizeSplits,
+    NewWorkspace,
+    CloseWorkspace,
+    NextWorkspace,
+    PreviousWorkspace,
+    CommandPalette,
+    WorkspacePicker,
+    MoveTabToWorkspace,
+    ToggleSidebar,
+    NewWindow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SplitTarget {
+    Previous,
+    Next,
+    Dir(Dir),
+}
+
+fn parse_dir(s: &str) -> Result<Dir, String> {
+    Ok(match s {
+        "left" => Dir::Left,
+        "right" => Dir::Right,
+        "up" => Dir::Up,
+        "down" => Dir::Down,
+        _ => return Err(format!("invalid direction `{s}`")),
+    })
+}
+
+impl Action {
+    /// The config spelling without its parameter.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Action::Copy => "copy_to_clipboard",
+            Action::Paste => "paste_from_clipboard",
+            Action::IncreaseFontSize(_) => "increase_font_size",
+            Action::DecreaseFontSize(_) => "decrease_font_size",
+            Action::ResetFontSize => "reset_font_size",
+            Action::ScrollPageUp => "scroll_page_up",
+            Action::ScrollPageDown => "scroll_page_down",
+            Action::ScrollToTop => "scroll_to_top",
+            Action::ScrollToBottom => "scroll_to_bottom",
+            Action::ClearScreen => "clear_screen",
+            Action::ReloadConfig => "reload_config",
+            Action::ToggleFrameOverlay => "toggle_frame_overlay",
+            Action::CloseSurface => "close_surface",
+            Action::Unbind => "unbind",
+            Action::NewTab => "new_tab",
+            Action::CloseTab => "close_tab",
+            Action::NextTab => "next_tab",
+            Action::PreviousTab => "previous_tab",
+            Action::GotoTab(_) => "goto_tab",
+            Action::NewSplit(_) => "new_split",
+            Action::GotoSplit(_) => "goto_split",
+            Action::ToggleSplitZoom => "toggle_split_zoom",
+            Action::ResizeSplit(..) => "resize_split",
+            Action::EqualizeSplits => "equalize_splits",
+            Action::NewWorkspace => "new_workspace",
+            Action::CloseWorkspace => "close_workspace",
+            Action::NextWorkspace => "next_workspace",
+            Action::PreviousWorkspace => "previous_workspace",
+            Action::CommandPalette => "command_palette",
+            Action::WorkspacePicker => "workspace_picker",
+            Action::MoveTabToWorkspace => "move_tab_to_workspace",
+            Action::ToggleSidebar => "toggle_sidebar",
+            Action::NewWindow => "new_window",
+        }
+    }
+}
+
+/// One entry per palette row: the action and its full config spelling (`new_split:right`).
+pub fn all_actions() -> Vec<(Action, &'static str)> {
+    use Action::*;
+    vec![
+        (NewWorkspace, "new_workspace"),
+        (CloseWorkspace, "close_workspace"),
+        (NextWorkspace, "next_workspace"),
+        (PreviousWorkspace, "previous_workspace"),
+        (WorkspacePicker, "workspace_picker"),
+        (NewTab, "new_tab"),
+        (CloseTab, "close_tab"),
+        (NextTab, "next_tab"),
+        (PreviousTab, "previous_tab"),
+        (GotoTab(1), "goto_tab:1"),
+        (MoveTabToWorkspace, "move_tab_to_workspace"),
+        (NewSplit(Dir::Right), "new_split:right"),
+        (NewSplit(Dir::Down), "new_split:down"),
+        (NewSplit(Dir::Left), "new_split:left"),
+        (NewSplit(Dir::Up), "new_split:up"),
+        (GotoSplit(SplitTarget::Previous), "goto_split:previous"),
+        (GotoSplit(SplitTarget::Next), "goto_split:next"),
+        (GotoSplit(SplitTarget::Dir(Dir::Left)), "goto_split:left"),
+        (GotoSplit(SplitTarget::Dir(Dir::Right)), "goto_split:right"),
+        (GotoSplit(SplitTarget::Dir(Dir::Up)), "goto_split:up"),
+        (GotoSplit(SplitTarget::Dir(Dir::Down)), "goto_split:down"),
+        (ToggleSplitZoom, "toggle_split_zoom"),
+        (ResizeSplit(Dir::Left, 10), "resize_split:left,10"),
+        (ResizeSplit(Dir::Right, 10), "resize_split:right,10"),
+        (ResizeSplit(Dir::Up, 10), "resize_split:up,10"),
+        (ResizeSplit(Dir::Down, 10), "resize_split:down,10"),
+        (EqualizeSplits, "equalize_splits"),
+        (CloseSurface, "close_surface"),
+        (NewWindow, "new_window"),
+        (ToggleSidebar, "toggle_sidebar"),
+        (CommandPalette, "command_palette"),
+        (Copy, "copy_to_clipboard"),
+        (Paste, "paste_from_clipboard"),
+        (IncreaseFontSize(1.0), "increase_font_size:1"),
+        (DecreaseFontSize(1.0), "decrease_font_size:1"),
+        (ResetFontSize, "reset_font_size"),
+        (ScrollPageUp, "scroll_page_up"),
+        (ScrollPageDown, "scroll_page_down"),
+        (ScrollToTop, "scroll_to_top"),
+        (ScrollToBottom, "scroll_to_bottom"),
+        (ClearScreen, "clear_screen"),
+        (ReloadConfig, "reload_config"),
+        (ToggleFrameOverlay, "toggle_frame_overlay"),
+    ]
 }
 
 pub fn parse_keybind(value: &str) -> Result<Keybind, String> {
@@ -97,6 +226,38 @@ fn parse_action(s: &str) -> Result<Action, String> {
         "toggle_frame_overlay" => Action::ToggleFrameOverlay,
         "close_surface" => Action::CloseSurface,
         "unbind" => Action::Unbind,
+        "new_tab" => Action::NewTab,
+        "close_tab" => Action::CloseTab,
+        "next_tab" => Action::NextTab,
+        "previous_tab" => Action::PreviousTab,
+        "goto_tab" => {
+            let n: u8 = param.ok_or("goto_tab needs a number")?.parse().map_err(|_| "invalid tab number".to_string())?;
+            if n == 0 {
+                return Err("tab numbers start at 1".into());
+            }
+            Action::GotoTab(n)
+        }
+        "new_split" => Action::NewSplit(parse_dir(param.ok_or("new_split needs a direction")?)?),
+        "goto_split" => Action::GotoSplit(match param.ok_or("goto_split needs a target")? {
+            "previous" => SplitTarget::Previous,
+            "next" => SplitTarget::Next,
+            d => SplitTarget::Dir(parse_dir(d)?),
+        }),
+        "toggle_split_zoom" => Action::ToggleSplitZoom,
+        "resize_split" => {
+            let (d, n) = param.and_then(|p| p.split_once(',')).ok_or("resize_split needs `direction,amount`")?;
+            Action::ResizeSplit(parse_dir(d)?, n.parse().map_err(|_| format!("invalid amount `{n}`"))?)
+        }
+        "equalize_splits" => Action::EqualizeSplits,
+        "new_workspace" => Action::NewWorkspace,
+        "close_workspace" => Action::CloseWorkspace,
+        "next_workspace" => Action::NextWorkspace,
+        "previous_workspace" => Action::PreviousWorkspace,
+        "command_palette" => Action::CommandPalette,
+        "workspace_picker" => Action::WorkspacePicker,
+        "move_tab_to_workspace" => Action::MoveTabToWorkspace,
+        "toggle_sidebar" => Action::ToggleSidebar,
+        "new_window" => Action::NewWindow,
         _ => return Err(format!("unknown action `{name}`")),
     })
 }
@@ -115,6 +276,19 @@ pub fn defaults() -> Vec<Keybind> {
         "ctrl+shift+comma=reload_config",
         "ctrl+shift+f12=toggle_frame_overlay",
         "ctrl+shift+w=close_surface",
+        "ctrl+shift+t=new_tab",
+        "ctrl+tab=next_tab",
+        "ctrl+shift+tab=previous_tab",
+        "alt+shift+plus=new_split:right",
+        "alt+shift+minus=new_split:down",
+        "alt+left=goto_split:left",
+        "alt+right=goto_split:right",
+        "alt+up=goto_split:up",
+        "alt+down=goto_split:down",
+        "ctrl+shift+b=toggle_sidebar",
+        "ctrl+shift+p=command_palette",
+        "ctrl+shift+o=workspace_picker",
+        "ctrl+shift+n=new_window",
     ]
     .iter()
     .map(|s| parse_keybind(s).expect("default keybind"))

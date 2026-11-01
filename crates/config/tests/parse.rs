@@ -171,3 +171,56 @@ fn unreadable_config_is_an_error_not_defaults() {
     assert!(wraith_config::load_checked(&dir, &themes()).is_err(), "a directory is not readable as a file");
     assert!(wraith_config::load_checked(&dir.join("missing"), &themes()).is_ok(), "missing file = defaults");
 }
+
+#[test]
+fn workspace_key_parses_name_dir_layout() {
+    let (c, d) = parse_str("workspace = api:C:/src/api:cols\nworkspace = web\nworkspace = lin:/home/x/app\nworkspace = g::grid\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    let w = &c.workspaces;
+    assert_eq!((w[0].name.as_str(), w[0].dir.as_deref(), w[0].layout.as_str()), ("api", Some("C:/src/api"), "cols"));
+    assert_eq!((w[1].name.as_str(), w[1].dir.as_deref(), w[1].layout.as_str()), ("web", None, "single"));
+    assert_eq!((w[2].name.as_str(), w[2].dir.as_deref(), w[2].layout.as_str()), ("lin", Some("/home/x/app"), "single"));
+    assert_eq!((w[3].name.as_str(), w[3].dir.as_deref(), w[3].layout.as_str()), ("g", None, "grid"));
+    let (c, _) = parse_str("workspace = a\nworkspace =\n", p(), &themes());
+    assert!(c.workspaces.is_empty(), "empty value clears");
+}
+
+#[test]
+fn unknown_layout_is_diagnostic() {
+    let (c, d) = parse_str("workspace = api:C:/src:diagonal\n", p(), &themes());
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(c.workspaces.is_empty());
+}
+
+#[test]
+fn profile_and_default_profile() {
+    let (c, d) = parse_str("profile = dev:C:/tools/sh.exe -l\ndefault-profile = dev\nshell-integration = none\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(c.profiles, vec![("dev".to_string(), "C:/tools/sh.exe -l".to_string())]);
+    assert_eq!(c.default_profile.as_deref(), Some("dev"));
+    assert!(!c.shell_integration);
+    let (c, _) = parse_str("", p(), &themes());
+    assert!(c.shell_integration && c.default_profile.is_none() && c.profiles.is_empty());
+}
+
+#[test]
+fn sidebar_and_split_opacity_clamp() {
+    let (c, d) = parse_str("sidebar-visible = false\nsidebar-width = 200\nunfocused-split-opacity = 0.01\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert!(!c.sidebar_visible);
+    assert_eq!(c.sidebar_width, 60);
+    assert_eq!(c.unfocused_split_opacity, 0.15);
+    let (c, _) = parse_str("sidebar-width = 2\nunfocused-split-opacity = 7\n", p(), &themes());
+    assert_eq!((c.sidebar_width, c.unfocused_split_opacity), (10, 1.0));
+    let (c, _) = parse_str("", p(), &themes());
+    assert_eq!((c.sidebar_visible, c.sidebar_width, c.unfocused_split_opacity), (true, 24, 0.85));
+}
+
+#[test]
+fn image_storage_limit_parses_bytes() {
+    let (c, d) = parse_str("image-storage-limit = 1048576\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(c.image_storage_limit, 1_048_576);
+    let (c, _) = parse_str("", p(), &themes());
+    assert_eq!(c.image_storage_limit, 320 * 1024 * 1024);
+}

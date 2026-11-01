@@ -85,3 +85,71 @@ fn empty_value_restores_defaults() {
     assert!(d.is_empty(), "{d:?}");
     assert!(c.keybinds.iter().any(|k| k.action == Action::Copy));
 }
+
+use wraith_config::{SplitTarget, all_actions};
+use wraith_proto::model::Dir;
+
+#[test]
+fn new_actions_parse() {
+    let act = |s: &str| parse_keybind(&format!("ctrl+shift+x={s}")).unwrap().action;
+    assert_eq!(act("new_tab"), Action::NewTab);
+    assert_eq!(act("close_tab"), Action::CloseTab);
+    assert_eq!(act("next_tab"), Action::NextTab);
+    assert_eq!(act("previous_tab"), Action::PreviousTab);
+    assert_eq!(act("goto_tab:3"), Action::GotoTab(3));
+    assert_eq!(act("new_split:right"), Action::NewSplit(Dir::Right));
+    assert_eq!(act("new_split:down"), Action::NewSplit(Dir::Down));
+    assert_eq!(act("goto_split:previous"), Action::GotoSplit(SplitTarget::Previous));
+    assert_eq!(act("goto_split:next"), Action::GotoSplit(SplitTarget::Next));
+    assert_eq!(act("goto_split:left"), Action::GotoSplit(SplitTarget::Dir(Dir::Left)));
+    assert_eq!(act("toggle_split_zoom"), Action::ToggleSplitZoom);
+    assert_eq!(act("resize_split:left,10"), Action::ResizeSplit(Dir::Left, 10));
+    assert_eq!(act("equalize_splits"), Action::EqualizeSplits);
+    assert_eq!(act("new_workspace"), Action::NewWorkspace);
+    assert_eq!(act("close_workspace"), Action::CloseWorkspace);
+    assert_eq!(act("next_workspace"), Action::NextWorkspace);
+    assert_eq!(act("previous_workspace"), Action::PreviousWorkspace);
+    assert_eq!(act("command_palette"), Action::CommandPalette);
+    assert_eq!(act("workspace_picker"), Action::WorkspacePicker);
+    assert_eq!(act("move_tab_to_workspace"), Action::MoveTabToWorkspace);
+    assert_eq!(act("toggle_sidebar"), Action::ToggleSidebar);
+    assert_eq!(act("new_window"), Action::NewWindow);
+}
+
+#[test]
+fn all_actions_round_trip_through_parse() {
+    let all = all_actions();
+    assert!(all.len() >= 30, "{}", all.len());
+    for (a, name) in all {
+        assert_eq!(parse_keybind(&format!("ctrl+shift+x={name}")).unwrap().action, a, "{name}");
+        assert!(name.starts_with(a.name()), "{name} vs {}", a.name());
+    }
+}
+
+#[test]
+fn default_binds_include_m3_chords() {
+    let (c, d) = parse_str("", p(), &themes());
+    assert!(d.is_empty());
+    let has = |chord: &str, a: Action| {
+        let want = parse_keybind(&format!("{chord}=copy_to_clipboard")).unwrap().trigger;
+        c.keybinds.iter().any(|k| k.trigger == want && k.action == a)
+    };
+    assert!(has("ctrl+shift+t", Action::NewTab));
+    assert!(has("ctrl+tab", Action::NextTab));
+    assert!(has("ctrl+shift+tab", Action::PreviousTab));
+    assert!(has("alt+shift+plus", Action::NewSplit(Dir::Right)));
+    assert!(has("alt+shift+minus", Action::NewSplit(Dir::Down)));
+    assert!(has("alt+left", Action::GotoSplit(SplitTarget::Dir(Dir::Left))));
+    assert!(has("alt+down", Action::GotoSplit(SplitTarget::Dir(Dir::Down))));
+    assert!(has("ctrl+shift+p", Action::CommandPalette));
+    assert!(has("ctrl+shift+o", Action::WorkspacePicker));
+    assert!(has("ctrl+shift+b", Action::ToggleSidebar));
+    assert!(has("ctrl+shift+n", Action::NewWindow));
+}
+
+#[test]
+fn goto_tab_zero_is_rejected() {
+    assert!(parse_keybind("ctrl+x=goto_tab:0").is_err());
+    assert!(parse_keybind("ctrl+x=goto_tab:300").is_err());
+    assert!(parse_keybind("ctrl+x=new_split:sideways").is_err());
+}
