@@ -303,3 +303,25 @@ fn redraw_forces_full_frame_without_size_change() {
     let (ok, _) = pump(&h, &mut m, secs(3), |m, _| m.last.as_ref().is_some_and(|f| f.seq > before && f.full));
     assert!(ok, "font changes must get every row re-sent");
 }
+
+#[test]
+fn reattach_resends_full_frame_without_ack() {
+    let h = spawn_pane(opts(&emit("print hi"))).unwrap();
+    // Take the first frame but never ack it, like a client that disconnected.
+    let first = loop {
+        if let PaneEvent::Frame(f) = h.events.recv_timeout(secs(5)).unwrap() {
+            break f;
+        }
+    };
+    h.send(PaneCmd::Reattach).unwrap();
+    let deadline = Instant::now() + secs(3);
+    let again = loop {
+        match h.events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(PaneEvent::Frame(f)) => break Some(f),
+            Ok(_) => continue,
+            Err(_) => break None,
+        }
+    };
+    let again = again.expect("reattach must produce a frame even though the last one was never acked");
+    assert!(again.full && again.seq > first.seq);
+}

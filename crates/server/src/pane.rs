@@ -20,6 +20,7 @@ use libghostty_vt::terminal::{
     PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, Terminal,
 };
 use libghostty_vt::TerminalOptions;
+pub use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, SelRange};
 
 use crate::frame_build::build_frame;
@@ -38,53 +39,6 @@ pub struct PaneOptions {
     pub default_fg: (u8, u8, u8),
     pub default_bg: (u8, u8, u8),
     pub palette: Vec<(u8, u8, u8)>,
-}
-
-#[derive(Debug)]
-pub enum PaneCmd {
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    /// Typed or IME-committed text, written as-is.
-    Text(String),
-    /// Clipboard paste; unsafe text comes back as `PasteNeedsConfirm`.
-    Paste(String),
-    /// A paste the user confirmed; encoded (bracketed if enabled) without re-checking.
-    PasteConfirmed(String),
-    Resize { cols: u16, rows: u16, cell_w_px: u32, cell_h_px: u32 },
-    Scroll(ScrollTo),
-    Ready(u64),
-    SetSelection(Option<SelRange>),
-    SelectWord { x: u16, y: u16 },
-    SelectLine { y: u16 },
-    CopySelection,
-    SetColors { fg: (u8, u8, u8), bg: (u8, u8, u8), palette: Vec<(u8, u8, u8)> },
-    /// Resend every row (e.g. the client's fonts changed but the cell size did not).
-    Redraw,
-    Restart,
-    Shutdown,
-}
-
-#[derive(Debug)]
-pub enum ScrollTo {
-    Delta(i32),
-    PageUp,
-    PageDown,
-    Top,
-    Bottom,
-}
-
-#[derive(Debug)]
-pub enum PaneEvent {
-    Frame(wraith_proto::FrameDelta),
-    Title(String),
-    Bell,
-    Clipboard(String),
-    Copied(String),
-    PasteNeedsConfirm(String),
-    Exited(u32),
-    MouseTracking(bool),
-    /// How long an input command waited between `PaneHandle::send` and its bytes reaching the PTY.
-    InputWritten { waited: Duration },
 }
 
 pub struct PaneHandle {
@@ -333,6 +287,11 @@ impl Pane {
                 self.changed = true;
             }
             PaneCmd::Redraw => {
+                self.force_full = true;
+                self.changed = true;
+            }
+            PaneCmd::Reattach => {
+                self.outstanding = false;
                 self.force_full = true;
                 self.changed = true;
             }
