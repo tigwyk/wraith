@@ -419,7 +419,10 @@ impl App {
 
     fn on_msg(&mut self, hwnd: HWND, msg: WinMsg) -> Option<LRESULT> {
         match msg {
-            WinMsg::Resize { w, h } => self.resize(w, h, false),
+            WinMsg::Resize { w, h } => {
+                self.resize(w, h, false);
+                self.render_now();
+            }
             WinMsg::DpiChanged { suggested: r, .. } => {
                 unsafe {
                     let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -482,7 +485,11 @@ impl App {
                     self.mouse(msg, wparam, lparam);
                     return Some(LRESULT(0));
                 }
-                WM_APP => return Some(LRESULT(0)),
+                WM_APP => {
+                    // Pane output arrived; also delivered inside modal size/move loops.
+                    self.render_now();
+                    return Some(LRESULT(0));
+                }
                 _ => {}
             },
         }
@@ -525,15 +532,28 @@ impl App {
         }
     }
 
+    fn drain_pane_events(&mut self) {
+        self.woken.store(false, Ordering::Release);
+        while let Ok(ev) = self.events.try_recv() {
+            self.on_pane_event(ev);
+        }
+    }
+
+    /// Frame work from inside a window message. While the user drags the window edge, Windows runs
+    /// its own modal sizing loop and our idle never runs, so resize and wake messages render here.
+    fn render_now(&mut self) {
+        self.drain_pane_events();
+        if self.dirty {
+            self.render();
+        }
+    }
+
     /// Drain pane events, render if needed. Returns the loop's sleep budget in ms.
     fn idle(&mut self) -> (LoopControl, u32) {
         if self.quit {
             return (LoopControl::Exit, 0);
         }
-        self.woken.store(false, Ordering::Release);
-        while let Ok(ev) = self.events.try_recv() {
-            self.on_pane_event(ev);
-        }
+        self.drain_pane_events();
         for k in self.matcher.tick(Instant::now()) {
             self.send_key(k);
         }
