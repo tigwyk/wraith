@@ -28,7 +28,7 @@ use crate::grid::{DrawOpts, GridRenderer};
 use crate::input::{Ime, ImeUpdate, KeyTranslator};
 pub use crate::selection::{SelAction, Selection};
 use crate::selection::{get_clipboard, set_clipboard};
-use crate::window::{LoopControl, WinMsg, Window, run_message_loop};
+use crate::window::{Idle, LoopControl, WinMsg, Window, run_message_loop};
 
 /// Grid that fits a client area, or `None` for a zero-size (minimized) window. Never below 2×1.
 pub fn grid_size(client_w: u32, client_h: u32, m: &CellMetrics, pad_x: u16, pad_y: u16) -> Option<(u16, u16)> {
@@ -234,7 +234,8 @@ pub(crate) struct App {
     mouse_tracking: bool,
     focused: bool,
     dirty: bool,
-    unacked: Option<u64>,
+    /// Newest frame applied (debug timing only).
+    last_seq: Option<u64>,
     exited: Option<u32>,
     size_px: (u32, u32),
     grid_cells: (u16, u16),
@@ -242,6 +243,8 @@ pub(crate) struct App {
     next_blink: Instant,
     mouse_down: bool,
     wheel_acc: i32,
+    /// A present acquired from the swap chain's frame-latency object but not yet used.
+    present_token: bool,
     pub(crate) quit: bool,
 }
 
@@ -421,7 +424,7 @@ impl App {
         match msg {
             WinMsg::Resize { w, h } => {
                 self.resize(w, h, false);
-                self.render_now();
+                self.render_now(true);
             }
             WinMsg::DpiChanged { suggested: r, .. } => {
                 unsafe {
@@ -487,7 +490,7 @@ impl App {
                 }
                 WM_APP => {
                     // Pane output arrived; also delivered inside modal size/move loops.
-                    self.render_now();
+                    self.render_now(false);
                     return Some(LRESULT(0));
                 }
                 _ => {}
@@ -499,8 +502,13 @@ impl App {
     fn on_pane_event(&mut self, ev: PaneEvent) {
         match ev {
             PaneEvent::Frame(f) => {
+                let t = Instant::now();
                 self.grid.apply(&f, &self.fonts);
-                self.unacked = Some(f.seq);
+                tracing::debug!(seq = f.seq, rows = f.dirty_rows.len(), apply_us = t.elapsed().as_micros() as u64, "frame arrived");
+                // Ack on apply, not on present: the pane can send the newest state while we wait for
+                // vsync, so what we draw is fresh. One frame in flight still bounds the queue.
+                let _ = self.pane.send(PaneCmd::Ready(f.seq));
+                self.last_seq = Some(f.seq);
                 self.dirty = true;
             }
             PaneEvent::Title(t) => unsafe {
@@ -541,18 +549,40 @@ impl App {
 
     /// Frame work from inside a window message. While the user drags the window edge, Windows runs
     /// its own modal sizing loop and our idle never runs, so resize and wake messages render here.
-    fn render_now(&mut self) {
+    /// `blocking` waits for the compositor; only resize uses it (the sizing loop never reaches our
+    /// idle, so a skipped frame there would not be retried).
+    fn render_now(&mut self, blocking: bool) {
         self.drain_pane_events();
-        if self.dirty {
+        self.try_render(blocking);
+    }
+
+    /// Draw if something changed and the compositor can take a frame. Never blocks unless asked:
+    /// a blocked UI thread cannot take in newer frames, so what it finally draws is stale.
+    fn try_render(&mut self, blocking: bool) {
+        if !self.dirty {
+            return;
+        }
+        if !self.present_token {
+            self.present_token = if blocking {
+                self.sc.wait();
+                true
+            } else {
+                self.sc.try_acquire()
+            };
+        }
+        if self.present_token {
+            self.present_token = false;
             self.render();
         }
     }
 
-    /// Drain pane events, render if needed. Returns the loop's sleep budget in ms.
-    fn idle(&mut self) -> (LoopControl, u32) {
+    /// Drain pane events, render if possible, and say how the loop should wait.
+    fn idle(&mut self, signaled: bool) -> Idle {
         if self.quit {
-            return (LoopControl::Exit, 0);
+            return Idle { ctl: LoopControl::Exit, sleep_ms: 0, wait_on: None };
         }
+        // The loop's wait on the frame-latency object acquired a present for us.
+        self.present_token |= signaled;
         self.drain_pane_events();
         for k in self.matcher.tick(Instant::now()) {
             self.send_key(k);
@@ -564,16 +594,17 @@ impl App {
             self.dirty = true;
         }
         crate::reload::poll(self);
-        if self.dirty {
-            self.render();
-        }
+        self.try_render(false);
         let until_blink = self.next_blink.saturating_duration_since(Instant::now()).as_millis() as u32;
         let mut sleep = if self.config.cursor_style_blink { until_blink.max(1) } else { 1000 };
         if let Some(t) = crate::reload::next_deadline(self) {
             sleep = sleep.min(t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
         }
         // A pending key sequence must time out even with no other activity.
-        (LoopControl::Continue, if self.matcher.since.is_some() { sleep.min(100) } else { sleep })
+        let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
+        // Still dirty: wake as soon as the compositor can take the frame.
+        let wait_on = (self.dirty && !self.present_token).then(|| self.sc.waitable());
+        Idle { ctl: LoopControl::Continue, sleep_ms, wait_on }
     }
 
     pub(crate) fn request_redraw(&mut self) {
@@ -585,7 +616,7 @@ impl App {
         crate::reload::render_start(self);
         let exit_line = self.exited.map(|c| format!("[process exited {c}] Enter: restart · ctrl+shift+w: close"));
         self.grid.set_overlay(crate::grid::Overlay::Exit, exit_line.as_deref(), &self.fonts);
-        self.sc.wait();
+        let t0 = Instant::now();
         let m = self.fonts.metrics();
         let sel = self.config.selection_background.map_or((0x3e, 0x44, 0x51), |c| (c.0, c.1, c.2));
         let opts = DrawOpts {
@@ -598,11 +629,8 @@ impl App {
         let origin = self.origin();
         self.grid.draw(&self.gpu, self.sc.rtv(), self.size_px, &mut self.atlas, &self.fonts, origin, &m, &opts);
         let _ = self.sc.present();
+        tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
-        // Ack only after presenting: the pane sends the next frame when we can show it.
-        if let Some(seq) = self.unacked.take() {
-            let _ = self.pane.send(PaneCmd::Ready(seq));
-        }
     }
 }
 
@@ -700,7 +728,7 @@ pub fn run() -> Result<()> {
         mouse_tracking: false,
         focused: true,
         dirty: true,
-        unacked: None,
+        last_seq: None,
         exited: None,
         size_px: (w, h),
         grid_cells: cells,
@@ -708,6 +736,7 @@ pub fn run() -> Result<()> {
         next_blink: Instant::now() + Duration::from_millis(600),
         mouse_down: false,
         wheel_acc: 0,
+        present_token: false,
         quit: false,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
@@ -715,7 +744,7 @@ pub fn run() -> Result<()> {
     let a = app.clone();
     run_message_loop(
         move |hwnd, msg| a.try_borrow_mut().ok().and_then(|mut a| a.on_msg(hwnd, msg)),
-        move || app.borrow_mut().idle(),
+        move |signaled| app.borrow_mut().idle(signaled),
     );
     Ok(())
 }

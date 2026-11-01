@@ -1,7 +1,7 @@
 //! Win32 top-level window: per-monitor DPI, dark title bar, optional Mica, message loop.
 use std::cell::RefCell;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
@@ -109,12 +109,21 @@ pub enum LoopControl {
     Exit,
 }
 
-/// Run until `WM_QUIT`. `handler` receives window messages; `idle` runs whenever the queue is empty
-/// (or when `wake` is signalled) and returns how long the loop may sleep before calling it again.
+/// What `idle` asks of the loop: whether to keep going, how long it may sleep, and an optional
+/// handle to wait on as well (the swap chain's frame-latency object while a frame is pending).
+pub struct Idle {
+    pub ctl: LoopControl,
+    pub sleep_ms: u32,
+    pub wait_on: Option<HANDLE>,
+}
+
+/// Run until `WM_QUIT`. `handler` receives window messages; `idle(signaled)` runs whenever the queue
+/// is empty. `signaled` is true when the loop woke because `wait_on` fired: that wait *acquired* it.
 pub fn run_message_loop(
     handler: impl FnMut(HWND, WinMsg) -> Option<LRESULT> + 'static,
-    mut idle: impl FnMut() -> (LoopControl, u32),
+    mut idle: impl FnMut(bool) -> Idle,
 ) {
+    let mut signaled = false;
     HANDLER.with(|h| *h.borrow_mut() = Some(Box::new(handler)));
     let mut msg = MSG::default();
     loop {
@@ -133,12 +142,14 @@ pub fn run_message_loop(
                 DispatchMessageW(&msg);
             }
         }
-        let (ctl, sleep_ms) = idle();
-        if let LoopControl::Exit = ctl {
+        let next = idle(std::mem::take(&mut signaled));
+        if let LoopControl::Exit = next.ctl {
             HANDLER.with(|h| h.borrow_mut().take());
             return;
         }
-        unsafe { MsgWaitForMultipleObjectsEx(None, sleep_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+        let handles: Vec<HANDLE> = next.wait_on.into_iter().collect();
+        let r = unsafe { MsgWaitForMultipleObjectsEx(Some(&handles), next.sleep_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+        signaled = !handles.is_empty() && r == WAIT_OBJECT_0;
     }
 }
 

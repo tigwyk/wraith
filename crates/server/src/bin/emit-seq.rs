@@ -14,6 +14,32 @@ fn main() {
                 }
             }
         }
+        Some("stream") => {
+            // `stream <words> <ms>`: one flushed word every <ms>, like an LLM streaming tokens.
+            let n: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(300);
+            let ms: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(15);
+            for i in 0..n {
+                // Wall-clock µs lets a reader measure ConPTY delay; this test helper never ships.
+                let us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+                let _ = write!(out, "t{i}@{us} ");
+                let _ = out.flush();
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
+        Some("tui") => {
+            // `tui <frames> <ms>`: repaint 40 colored rows per frame, like a TUI redrawing on every token.
+            let n: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(300);
+            let ms: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(15);
+            for i in 0..n {
+                let _ = write!(out, "\x1b[?2026h\x1b[H");
+                for r in 0..40 {
+                    let _ = write!(out, "\x1b[3{}m{:>3} │ frame {i:>4} ── the quick brown fox jumps over the lazy dog ── {}\x1b[0m\x1b[K\r\n", r % 7 + 1, r, "▌".repeat((i as usize + r) % 20));
+                }
+                let _ = write!(out, "\x1b[?2026l");
+                let _ = out.flush();
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
         Some("print") => out.write_all(args[1..].join(" ").as_bytes()).unwrap(),
         Some("title") => out.write_all(b"\x1b]0;wraith-title\x07").unwrap(),
         Some(name) => match wraith_server::testseq::get(name) {

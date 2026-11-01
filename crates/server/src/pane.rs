@@ -172,6 +172,8 @@ struct Pane {
     seq: u64,
     outstanding: bool,
     changed: bool,
+    /// When output first changed the screen since the last frame (debug timing).
+    output_since: Option<Instant>,
     force_full: bool,
     exited: bool,
     mouse_tracking: bool,
@@ -211,6 +213,7 @@ impl Pane {
             seq: 0,
             outstanding: false,
             changed: true,
+            output_since: None,
             force_full: true,
             exited: false,
             mouse_tracking: false,
@@ -234,8 +237,10 @@ impl Pane {
                     Err(_) => return,
                 },
                 recv(self.chunks) -> c => if let Ok(c) = c {
+                    tracing::trace!(bytes = c.len(), text = %String::from_utf8_lossy(&c[..c.len().min(200)]), "chunk");
                     self.term.vt_write(&c);
                     self.changed = true;
+                    self.output_since.get_or_insert_with(Instant::now);
                 },
                 default(Duration::from_millis(16)) => {}
             }
@@ -502,6 +507,8 @@ impl Pane {
         self.seq += 1;
         self.force_full = false;
         self.outstanding = true;
+        let held_us = self.output_since.take().map_or(0, |t| t.elapsed().as_micros() as u64);
+        tracing::debug!(seq = self.seq, rows = frame.dirty_rows.len(), held_us, "frame sent");
         let _ = self.events.send(PaneEvent::Frame(frame));
     }
 }

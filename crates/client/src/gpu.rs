@@ -1,5 +1,5 @@
 //! D3D11 device, flip-model swap chain, and an offscreen target for pixel tests.
-use windows::Win32::Foundation::{HANDLE, HMODULE, HWND};
+use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -173,6 +173,17 @@ impl SwapChain {
             )?;
         }
         self.make_rtv()
+    }
+
+    /// Signaled (semaphore-like) when the compositor can take another frame. A successful wait
+    /// acquires one present.
+    pub fn waitable(&self) -> HANDLE {
+        self.waitable
+    }
+
+    /// Acquire a present without blocking; false if the compositor is still busy.
+    pub fn try_acquire(&self) -> bool {
+        unsafe { WaitForSingleObjectEx(self.waitable, 0, false) == WAIT_OBJECT_0 }
     }
 
     /// Block until the compositor can take another frame (at most ~1 refresh).
