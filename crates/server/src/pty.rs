@@ -3,7 +3,8 @@ use std::ffi::c_void;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Console::{
@@ -22,7 +23,8 @@ use windows::Win32::System::Threading::{
     PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
 };
-use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::core::{HRESULT, PCWSTR, PWSTR, s};
 
 /// A pane never goes below 2x1 cells (zero-size resizes crash TUIs).
 pub fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
@@ -34,7 +36,104 @@ fn coord(cols: u16, rows: u16) -> COORD {
     COORD { X: c as i16, Y: r as i16 }
 }
 
+/// Which ConPTY implementation creates pseudoconsoles.
+#[derive(Clone, Debug)]
+pub enum Backend {
+    /// Microsoft's redistributable conpty.dll (+ OpenConsole.exe beside it), run in passthrough mode.
+    Bundled(Bundled),
+    /// kernel32's ConPTY. Strips the Kitty graphics APC, so no inline images.
+    Inbox,
+}
+
+type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
+type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
+type CloseFn = unsafe extern "system" fn(HPCON);
+type Proc = unsafe extern "system" fn() -> isize;
+
+#[derive(Clone)]
+pub struct Bundled {
+    pub path: PathBuf,
+    create: CreateFn,
+    resize: ResizeFn,
+    close: CloseFn,
+}
+
+impl std::fmt::Debug for Bundled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Bundled").field(&self.path).finish()
+    }
+}
+
+/// PSEUDOCONSOLE_PASSTHROUGH_MODE: forward VT the child writes instead of re-rendering it.
+const PASSTHROUGH: u32 = 8;
+
+/// `Bundled` when `dll` loads and exports the three Conpty* functions, else `Inbox`.
+pub fn load_backend(dll: Option<&Path>) -> Backend {
+    let Some(dll) = dll else { return Backend::Inbox };
+    unsafe {
+        let w: Vec<u16> = dll.as_os_str().to_string_lossy().encode_utf16().chain([0]).collect();
+        // The module stays loaded for the life of the process.
+        let Ok(m) = LoadLibraryW(PCWSTR(w.as_ptr())) else { return Backend::Inbox };
+        let (Some(c), Some(r), Some(x)) = (
+            GetProcAddress(m, s!("ConptyCreatePseudoConsole")),
+            GetProcAddress(m, s!("ConptyResizePseudoConsole")),
+            GetProcAddress(m, s!("ConptyClosePseudoConsole")),
+        ) else {
+            return Backend::Inbox;
+        };
+        Backend::Bundled(Bundled {
+            path: dll.to_path_buf(),
+            create: std::mem::transmute::<Proc, CreateFn>(c),
+            resize: std::mem::transmute::<Proc, ResizeFn>(r),
+            close: std::mem::transmute::<Proc, CloseFn>(x),
+        })
+    }
+}
+
+/// `WRAITH_CONPTY_DLL`, else conpty.dll beside the running exe, else inbox (logged once).
+pub fn default_backend() -> &'static Backend {
+    static B: OnceLock<Backend> = OnceLock::new();
+    B.get_or_init(|| {
+        let path = std::env::var_os("WRAITH_CONPTY_DLL").map(PathBuf::from).or_else(|| {
+            std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("conpty.dll")))
+        });
+        let b = load_backend(path.as_deref().filter(|p| p.exists()));
+        if matches!(b, Backend::Inbox) {
+            eprintln!("wraith: bundled conpty.dll not found; using inbox ConPTY (no inline images)");
+        }
+        b
+    })
+}
+
+impl Backend {
+    unsafe fn create(&self, size: COORD, input: HANDLE, output: HANDLE) -> windows::core::Result<HPCON> {
+        match self {
+            Backend::Bundled(b) => {
+                let mut h = HPCON::default();
+                unsafe { (b.create)(size, input, output, PASSTHROUGH, &mut h) }.ok()?;
+                Ok(h)
+            }
+            Backend::Inbox => unsafe { CreatePseudoConsole(size, input, output, 0) },
+        }
+    }
+
+    unsafe fn resize(&self, h: HPCON, size: COORD) -> windows::core::Result<()> {
+        match self {
+            Backend::Bundled(b) => unsafe { (b.resize)(h, size) }.ok(),
+            Backend::Inbox => unsafe { ResizePseudoConsole(h, size) },
+        }
+    }
+
+    unsafe fn close(&self, h: HPCON) {
+        match self {
+            Backend::Bundled(b) => unsafe { (b.close)(h) },
+            Backend::Inbox => unsafe { ClosePseudoConsole(h) },
+        }
+    }
+}
+
 pub struct Pty {
+    backend: Backend,
     hpcon: HPCON,
     job: OwnedHandle,
     process: OwnedHandle,
@@ -44,7 +143,19 @@ pub struct Pty {
 }
 
 impl Pty {
+    /// Spawn on the process-wide default backend.
     pub fn spawn(
+        cmdline: &str,
+        cwd: Option<&Path>,
+        env: &[(String, String)],
+        cols: u16,
+        rows: u16,
+    ) -> windows::core::Result<Pty> {
+        Self::spawn_with(default_backend(), cmdline, cwd, env, cols, rows)
+    }
+
+    pub fn spawn_with(
+        backend: &Backend,
         cmdline: &str,
         cwd: Option<&Path>,
         env: &[(String, String)],
@@ -59,7 +170,7 @@ impl Pty {
             let input = File::from_raw_handle(in_write.0);
             let output = File::from_raw_handle(out_read.0);
 
-            let hpcon = CreatePseudoConsole(coord(cols, rows), in_read, out_write, 0);
+            let hpcon = backend.create(coord(cols, rows), in_read, out_write);
             // ConPTY duplicated its ends; ours must close or reads never see EOF.
             let _ = CloseHandle(in_read);
             let _ = CloseHandle(out_write);
@@ -110,7 +221,7 @@ impl Pty {
             let pi = match result {
                 Ok(pi) => pi,
                 Err(e) => {
-                    ClosePseudoConsole(hpcon);
+                    backend.close(hpcon);
                     return Err(e);
                 }
             };
@@ -129,7 +240,7 @@ impl Pty {
             AssignProcessToJobObject(raw(&job), raw(&process))?;
             ResumeThread(raw(&thread));
 
-            Ok(Pty { hpcon, job, process, pid: pi.dwProcessId, input, output: Some(output) })
+            Ok(Pty { backend: backend.clone(), hpcon, job, process, pid: pi.dwProcessId, input, output: Some(output) })
         }
     }
 
@@ -143,7 +254,7 @@ impl Pty {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> windows::core::Result<()> {
-        unsafe { ResizePseudoConsole(self.hpcon, coord(cols, rows)) }
+        unsafe { self.backend.resize(self.hpcon, coord(cols, rows)) }
     }
 
     pub fn try_wait(&self) -> Option<u32> {
@@ -155,6 +266,10 @@ impl Pty {
             GetExitCodeProcess(raw(&self.process), &mut code).ok()?;
             Some(code)
         }
+    }
+
+    pub fn backend(&self) -> &Backend {
+        &self.backend
     }
 
     pub fn pid(&self) -> u32 {
@@ -193,7 +308,7 @@ impl Drop for Pty {
         unsafe {
             // Kill descendants before conhost goes away. OwnedHandle closes the job again below; this is the kill.
             let _ = windows::Win32::System::JobObjects::TerminateJobObject(raw(&self.job), 1);
-            ClosePseudoConsole(self.hpcon);
+            self.backend.close(self.hpcon);
         }
     }
 }

@@ -113,3 +113,23 @@ fn resize_clamps_to_two_by_one() {
     let p = Pty::spawn("cmd.exe", None, &[], 80, 24).unwrap();
     p.resize(0, 0).unwrap();
 }
+
+#[test]
+fn default_backend_is_bundled() {
+    use wraith_server::pty::{Backend, default_backend};
+    assert!(matches!(default_backend(), Backend::Bundled(_)), "got {:?}", default_backend());
+}
+
+#[test]
+fn missing_dll_falls_back_to_inbox() {
+    use wraith_server::pty::{Backend, load_backend};
+    assert!(matches!(load_backend(Some(std::path::Path::new("C:/nope/conpty.dll"))), Backend::Inbox));
+}
+
+#[test]
+fn inbox_pty_still_works() {
+    use wraith_server::pty::Backend;
+    let mut p = Pty::spawn_with(&Backend::Inbox, "cmd.exe /c echo inbox-ok", None, &[], 80, 24).unwrap();
+    assert!(matches!(p.backend(), Backend::Inbox));
+    assert!(read_until(p.take_reader(), b"inbox-ok", Duration::from_secs(5)).is_some());
+}
