@@ -32,6 +32,7 @@ fn spawn() -> SpawnOpts {
         default_fg: (255, 255, 255),
         default_bg: (0, 0, 0),
         palette: vec![(0, 0, 0); 256],
+        image_storage_limit: 320 * 1024 * 1024,
     }
 }
 

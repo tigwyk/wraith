@@ -1019,6 +1019,8 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "libghostty-vt",
+ "serde",
+ "serde_json",
  "sha2",
  "tracing",
  "windows",

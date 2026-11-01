@@ -798,6 +798,7 @@ pub fn run() -> Result<()> {
         default_fg: (fg.0, fg.1, fg.2),
         default_bg: (bg.0, bg.1, bg.2),
         palette: palette(&config),
+        image_storage_limit: 320 * 1024 * 1024,
     };
     let pipe = wraith_ipc::pipe_name();
     let Some(pane) = attach_with_restart(win.hwnd(), &pipe, spawn.clone()) else { return Ok(()) };

@@ -68,4 +68,5 @@ pub struct SpawnOpts {
     pub default_fg: (u8, u8, u8),
     pub default_bg: (u8, u8, u8),
     pub palette: Vec<(u8, u8, u8)>,
+    pub image_storage_limit: u64,
 }

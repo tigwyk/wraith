@@ -2,6 +2,7 @@
 //! with its pixel layout, and the snapshot the server mirrors to a window.
 use serde::{Deserialize, Serialize};
 
+use crate::pane::SpawnOpts;
 use crate::wire::PaneId;
 
 pub type WorkspaceId = u64;
@@ -296,4 +297,25 @@ impl ModelSnapshot {
             .or_else(|| self.pane(t.focused).map(|p| p.title.clone()).filter(|s| !s.is_empty()))
             .unwrap_or_else(|| "shell".into())
     }
+}
+
+/// Edits a window asks the server to make (spec §3.4 `Command`). New panes carry what the client
+/// resolved for them: profile command line, cwd, environment, colors.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ModelCmd {
+    NewWorkspace { name: Option<String>, root_dir: Option<String>, profile: String, layout: String, spawn: SpawnOpts },
+    CloseWorkspace(WorkspaceId),
+    RenameWorkspace(WorkspaceId, String),
+    NewTab { workspace: WorkspaceId, profile: String, spawn: SpawnOpts },
+    CloseTab(TabId),
+    SelectTab(TabId),
+    MoveTab { tab: TabId, to: WorkspaceId, index: Option<usize> },
+    RenameTab(TabId, Option<String>),
+    Split { pane: PaneId, axis: Axis, new_first: bool, profile: String, spawn: SpawnOpts },
+    ClosePane(PaneId),
+    FocusPane(PaneId),
+    SetRatio { tab: TabId, path: Vec<bool>, ratio: f32 },
+    NudgeSplit { pane: PaneId, dir: Dir, delta: f32 },
+    Equalize(TabId),
+    ToggleZoom(TabId),
 }
