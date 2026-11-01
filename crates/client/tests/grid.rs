@@ -143,3 +143,96 @@ fn selected_flag_draws_selection_color() {
     let px = r.off.read_pixel(&r.gpu, r.fonts.metrics().w + 1, 2 * r.fonts.metrics().h + 1);
     assert_eq!(px, [100, 100, 200, 255]);
 }
+
+/// Every pixel of the cell block [x0, x1) x [y0, y1) (in cells) has color `c`.
+fn filled(r: &Rig, cells: (u32, u32, u32, u32), c: [u8; 4]) -> Vec<(u32, u32)> {
+    let m = r.fonts.metrics();
+    let (x0, y0, x1, y1) = cells;
+    let mut bad = Vec::new();
+    for y in y0 * m.h..y1 * m.h {
+        for x in x0 * m.w..x1 * m.w {
+            if r.off.read_pixel(&r.gpu, x, y) != c {
+                bad.push((x, y));
+            }
+        }
+    }
+    bad
+}
+
+const RED: [u8; 4] = [200, 0, 0, 255];
+const BG: [u8; 4] = [1, 2, 3, 255];
+
+#[test]
+fn full_blocks_tile_without_seams() {
+    let mut r = rig();
+    let blocks = |y| row(y, vec![run("███", Color::Rgb(200, 0, 0), Color::Default, 0)]);
+    r.grid.apply(&frame(true, vec![blocks(0), blocks(1)], None), &r.fonts);
+    r.draw(&opts());
+    let gaps = filled(&r, (0, 0, 3, 2), RED);
+    assert!(gaps.is_empty(), "{} unfilled pixels, first {:?}", gaps.len(), &gaps[..gaps.len().min(8)]);
+}
+
+#[test]
+fn half_and_quadrant_blocks_are_exact() {
+    let mut r = rig();
+    let m = r.fonts.metrics();
+    r.grid.apply(&frame(true, vec![row(0, vec![run("▀▐▛", Color::Rgb(200, 0, 0), Color::Default, 0)])], None), &r.fonts);
+    r.draw(&opts());
+    let (hw, hh) = (m.w / 2, m.h / 2);
+    let px = |x, y| r.off.read_pixel(&r.gpu, x, y);
+    // ▀ upper half
+    assert_eq!((px(0, 0), px(m.w - 1, hh - 1), px(0, hh), px(m.w - 1, m.h - 1)), (RED, RED, BG, BG));
+    // ▐ right half
+    let x = m.w;
+    assert_eq!((px(x, 0), px(x + hw - 1, m.h - 1), px(x + hw, 0), px(x + m.w - 1, m.h - 1)), (BG, BG, RED, RED));
+    // ▛ all but lower-right quadrant
+    let x = 2 * m.w;
+    assert_eq!((px(x, 0), px(x + m.w - 1, 0), px(x, m.h - 1), px(x + m.w - 1, m.h - 1)), (RED, RED, RED, BG));
+}
+
+#[test]
+fn box_lines_join_across_cells() {
+    let mut r = rig();
+    let m = r.fonts.metrics();
+    r.grid.apply(&frame(true, vec![
+        row(0, vec![run("┌──┐", Color::Rgb(200, 0, 0), Color::Default, 0)]),
+        row(1, vec![run("│  │", Color::Rgb(200, 0, 0), Color::Default, 0)]),
+    ], None), &r.fonts);
+    r.draw(&opts());
+    let mid_y = (0..m.h).find(|&y| r.off.read_pixel(&r.gpu, m.w + m.w / 2, y) == RED).expect("horizontal line row");
+    // The horizontal line is unbroken from the corner's centre to the other corner's centre.
+    for x in m.w / 2 + 1..3 * m.w + m.w / 2 {
+        assert_eq!(r.off.read_pixel(&r.gpu, x, mid_y), RED, "gap at x={x}");
+    }
+    let mid_x = (0..m.w).find(|&x| r.off.read_pixel(&r.gpu, x, m.h + m.h / 2) == RED).expect("vertical line column");
+    // The vertical line runs from the corner down through the next row without a break.
+    for y in mid_y + 1..2 * m.h {
+        assert_eq!(r.off.read_pixel(&r.gpu, mid_x, y), RED, "gap at y={y}");
+    }
+}
+
+#[test]
+fn sprite_shapes() {
+    use wraith_client::sprite::sprite_rects;
+    let cover = |c, w: u32, h: u32| {
+        let mut g = vec![0u8; (w * h) as usize];
+        for r in sprite_rects(c, w, h, 1).unwrap() {
+            for y in r.y..r.y + r.h {
+                for x in r.x..r.x + r.w {
+                    g[(y * w + x) as usize] = (r.alpha * 255.0) as u8;
+                }
+            }
+        }
+        g
+    };
+    assert!(cover('█', 9, 19).iter().all(|&a| a == 255));
+    assert_eq!(cover('▄', 4, 4), [0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255]);
+    assert_eq!(cover('▚', 2, 2), [255, 0, 0, 255]);
+    assert!(cover('▒', 4, 4).iter().all(|&a| a == 127));
+    assert!(sprite_rects('a', 9, 19, 1).is_none());
+    assert!(sprite_rects('╱', 9, 19, 1).is_none(), "diagonals stay with the font");
+    // Every box-drawing char we claim draws something.
+    for c in ('\u{2500}'..='\u{2570}').chain('\u{2574}'..='\u{257F}') {
+        assert!(sprite_rects(c, 9, 19, 1).is_some_and(|r| !r.is_empty()), "{c:?}");
+    }
+}

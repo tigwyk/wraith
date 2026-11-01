@@ -60,6 +60,8 @@ struct CachedRow {
     decos: Vec<(u16, u16, u16, Rgb)>,
     /// (first cell, cell count) inside the terminal selection.
     sels: Vec<(u16, u16)>,
+    /// Block/box characters drawn as exact rectangles: (cell, char, color, alpha).
+    sprites: Vec<(u16, char, Rgb, f32)>,
 }
 
 #[derive(Clone)]
@@ -249,8 +251,22 @@ impl GridRenderer {
                 }
                 if !run.flags.has(StyleFlags::INVISIBLE) && run.text.chars().any(|c| c != ' ') {
                     let alpha = if run.flags.has(StyleFlags::FAINT) { 0.5 } else { 1.0 };
-                    for g in fonts.shape(&run.text, run.flags) {
-                        cached.glyphs.push(CachedGlyph { cell: cell + g.cell, face: g.face, glyph: g.glyph, color: fg, alpha });
+                    // Sprite characters are drawn as rectangles; the font sees a space in their place.
+                    let mut text = String::with_capacity(run.text.len());
+                    let mut at = cell;
+                    for c in run.text.chars() {
+                        if crate::sprite::sprite_rects(c, 2, 2, 1).is_some() {
+                            cached.sprites.push((at, c, fg, alpha));
+                            text.push(' ');
+                        } else {
+                            text.push(c);
+                        }
+                        at += c.width().unwrap_or(0) as u16;
+                    }
+                    if text.chars().any(|c| c != ' ') {
+                        for g in fonts.shape(&text, run.flags) {
+                            cached.glyphs.push(CachedGlyph { cell: cell + g.cell, face: g.face, glyph: g.glyph, color: fg, alpha });
+                        }
                     }
                 }
                 cell += width;
@@ -318,6 +334,19 @@ impl GridRenderer {
                     color: f(color, g.alpha),
                     kind: if e.color { 2 } else { 1 },
                 });
+            }
+            for &(x, c, color, alpha) in &row.sprites {
+                let (px, py) = cell_xy(x, y);
+                let color = if block_at == Some((x, y as u16)) { self.bg } else { color };
+                for r in crate::sprite::sprite_rects(c, m.w, m.h, m.underline_thickness).unwrap_or_default() {
+                    q.push(Quad {
+                        pos: [px + r.x as f32, py + r.y as f32],
+                        size: [r.w as f32, r.h as f32],
+                        uv: [0.0; 4],
+                        color: f(color, alpha * r.alpha),
+                        kind: 0,
+                    });
+                }
             }
             for &(x, n, flags, c) in &row.decos {
                 let (px, py) = cell_xy(x, y);

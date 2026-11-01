@@ -137,3 +137,16 @@ fn wheel_accumulates_partial_touchpad_deltas() {
     assert_eq!(wheel_notches(&mut acc, 30), 1);
     assert_eq!(acc, 0);
 }
+
+#[test]
+fn dash_e_takes_the_rest_of_the_command_line() {
+    use wraith_client::app::command_from_args;
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(command_from_args(&a(&["wraith.exe"])), None);
+    assert_eq!(command_from_args(&a(&["wraith.exe", "-e", "wsl.exe"])), Some("wsl.exe".into()));
+    assert_eq!(
+        command_from_args(&a(&["wraith.exe", "-e", r"C:\Program Files\x.exe", "-NoExit", "a b"])),
+        Some(r#""C:\Program Files\x.exe" -NoExit "a b""#.into())
+    );
+    assert_eq!(command_from_args(&a(&["wraith.exe", "-e"])), None);
+}

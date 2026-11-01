@@ -590,6 +590,17 @@ pub fn clamp_font_size(pt: f32) -> f32 {
     pt.clamp(4.0, 72.0)
 }
 
+/// `wraith.exe -e <command...>` (Ghostty's flag): run that instead of the configured shell.
+pub fn command_from_args(args: &[String]) -> Option<String> {
+    let i = args.iter().position(|a| a == "-e")?;
+    let rest = &args[i + 1..];
+    if rest.is_empty() {
+        return None;
+    }
+    let quote = |a: &String| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() };
+    Some(rest.iter().map(quote).collect::<Vec<_>>().join(" "))
+}
+
 pub fn run() -> Result<()> {
     let path = wraith_config::default_path();
     let (config, diags) = wraith_config::load(&path, &themes_dir());
@@ -607,7 +618,9 @@ pub fn run() -> Result<()> {
     let fg = config.foreground;
     let bg = config.background;
     let pane = spawn_pane(PaneOptions {
-        cmdline: config.command.clone().unwrap_or_else(default_shell),
+        cmdline: command_from_args(&std::env::args().collect::<Vec<_>>())
+            .or_else(|| config.command.clone())
+            .unwrap_or_else(default_shell),
         cwd: std::env::var_os("USERPROFILE").map(PathBuf::from),
         env: vec![("TERM_PROGRAM".into(), "wraith".into())],
         cols: cells.0,
