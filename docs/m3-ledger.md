@@ -26,3 +26,9 @@ Task 4: Ruling: tests wait for the effect of a model command with a List barrier
 Task 4: Note: wraith-client and wraith-cli do not compile against protocol v2 until Task 6; Tasks 4-5 run -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc.
 Task 4: Note: pane tests for cwd added to server/tests/pane.rs (cwd_from_uri_converts_drive_and_posix_paths, osc7_sends_cwd_event).
 Task 4: complete (commits 7f485c3..29e9db4, tests: rtk proxy cargo test -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc → exit 0; session 22/22, pane 19/19, model 17/17)
+Task 5: Ruling: WSL integration runs the user's own login shell (bash or zsh) via 'sh -c' on $SHELL instead of forcing bash — forcing bash would silently replace a zsh/fish user's shell; any other shell starts plain with -l (no integration) — cost if wrong: fish/nushell users get cwd inheritance only if their shell emits OSC 7.
+Task 5: Ruling: Git Bash starts as 'bash.exe -i --rcfile integration.bash' (no --login, which would ignore --rcfile); the script sources /etc/profile and ~/.bash_profile itself on MSYS — cost if wrong: login-only customizations missing.
+Task 5: Ruling: integration is skipped for any command that already carries -Command/-File/--login/--rcfile/-e style arguments; detect() runs 'wsl -l -q' (hidden window), so the client calls it once at startup — cost if wrong: ~50 ms at launch with WSL installed.
+Task 5: Ruling: added wslenv_with() and wired it into session.start_pane so TERM_PROGRAM and WRAITH_PANE_ID cross into WSL (spec §3.5 WSLENV); WRAITH_PIPE stays Windows-only.
+Task 5: Note: zsh/bash scripts are checked for OSC strings only; a real zsh/bash run is part of Task 14 acceptance (manual); the PowerShell script is parse-checked by powershell.exe in tests.
+Task 5: complete (commits 33f14fb..3d5ab66, tests: rtk proxy cargo test -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc → exit 0; profile 16/16)
