@@ -8,3 +8,5 @@ Pre-flight:
 - T4 v2 messages -> T6 ServerLink, T8 view, cli: consistent.
 - T7 Pipeline/Batch -> T8 draw, T13 images: consistent.
 - T12 ImagePlacement/PaneEvent -> T13 store/draw: consistent.
+Task 1: Ruling: layout_never_below_min asserts bounds/count when the area cannot fit the minimums (plan text said 'min or exactly min'); found+fixed a b-rect offset past the area when the usable span is 0 — cost if wrong: none.
+Task 1: complete (commits 90c5735..79d55d5, tests: rtk proxy cargo test -p wraith-proto → exit 0, 15 model tests pass)
