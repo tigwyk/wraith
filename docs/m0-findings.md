@@ -28,12 +28,21 @@ ConPTY drops the APC entirely. The reader only sees ConPTY's own startup modes (
 
 Job Object: closing a pane kills descendants that have their own console (`start "" /min`). Verified with a mutation check (the test fails with the kill disabled).
 
+## ConPTY (bundled: Microsoft.Windows.Console.ConPTY 1.25.260930003)
+
+`conpty.dll` + `OpenConsole.exe` from NuGet (MIT, Authenticode-valid, signed by Microsoft Corporation). Called through `ConptyCreatePseudoConsole`.
+
+| Sequence | flags=0 native | flags=0 WSL | **flags=8 (passthrough) native** | **flags=8 WSL** |
+|---|---|---|---|---|
+| Kitty graphics APC | Passed | Stripped | **Passed** | **Passed** |
+| OSC 9 / 777 / 133 / 7 | Passed | Passed | **Passed** | **Passed** |
+
+The bundled OpenConsole sends `ESC[1t` and `ESC[c` (a DA1 query) at startup. The pane's `on_device_attributes` handler must answer DA1.
+
 ## Decision
 
 - **Passive agent detection (OSC 9/777/133/7): GO.** ConPTY passes these through, both native and WSL.
-- **Inline images (Kitty graphics): NO-GO on inbox ConPTY.** Pending the user's decision on the next step:
-  1. **Bundle Microsoft's ConPTY** (`Microsoft.Windows.Console.ConPTY` NuGet 1.25.260930003, MIT, Authenticode-signed by Microsoft: `conpty.dll` + `OpenConsole.exe`), the same approach WezTerm and Windows Terminal use. It is not yet tested whether its OpenConsole passes APC. The test run was blocked by the session's permission policy, because it executes a downloaded binary.
-  2. If the bundled ConPTY also strips APC: a ConPTY bypass for WSL/SSH children. This is a large redesign (spec §11 risk 4).
-  3. Ship without inline images.
+- **Inline images (Kitty graphics): GO with bundled ConPTY in passthrough mode (flags = 8).** NO-GO on inbox ConPTY, which strips the APC.
+  Proposed: ship `conpty.dll` + `OpenConsole.exe` next to `wraith.exe` and always create panes with `ConptyCreatePseudoConsole(..., 8, ...)`. Inbox ConPTY is the fallback, without images, if the DLL is missing. Pending user approval of the spec change.
 
 M1 (the single-pane terminal) does not depend on this decision.
