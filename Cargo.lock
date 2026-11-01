@@ -992,6 +992,7 @@ dependencies = [
  "sha2",
  "tracing",
  "windows",
+ "wraith-ipc",
  "wraith-proto",
  "zip",
 ]

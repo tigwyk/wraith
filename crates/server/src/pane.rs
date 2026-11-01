@@ -44,10 +44,16 @@ pub struct PaneOptions {
 pub struct PaneHandle {
     cmd: Sender<(Instant, PaneCmd)>,
     pub events: Receiver<PaneEvent>,
+    pid: u32,
 }
 
 impl PaneHandle {
     /// Queue a command; the send time is recorded for input-latency reporting.
+    /// Process id of the shell started with the pane (not updated by `Restart`).
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
     pub fn send(&self, cmd: PaneCmd) -> Result<(), PaneCmd> {
         self.cmd.send((Instant::now(), cmd)).map_err(|e| e.into_inner().1)
     }
@@ -86,7 +92,7 @@ const CHUNK: usize = 64 * 1024;
 pub fn spawn_pane(opts: PaneOptions) -> io::Result<PaneHandle> {
     let (cmd_tx, cmd_rx) = unbounded();
     let (ev_tx, ev_rx) = unbounded();
-    let (init_tx, init_rx) = bounded::<io::Result<()>>(1);
+    let (init_tx, init_rx) = bounded::<io::Result<u32>>(1);
     thread::Builder::new().name("wraith-pane".into()).spawn(move || {
         let mut pane = match Pane::new(opts, ev_tx) {
             Ok(p) => p,
@@ -95,11 +101,11 @@ pub fn spawn_pane(opts: PaneOptions) -> io::Result<PaneHandle> {
                 return;
             }
         };
-        let _ = init_tx.send(Ok(()));
+        let _ = init_tx.send(Ok(pane.pty.pid()));
         pane.run(&cmd_rx);
     })?;
-    init_rx.recv().map_err(|_| io::Error::other("pane thread died during init"))??;
-    Ok(PaneHandle { cmd: cmd_tx, events: ev_rx })
+    let pid = init_rx.recv().map_err(|_| io::Error::other("pane thread died during init"))??;
+    Ok(PaneHandle { cmd: cmd_tx, events: ev_rx, pid })
 }
 
 /// Side effects raised inside libghostty callbacks, drained after each `vt_write`.

@@ -47,6 +47,7 @@ pub struct PaneInfo {
     pub title: String,
     pub attached: bool,
     pub exited: Option<u32>,
+    pub shell_pid: u32,
 }
 
 pub fn write_frame<T: Serialize>(w: &mut impl Write, msg: &T) -> io::Result<()> {

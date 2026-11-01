@@ -60,7 +60,7 @@ fn roundtrip_every_message() {
     rt(ServerMsg::Attached { pane: 7, reattached: true });
     rt(ServerMsg::Event { pane: 7, ev: PaneEvent::Frame(frame()) });
     rt(ServerMsg::Event { pane: 7, ev: PaneEvent::InputWritten { waited: Duration::from_micros(130) } });
-    rt(ServerMsg::Panes(vec![PaneInfo { id: 7, title: "lee@host:~".into(), attached: false, exited: Some(3) }]));
+    rt(ServerMsg::Panes(vec![PaneInfo { id: 7, title: "lee@host:~".into(), attached: false, exited: Some(3), shell_pid: 4242 }]));
     rt(ServerMsg::Error("nope".into()));
 }
 
