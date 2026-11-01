@@ -13,7 +13,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, IDC_IBEAM, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-    PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE,
+    PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, WM_CLOSE,
     WM_DESTROY, WM_DPICHANGED, WM_QUIT, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
     WS_OVERLAPPEDWINDOW, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
 };
@@ -123,10 +123,8 @@ pub fn run_message_loop(
                 HANDLER.with(|h| h.borrow_mut().take());
                 return;
             }
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+            // No TranslateMessage: input::KeyTranslator owns key→text (and dead-key state); IME uses WM_IME_*.
+            unsafe { DispatchMessageW(&msg) };
         }
         let (ctl, sleep_ms) = idle();
         if let LoopControl::Exit = ctl {
