@@ -1,9 +1,12 @@
 //! Wraith config: Ghostty `key = value` syntax and key names (spec §7).
+mod keybind;
 mod keys;
 mod parse;
 mod theme;
 
 use std::path::{Path, PathBuf};
+
+pub use keybind::{Action, Keybind, Trigger, TriggerKey, parse_keybind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -47,6 +50,7 @@ pub struct Config {
     pub right_click_action: RightClick,
     pub command: Option<String>,
     pub close_on_exit: bool,
+    pub keybinds: Vec<Keybind>,
 }
 
 impl Default for Config {
@@ -74,6 +78,7 @@ impl Default for Config {
             right_click_action: RightClick::Paste,
             command: None,
             close_on_exit: false,
+            keybinds: keybind::defaults(),
         }
     }
 }

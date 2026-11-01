@@ -68,6 +68,7 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
         }),
         "command" => set!(command, |v: &str| Ok::<_, String>(Some(v.to_string()))),
         "close-on-exit" => set!(close_on_exit, boolean),
+        "keybind" => crate::keybind::apply(&mut c.keybinds, value)?,
         _ => return Err(format!("unknown key `{key}`")),
     }
     Ok(())

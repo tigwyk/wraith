@@ -574,6 +574,9 @@ version = "0.1.0"
 [[package]]
 name = "wraith-config"
 version = "0.1.0"
+dependencies = [
+ "wraith-proto",
+]
 
 [[package]]
 name = "wraith-proto"
