@@ -478,8 +478,10 @@ impl Server {
     fn start_pane(&mut self, pane: PaneId, spawn: SpawnOpts) {
         let mut env = spawn.env;
         let ours = [("WRAITH_PANE_ID", pane.to_string()), ("WRAITH_PIPE", self.pipe.clone()), ("TERM_PROGRAM", "wraith".to_string())];
-        env.retain(|(k, _)| !ours.iter().any(|(o, _)| o == k));
+        let wslenv = crate::profile::wslenv_with(env.iter().find(|(k, _)| k == "WSLENV").map(|(_, v)| v.clone()).or_else(|| std::env::var("WSLENV").ok()).as_deref());
+        env.retain(|(k, _)| k != "WSLENV" && !ours.iter().any(|(o, _)| o == k));
         env.extend(ours.into_iter().map(|(k, v)| (k.to_string(), v)));
+        env.push(("WSLENV".into(), wslenv));
         let opts = PaneOptions {
             cmdline: spawn.cmdline,
             cwd: spawn.cwd.map(PathBuf::from),
