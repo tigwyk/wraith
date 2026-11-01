@@ -25,7 +25,7 @@ Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 - Rust stable, MSVC toolchain.
 
 **Success criteria**
-- Keypress-to-pixel latency under 8 ms at 120 Hz on a typical dev machine.
+- Keypress-to-pixel latency under 8 ms at 120 Hz on a typical dev machine. **This holds regardless of session length or load:** after 10 million lines of output with scrollback full, while another pane floods output, and after days of uptime (see §6.3).
 - Cold start to an interactive prompt under 300 ms when the server is already running.
 - Correct rendering of ligatures, color emoji, wide/CJK characters, and IME input.
 - Passes `vttest` basics and common TUIs (nvim, htop/btop in WSL, lazygit, Claude Code, Codex).
@@ -220,6 +220,18 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 - IME via `ImmGetCompositionString`. The candidate window is positioned at the cursor, and the preedit text is drawn inline.
 - Mouse: client-side hit testing to the pane cell. When the terminal has mouse tracking on (from `ModelEvent`), forward it as `MouseEvent`. Otherwise handle selection locally against the pane's cell cache, and send `SetSelection` to the server for copying.
 - Clipboard: copy-on-select (`copy-on-select = true`), right-click paste (`right-click-action = paste|menu`). Paste goes through the server's paste-safety check, and a confirmation is shown for multi-line or unsafe paste.
+
+### 6.3 Always fast: performance rules
+
+Typing must never slow down as a session grows. These rules are requirements, and every one has a test:
+
+1. **Input before output.** On every loop turn, the pane thread writes all queued key/text/paste input to the PTY before it parses the next output chunk. Output is parsed in slices of at most 64 KiB, so a keystroke waits behind at most one slice.
+2. **Work scales with the screen, not the history.** Building a frame reads only the viewport rows from `RenderState`, and only dirty rows are re-shaped and re-uploaded. Nothing on the per-keystroke or per-frame path walks scrollback.
+3. **Memory is bounded.** Scrollback is capped by `scrollback-limit` (lines) and images by `image-storage-limit`. No other structure grows with output: no unbounded logs, transcripts, undo, or per-line caches. The client's row cache holds only visible rows.
+4. **Rendering never blocks input.** Floods coalesce through frame backpressure (§3.4). The client processes window messages before presenting, and input is never queued behind a frame.
+5. **Measured, not assumed.** The pane reports how long each input waited before being written to the PTY. The frame overlay shows input-to-present latency. CI runs a long-session soak: memory stays flat, and input wait stays under 2 ms p99 while flooding.
+
+Caveat: if a program re-renders its whole transcript on every keystroke, it will be slow in any terminal. Wraith guarantees its own share of the latency stays flat.
 
 ## 7. Configuration
 
