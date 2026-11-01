@@ -85,10 +85,10 @@ pub(crate) fn start(app: &mut App, path: &Path, diags: Vec<Diagnostic>) {
     });
     match watcher {
         Ok(mut w) => {
-            if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
-                if let Err(e) = w.watch(dir, RecursiveMode::NonRecursive) {
-                    tracing::warn!("config watch {}: {e}", dir.display());
-                }
+            if let Some(dir) = path.parent().filter(|d| d.is_dir())
+                && let Err(e) = w.watch(dir, RecursiveMode::NonRecursive)
+            {
+                tracing::warn!("config watch {}: {e}", dir.display());
             }
             app.rs._watcher = Some(w);
         }

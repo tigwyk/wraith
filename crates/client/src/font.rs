@@ -66,14 +66,16 @@ const FALLBACKS: &[&str] = &[
     "Segoe UI",
 ];
 
+/// A fallback family: unresolved (None), not installed (Some(None)), or its face.
+type FallbackSlot = Option<Option<FaceId>>;
+
 pub struct FontStack {
     factory: IDWriteFactory2,
     analyzer: IDWriteTextAnalyzer,
     collection: IDWriteFontCollection,
     /// 0 regular, 1 bold, 2 italic, 3 bold-italic; fallbacks appended on demand.
     faces: RefCell<Vec<Face>>,
-    /// Per fallback family: unresolved (None), not installed (Some(None)), or its face.
-    fallback_ids: RefCell<Vec<(&'static str, Option<Option<FaceId>>)>>,
+    fallback_ids: RefCell<Vec<(&'static str, FallbackSlot)>>,
     primary: String,
     em_px: f32,
     metrics: CellMetrics,
