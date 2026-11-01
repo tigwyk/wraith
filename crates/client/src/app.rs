@@ -11,7 +11,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, VK_F4, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
+    DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -19,7 +19,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
-use wraith_server::pane::{PaneCmd, PaneEvent, PaneHandle, PaneOptions, ScrollTo, spawn_pane};
+use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo, SpawnOpts};
+
+use crate::remote::{AttachError, RemotePane, kill_server};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
@@ -221,8 +223,15 @@ pub(crate) struct App {
     pub(crate) fonts: FontStack,
     pub(crate) atlas: GlyphAtlas,
     pub(crate) grid: GridRenderer,
-    pub(crate) pane: PaneHandle,
+    pub(crate) pane: RemotePane,
+    /// What to ask the server for when (re)attaching; kept in step with the grid size.
+    spawn: SpawnOpts,
+    pipe: String,
+    /// Set by the wake thread when the server's pipe closes (spec §8).
+    server_lost: Arc<AtomicBool>,
+    server_stopped: bool,
     pub(crate) events: Receiver<PaneEvent>,
+    forward_tx: crossbeam_channel::Sender<PaneEvent>,
     pub(crate) woken: Arc<AtomicBool>,
     pub(crate) config: Config,
     pub(crate) font_size: f32,
@@ -286,6 +295,12 @@ impl App {
     }
 
     fn send_key(&mut self, ev: KeyEvent) {
+        if self.server_stopped {
+            if ev.code == KeyCode::Enter && ev.action != wraith_proto::KeyAction::Release {
+                self.reconnect();
+            }
+            return;
+        }
         if self.exited.is_some() {
             if ev.code == KeyCode::Enter && ev.action != wraith_proto::KeyAction::Release {
                 self.exited = None;
@@ -343,16 +358,41 @@ impl App {
         }
     }
 
+    /// close_surface: end the shell (asking first if it's still running) and close the window.
     fn close(&mut self) {
-        if self.exited.is_none() {
-            let text = wide("A process is still running in this terminal. Close it?");
+        if self.exited.is_none() && !self.server_stopped {
+            let text = wide("A process is still running in this terminal. End it?");
             let r = unsafe { MessageBoxW(Some(self.win.hwnd()), PCWSTR(text.as_ptr()), windows::core::w!("Wraith"), MB_YESNO | MB_ICONQUESTION) };
             if r != IDYES {
                 return;
             }
         }
+        self.pane.kill();
         unsafe {
             let _ = DestroyWindow(self.win.hwnd());
+        }
+    }
+
+    /// Window X: close the window, keep the shell running in the server for the next launch.
+    fn detach_and_close(&mut self) {
+        self.pane.detach();
+        unsafe {
+            let _ = DestroyWindow(self.win.hwnd());
+        }
+    }
+
+    fn reconnect(&mut self) {
+        self.spawn.cols = self.grid_cells.0;
+        self.spawn.rows = self.grid_cells.1;
+        match attach_with_restart(self.win.hwnd(), &self.pipe, self.spawn.clone()) {
+            Some(pane) => {
+                start_forwarder(&pane, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
+                self.pane = pane;
+                self.server_stopped = false;
+                self.exited = None;
+                self.dirty = true;
+            }
+            None => self.quit = true,
         }
     }
 
@@ -435,7 +475,7 @@ impl App {
                 self.rebuild_fonts();
             }
             WinMsg::Close => {
-                self.close();
+                self.detach_and_close();
                 return Some(LRESULT(0));
             }
             WinMsg::Raw { msg, wparam, lparam } => match msg {
@@ -545,6 +585,10 @@ impl App {
         while let Ok(ev) = self.events.try_recv() {
             self.on_pane_event(ev);
         }
+        if self.server_lost.swap(false, Ordering::AcqRel) {
+            self.server_stopped = true;
+            self.dirty = true;
+        }
     }
 
     /// Frame work from inside a window message. While the user drags the window edge, Windows runs
@@ -614,7 +658,11 @@ impl App {
     fn render(&mut self) {
         self.dirty = false;
         crate::reload::render_start(self);
-        let exit_line = self.exited.map(|c| format!("[process exited {c}] Enter: restart · ctrl+shift+w: close"));
+        let exit_line = if self.server_stopped {
+            Some("[server stopped] Enter: reconnect".to_string())
+        } else {
+            self.exited.map(|c| format!("[process exited {c}] Enter: restart · ctrl+shift+w: close"))
+        };
         self.grid.set_overlay(crate::grid::Overlay::Exit, exit_line.as_deref(), &self.fonts);
         let t0 = Instant::now();
         let m = self.fonts.metrics();
@@ -649,6 +697,69 @@ pub fn command_from_args(args: &[String]) -> Option<String> {
     Some(rest.iter().map(quote).collect::<Vec<_>>().join(" "))
 }
 
+/// Forward a pane's events to the UI thread and wake its message loop (coalesced). When the server's
+/// pipe closes, flag `server_lost` and wake the loop once more.
+fn start_forwarder(
+    pane: &RemotePane,
+    tx: crossbeam_channel::Sender<PaneEvent>,
+    woken: Arc<AtomicBool>,
+    server_lost: Arc<AtomicBool>,
+    hwnd: HWND,
+) {
+    let events = pane.events.clone();
+    let hwnd = hwnd.0 as usize;
+    let wake = move || unsafe {
+        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP, WPARAM(0), LPARAM(0));
+    };
+    let _ = std::thread::Builder::new().name("wraith-wake".into()).spawn(move || {
+        while let Ok(ev) = events.recv() {
+            if tx.send(ev).is_err() {
+                return;
+            }
+            if !woken.swap(true, Ordering::AcqRel) {
+                wake();
+            }
+        }
+        server_lost.store(true, Ordering::Release);
+        wake();
+    });
+}
+
+/// Attach to the server, starting it if needed. On a protocol mismatch, offer to restart it.
+/// `None` means the user gave up (or was told why it can't work); the app should exit.
+fn attach_with_restart(hwnd: HWND, pipe: &str, spawn: SpawnOpts) -> Option<RemotePane> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wraith.exe"));
+    let ask = |text: &str, flags| unsafe {
+        let w = wide(text);
+        MessageBoxW(Some(hwnd), PCWSTR(w.as_ptr()), windows::core::w!("Wraith"), flags)
+    };
+    match RemotePane::attach(pipe, spawn.clone(), &exe) {
+        Ok(p) => Some(p),
+        Err(e @ AttachError::VersionMismatch { .. }) => {
+            let q = format!("{e}\n\nRestart the server? Shells running in it will close.");
+            if ask(&q, MB_YESNO | MB_ICONQUESTION) != IDYES {
+                return None;
+            }
+            if let Err(err) = kill_server(pipe) {
+                ask(&format!("Could not stop the old server: {err}"), MB_OK | MB_ICONERROR);
+                return None;
+            }
+            match RemotePane::attach(pipe, spawn, &exe) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    ask(&e.to_string(), MB_OK | MB_ICONERROR);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("attach: {e}");
+            ask(&e.to_string(), MB_OK | MB_ICONERROR);
+            None
+        }
+    }
+}
+
 pub fn run() -> Result<()> {
     let path = wraith_config::default_path();
     let (config, diags) = wraith_config::load(&path, &themes_dir());
@@ -665,11 +776,11 @@ pub fn run() -> Result<()> {
     let cells = grid_size(w, h, &m, pad.0, pad.1).unwrap_or((80, 24));
     let fg = config.foreground;
     let bg = config.background;
-    let pane = spawn_pane(PaneOptions {
+    let spawn = SpawnOpts {
         cmdline: command_from_args(&std::env::args().collect::<Vec<_>>())
             .or_else(|| config.command.clone())
             .unwrap_or_else(default_shell),
-        cwd: std::env::var_os("USERPROFILE").map(PathBuf::from),
+        cwd: std::env::var("USERPROFILE").ok(),
         env: vec![("TERM_PROGRAM".into(), "wraith".into())],
         cols: cells.0,
         rows: cells.1,
@@ -679,32 +790,14 @@ pub fn run() -> Result<()> {
         default_fg: (fg.0, fg.1, fg.2),
         default_bg: (bg.0, bg.1, bg.2),
         palette: palette(&config),
-    })
-    .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))?;
+    };
+    let pipe = wraith_ipc::pipe_name();
+    let Some(pane) = attach_with_restart(win.hwnd(), &pipe, spawn.clone()) else { return Ok(()) };
 
-    // Forward pane events to the UI thread and wake its message loop (coalesced).
     let (tx, rx) = crossbeam_channel::unbounded();
     let woken = Arc::new(AtomicBool::new(false));
-    {
-        let events = pane.events.clone();
-        let woken = woken.clone();
-        let hwnd = win.hwnd().0 as usize;
-        std::thread::Builder::new()
-            .name("wraith-wake".into())
-            .spawn(move || {
-                while let Ok(ev) = events.recv() {
-                    if tx.send(ev).is_err() {
-                        break;
-                    }
-                    if !woken.swap(true, Ordering::AcqRel) {
-                        unsafe {
-                            let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP, WPARAM(0), LPARAM(0));
-                        }
-                    }
-                }
-            })
-            .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))?;
-    }
+    let server_lost = Arc::new(AtomicBool::new(false));
+    start_forwarder(&pane, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
 
     let font_size = config.font_size;
     let matcher = KeybindMatcher::new(&config.keybinds);
@@ -716,6 +809,11 @@ pub fn run() -> Result<()> {
         atlas,
         grid,
         pane,
+        spawn,
+        pipe,
+        server_lost,
+        server_stopped: false,
+        forward_tx: tx,
         events: rx,
         woken,
         config,

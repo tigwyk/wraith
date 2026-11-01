@@ -17,6 +17,7 @@ wraith-proto.workspace = true
 wraith-config.workspace = true
 wraith-server.workspace = true
 crossbeam-channel.workspace = true
+wraith-ipc.workspace = true
 unicode-width = "0.2"
 notify = "8"
 tracing.workspace = true

@@ -6,6 +6,7 @@ use std::time::Duration;
 #[test]
 fn ui_thread_never_holds_pane_output() {
     let dir = std::env::temp_dir().join(format!("wraith-latency-{}", std::process::id()));
+    let pipe = format!(r"\\.\pipe\wraith-latency-test-{}", std::process::id());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // 300 frames of 40 rows, one write every ~15 ms, like a TUI redrawing per streamed token.
@@ -15,12 +16,14 @@ fn ui_thread_never_holds_pane_output() {
         .env("LOCALAPPDATA", &dir)
         .env("APPDATA", &dir) // no user config
         .env("WRAITH_LOG", "wraith_server::pane=debug")
+        .env("WRAITH_PIPE_NAME", &pipe) // never touch the user's real server
         .env_remove("NO_COLOR")
         .spawn()
         .unwrap();
     std::thread::sleep(Duration::from_secs(10));
     let _ = child.kill();
     let _ = child.wait();
+    let _ = wraith_client::remote::kill_server(&pipe); // the client started it; don't leave it running
     std::thread::sleep(Duration::from_millis(300));
 
     let logs = dir.join("wraith").join("logs");

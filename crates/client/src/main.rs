@@ -14,7 +14,22 @@ fn main() {
             }
         });
     }
-    let _log = init_logging();
+    if std::env::args().any(|a| a == "--server") {
+        let _log = init_logging("server");
+        let pipe = wraith_ipc::pipe_name();
+        tracing::info!("server starting on {pipe}");
+        match wraith_server::session::run_server(&pipe) {
+            Ok(()) => tracing::info!("server stopped"),
+            // Another launch won the race to start the server; that one serves everyone.
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(e) => {
+                tracing::error!("server: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let _log = init_logging("client");
     if let Err(e) = wraith_client::app::run() {
         tracing::error!("{e}");
         let _ = writeln!(std::io::stderr(), "wraith: {e}");
@@ -22,12 +37,12 @@ fn main() {
     }
 }
 
-/// Daily files `%LOCALAPPDATA%\wraith\logs\client.YYYY-MM-DD.log`, 7 kept; level from `WRAITH_LOG` (default info).
-fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+/// Daily files `%LOCALAPPDATA%\wraith\logs\<prefix>.YYYY-MM-DD.log`, 7 kept; level from `WRAITH_LOG` (default info).
+fn init_logging(prefix: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("wraith").join("logs");
     let appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("client")
+        .filename_prefix(prefix)
         .filename_suffix("log")
         .max_log_files(7)
         .build(&dir)

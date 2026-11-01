@@ -154,3 +154,13 @@ fn sddl_names_only_current_user() {
 fn client_checks_server_owner() {
     assert_eq!(process_owner_sid(std::process::id()).unwrap(), current_user_sid());
 }
+
+#[test]
+fn server_pid_is_the_serving_process() {
+    let name = unique();
+    let mut l = PipeListener::bind(&name).unwrap();
+    let t = thread::spawn(move || l.accept().unwrap());
+    let conn = connect(&name).unwrap();
+    assert_eq!(conn.server_pid().unwrap(), std::process::id());
+    drop(t.join().unwrap());
+}

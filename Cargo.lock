@@ -956,6 +956,7 @@ dependencies = [
  "unicode-width",
  "windows",
  "wraith-config",
+ "wraith-ipc",
  "wraith-proto",
  "wraith-server",
 ]

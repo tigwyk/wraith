@@ -156,6 +156,13 @@ pub struct PipeConn {
 }
 
 impl PipeConn {
+    /// Process id of the server end (used to stop a server that speaks another protocol version).
+    pub fn server_pid(&self) -> io::Result<u32> {
+        let mut pid = 0u32;
+        unsafe { GetNamedPipeServerProcessId(HANDLE(self.h.as_raw_handle()), &mut pid) }.map_err(win)?;
+        Ok(pid)
+    }
+
     pub fn split(self) -> (PipeReader, PipeWriter) {
         (PipeReader { h: self.h.clone() }, PipeWriter { h: self.h })
     }
