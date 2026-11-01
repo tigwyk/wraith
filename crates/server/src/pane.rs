@@ -297,7 +297,7 @@ impl Pane {
             }
             PaneCmd::SetSelection(range) => {
                 self.set_selection(range);
-                self.changed = true;
+                self.selection_changed();
             }
             PaneCmd::SelectWord { x, y } => {
                 if let Ok(g) = self.term.grid_ref(viewport(x, y))
@@ -305,7 +305,7 @@ impl Pane {
                 {
                     let _ = self.term.set_selection(Some(&sel));
                 }
-                self.changed = true;
+                self.selection_changed();
             }
             PaneCmd::SelectLine { y } => {
                 if let Ok(g) = self.term.grid_ref(viewport(0, y))
@@ -313,7 +313,7 @@ impl Pane {
                 {
                     let _ = self.term.set_selection(Some(&sel));
                 }
-                self.changed = true;
+                self.selection_changed();
             }
             PaneCmd::CopySelection => {
                 if let Ok(Some(bytes)) = self.term.format_selection_alloc(None, FormatOptions::new()) {
@@ -406,6 +406,12 @@ impl Pane {
             let _ = self.pty.write(&out);
             let _ = self.events.send(PaneEvent::InputWritten { waited: sent.elapsed() });
         }
+    }
+
+    /// Selection doesn't mark rows dirty in libghostty; resend the screen so SELECTED flags update.
+    fn selection_changed(&mut self) {
+        self.force_full = true;
+        self.changed = true;
     }
 
     fn scroll(&mut self, s: ScrollViewport) {

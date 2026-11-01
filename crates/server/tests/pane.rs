@@ -277,3 +277,18 @@ fn memory_flat_after_scrollback_full() {
     let growth = working_set().saturating_sub(at_50k);
     assert!(growth < 16 << 20, "grew {} MiB after scrollback was full", growth >> 20);
 }
+
+#[test]
+fn selection_marks_cells_in_frames() {
+    let h = spawn_pane(opts(&emit("print hello-sel"))).unwrap();
+    let mut m = Mirror::default();
+    pump(&h, &mut m, secs(5), |m, _| m.contains("hello-sel"));
+    let y = *m.rows.iter().find(|(_, r)| r.contains("hello-sel")).unwrap().0;
+    h.send(PaneCmd::SelectLine { y }).unwrap();
+    let (ok, _) = pump(&h, &mut m, secs(3), |m, _| {
+        m.last.as_ref().is_some_and(|f| {
+            f.dirty_rows.iter().any(|r| r.y == y && r.runs.iter().any(|s| s.flags.has(wraith_proto::StyleFlags::SELECTED) && s.text.contains("hello-sel")))
+        })
+    });
+    assert!(ok, "a frame must mark the selected row's cells");
+}

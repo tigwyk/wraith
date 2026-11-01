@@ -54,6 +54,8 @@ impl StyleFlags {
     pub const INVERSE: u16 = 128;
     pub const INVISIBLE: u16 = 256;
     pub const BLINK: u16 = 512;
+    /// Cell is inside the terminal's selection (computed by the pane).
+    pub const SELECTED: u16 = 1024;
 
     pub fn has(self, bit: u16) -> bool {
         self.0 & bit != 0

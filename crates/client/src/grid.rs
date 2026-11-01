@@ -20,6 +20,17 @@ use crate::atlas::{GlyphAtlas, GlyphKey};
 use crate::font::{CellMetrics, FaceId, FontStack};
 use crate::gpu::Gpu;
 
+/// One-line overlays drawn over the grid in inverted colors.
+#[derive(Clone, Copy)]
+pub enum Overlay {
+    /// Bottom-left: "[process exited N] ..."
+    Exit = 0,
+    /// Bottom-right: config diagnostics and similar notices.
+    Toast = 1,
+    /// Top-right: frame-time overlay.
+    Stats = 2,
+}
+
 pub struct DrawOpts {
     pub selection: Option<SelRange>,
     pub selection_color: (u8, u8, u8),
@@ -47,6 +58,8 @@ struct CachedRow {
     glyphs: Vec<CachedGlyph>,
     /// (first cell, cell count, flags, color) for underline/strike.
     decos: Vec<(u16, u16, u16, Rgb)>,
+    /// (first cell, cell count) inside the terminal selection.
+    sels: Vec<(u16, u16)>,
 }
 
 #[derive(Clone)]
@@ -75,6 +88,8 @@ pub struct GridRenderer {
     palette: Vec<Rgb>,
     cursor: Option<CursorState>,
     quads: Vec<Quad>,
+    /// (cells wide, shaped row) per `Overlay`.
+    overlays: [Option<(u16, CachedRow)>; 3],
 }
 
 fn compile(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
@@ -174,7 +189,24 @@ impl GridRenderer {
             palette: Vec::new(),
             cursor: None,
             quads: Vec::new(),
+            overlays: [None, None, None],
         })
+    }
+
+    pub fn cursor_pos(&self) -> Option<(u16, u16)> {
+        self.cursor.filter(|c| c.visible).map(|c| (c.x, c.y))
+    }
+
+    pub fn set_overlay(&mut self, kind: Overlay, text: Option<&str>, fonts: &FontStack) {
+        self.overlays[kind as usize] = text.map(|t| {
+            let width: u16 = t.chars().map(|c| c.width().unwrap_or(0) as u16).sum();
+            let glyphs = fonts
+                .shape(t, StyleFlags(0))
+                .into_iter()
+                .map(|g| CachedGlyph { cell: g.cell, face: g.face, glyph: g.glyph, color: (0, 0, 0), alpha: 1.0 })
+                .collect();
+            (width, CachedRow { glyphs, ..CachedRow::default() })
+        });
     }
 
     pub fn grid_size(&self) -> (u16, u16) {
@@ -208,6 +240,9 @@ impl GridRenderer {
                 }
                 if inverse || run.bg != Color::Default {
                     cached.bgs.push((cell, width, bg));
+                }
+                if run.flags.has(StyleFlags::SELECTED) {
+                    cached.sels.push((cell, width));
                 }
                 if run.flags.0 & (StyleFlags::UNDERLINE | StyleFlags::DOUBLE_UNDERLINE | StyleFlags::CURLY_UNDERLINE | StyleFlags::STRIKE) != 0 {
                     cached.decos.push((cell, width, run.flags.0, fg));
@@ -247,6 +282,12 @@ impl GridRenderer {
             for &(x, n, c) in &row.bgs {
                 let (px, py) = cell_xy(x, y);
                 solid(&mut q, px, py, cw * f32::from(n), ch, c);
+            }
+        }
+        for (y, row) in self.rows.iter().enumerate() {
+            for &(x, n) in &row.sels {
+                let (px, py) = cell_xy(x, y);
+                solid(&mut q, px, py, cw * f32::from(n), ch, opts.selection_color);
             }
         }
         if let Some(sel) = opts.selection {
@@ -307,6 +348,28 @@ impl GridRenderer {
                     solid(&mut q, px, py, t, ch, cursor_rgb);
                     solid(&mut q, px + cw - t, py, t, ch, cursor_rgb);
                 }
+            }
+        }
+        let rows = self.rows.len() as u16;
+        for (i, o) in self.overlays.iter().enumerate() {
+            let Some((width, row)) = o else { continue };
+            let x = if i == Overlay::Exit as usize { 0 } else { self.cols.saturating_sub(*width) };
+            let y = if i == Overlay::Stats as usize { 0 } else { rows.saturating_sub(1) };
+            let (px, py) = cell_xy(x, y as usize);
+            solid(&mut q, px, py, cw * f32::from(*width), ch, self.fg);
+            for g in &row.glyphs {
+                let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
+                if e.w == 0 {
+                    continue;
+                }
+                let gx = px + f32::from(g.cell) * cw;
+                q.push(Quad {
+                    pos: [gx + f32::from(e.bearing.0), py + m.baseline as f32 + f32::from(e.bearing.1)],
+                    size: [f32::from(e.w), f32::from(e.h)],
+                    uv: e.uv,
+                    color: f(self.bg, 1.0),
+                    kind: if e.color { 2 } else { 1 },
+                });
             }
         }
         self.submit(gpu, target, target_size, atlas, &q, opts.opacity);

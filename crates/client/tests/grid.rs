@@ -133,3 +133,13 @@ fn selection_spans_linear_reversed_and_rectangle() {
     let clipped = SelRange { start: (0, 0), end: (50, 0), rectangle: false };
     assert_eq!(selection_spans(clipped, 20), vec![(0, 0, 19)]);
 }
+
+#[test]
+fn selected_flag_draws_selection_color() {
+    let mut r = rig();
+    let sel = run("ab", Color::Default, Color::Default, StyleFlags::SELECTED);
+    r.grid.apply(&frame(true, vec![row(2, vec![sel])], None), &r.fonts);
+    r.draw(&opts());
+    let px = r.off.read_pixel(&r.gpu, r.fonts.metrics().w + 1, 2 * r.fonts.metrics().h + 1);
+    assert_eq!(px, [100, 100, 200, 255]);
+}

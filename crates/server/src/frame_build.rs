@@ -30,7 +30,10 @@ pub fn build_frame(snap: &Snapshot<'_, '_>, seq: u64, force_full: bool) -> Resul
                 }
                 let fg = cell.fg_color()?.map_or(Color::Default, |c| Color::Rgb(c.r, c.g, c.b));
                 let bg = cell.bg_color()?.map_or(Color::Default, |c| Color::Rgb(c.r, c.g, c.b));
-                let flags = if cell.has_styling()? { flags(&cell.style()?) } else { StyleFlags(0) };
+                let mut flags = if cell.has_styling()? { flags(&cell.style()?) } else { StyleFlags(0) };
+                if cell.is_selected()? {
+                    flags.0 |= StyleFlags::SELECTED;
+                }
                 if cell.graphemes_len()? == 0 {
                     text.clear();
                     text.push(' ');
