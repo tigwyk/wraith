@@ -92,3 +92,18 @@ fn atlas_survives_overflow() {
         assert!(e.uv[2] <= 1.0 && e.uv[3] <= 1.0);
     }
 }
+
+#[test]
+fn nerd_font_icons_fall_back_from_plain_cascadia() {
+    let nerd_installed = FontStack::new(&["CaskaydiaCove NFM".into()], 12.0, 96, &[]).unwrap().has_family("CaskaydiaCove NFM");
+    if !nerd_installed {
+        eprintln!("no Nerd Font installed; skipping");
+        return;
+    }
+    // U+F09B (GitHub icon) is not in Cascadia Mono; an earlier fallback family that isn't installed
+    // ("Symbols Nerd Font Mono" here) must not stop the search.
+    let g = stack("Cascadia Mono", 96).shape("\u{f09b}", StyleFlags(0));
+    assert_eq!(g.len(), 1);
+    assert_ne!(g[0].glyph, 0, "icon rendered as .notdef box");
+    assert!(g[0].face >= 4, "expected a fallback face, got {}", g[0].face);
+}

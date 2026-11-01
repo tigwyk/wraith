@@ -44,6 +44,18 @@ struct Face {
 // source); upgrade when users hit scripts these don't cover.
 const FALLBACKS: &[&str] = &[
     "Segoe UI Emoji",
+    // Nerd Font icons live in the Private Use Area; these must come before Segoe UI Symbol,
+    // which has unrelated PUA glyphs. Mono variants keep icons one cell wide.
+    "Symbols Nerd Font Mono",
+    "CaskaydiaCove NFM",
+    "CaskaydiaMono NFM",
+    "JetBrainsMono NFM",
+    "FiraCode Nerd Font Mono",
+    "Hack Nerd Font Mono",
+    "MesloLGM Nerd Font Mono",
+    "DejaVuSansM Nerd Font Mono",
+    "Symbols Nerd Font",
+    "CaskaydiaCove NF",
     "Segoe UI Symbol",
     "Cascadia Mono",
     "Consolas",
@@ -60,7 +72,8 @@ pub struct FontStack {
     collection: IDWriteFontCollection,
     /// 0 regular, 1 bold, 2 italic, 3 bold-italic; fallbacks appended on demand.
     faces: RefCell<Vec<Face>>,
-    fallback_ids: RefCell<Vec<(&'static str, Option<FaceId>)>>,
+    /// Per fallback family: unresolved (None), not installed (Some(None)), or its face.
+    fallback_ids: RefCell<Vec<(&'static str, Option<Option<FaceId>>)>>,
     primary: String,
     em_px: f32,
     metrics: CellMetrics,
@@ -202,19 +215,18 @@ impl FontStack {
 
     fn fallback_for(&self, c: char) -> Option<FaceId> {
         let mut ids = self.fallback_ids.borrow_mut();
-        for (name, id) in ids.iter_mut() {
-            let face = match id {
-                Some(id) => self.faces.borrow()[*id as usize].face.clone(),
-                None => {
-                    let face = find_face(&self.collection, name, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL)?;
-                    let mut faces = self.faces.borrow_mut();
-                    faces.push(Face { color: is_color(&face), face: face.clone() });
-                    *id = Some((faces.len() - 1) as FaceId);
-                    face
-                }
-            };
+        for (name, slot) in ids.iter_mut() {
+            // Resolve each family once; a family that isn't installed is skipped, not the end of the search.
+            let id = *slot.get_or_insert_with(|| {
+                let face = find_face(&self.collection, name, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL)?;
+                let mut faces = self.faces.borrow_mut();
+                faces.push(Face { color: is_color(&face), face });
+                Some((faces.len() - 1) as FaceId)
+            });
+            let Some(id) = id else { continue };
+            let face = self.faces.borrow()[id as usize].face.clone();
             if glyph_index(&face, c) != 0 {
-                return *id;
+                return Some(id);
             }
         }
         None
