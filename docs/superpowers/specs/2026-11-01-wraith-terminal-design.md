@@ -69,6 +69,7 @@ If no server is running, the client spawns `wraith.exe --server` detached. The s
 - **Main thread:** named-pipe accept loop (overlapped I/O), session model, routing, agent tracker.
 - **One thread per pane:** owns the ConPTY handles, `Terminal`, `RenderState`, `key::Encoder`, `mouse::Encoder`, and a sidecar `osc::Parser`. All of these are `!Send`, so they never leave this thread. Commands arrive on a channel (input, resize, scroll, selection, subscribe/unsubscribe, ready-credit).
 - **One reader thread per pane:** blocking `ReadFile` on the ConPTY output pipe, forwarding byte chunks to the pane thread.
+- **Bundled ConPTY.** Wraith ships `conpty.dll` + `OpenConsole.exe` from `Microsoft.Windows.Console.ConPTY` (pinned 1.25.260930003, MIT) next to `wraith.exe`. Every pane is created with `ConptyCreatePseudoConsole(..., flags = 8 /* passthrough */, ...)`, and resize/close go through the same DLL. Inbox ConPTY strips the Kitty graphics APC (M0 findings), so inline images need the bundled DLL. If the DLL is missing, panes fall back to inbox `CreatePseudoConsole` without inline images, and a warning is logged. The pane answers the DA1 query (`ESC[c`) that the bundled OpenConsole sends at startup.
 - Each pane's shell runs inside its own **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Closing the pane closes the job and kills every descendant. The job also gives the process list for agent detection.
 
 ### 3.4 IPC
@@ -269,5 +270,5 @@ Each milestone gets its own implementation plan.
 1. **libghostty-vt on Windows is untested** (docs.rs builds only for Linux, and the API is pre-1.0). M0 de-risks this. Pin the crate version and wrap it in the `server` crate so API breaks stay local.
 2. **Zig version:** the crate needs Zig 0.17.x. The dev machine has 0.16.0 and must upgrade.
 3. **No OSC 9/777/133 callbacks in libghostty-vt:** handled with a sidecar `osc::Parser` fed from the byte stream. It must handle OSC split across read chunks.
-4. **ConPTY quirks:** ConPTY re-renders and can reorder or rewrite sequences, and passthrough of some OSCs varies by Windows build. Verify in M0 that OSC 9/777/133 and Kitty graphics APC sequences survive ConPTY. If the OSCs don't, use hook/pipe signals only for those and document it. If the APC sequences don't, inline images need a ConPTY bypass (e.g. reading the child's raw output for WSL/SSH). That is a significant redesign, so decide it at the end of M0.
+4. **ConPTY quirks (resolved in M0):** inbox ConPTY passes OSC 9/777/133/7 but strips the Kitty APC. The bundled ConPTY in passthrough mode passes all of them, native and WSL (`docs/m0-findings.md`). Remaining risk: a future ConPTY package changes passthrough behaviour. Mitigation: the version is pinned, and the passthrough tests run in CI.
 5. **Unpackaged toasts** require an AUMID shortcut. Without the installer, first run creates it.
