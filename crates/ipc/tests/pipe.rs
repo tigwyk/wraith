@@ -164,3 +164,41 @@ fn server_pid_is_the_serving_process() {
     assert_eq!(conn.server_pid().unwrap(), std::process::id());
     drop(t.join().unwrap());
 }
+
+#[test]
+fn accept_survives_client_that_drops_before_accept() {
+    let name = unique();
+    let mut l = PipeListener::bind(&name).unwrap();
+    drop(connect(&name).unwrap()); // connects and leaves before the server accepts
+    let server = thread::spawn(move || {
+        // The dead connection must not end accepting; the next real client must be served.
+        let (mut r, mut w) = l.accept().unwrap().split();
+        let v: u32 = read_frame(&mut r).unwrap();
+        write_frame(&mut w, &(v + 1)).unwrap();
+    });
+    thread::sleep(Duration::from_millis(100));
+    let (mut r, mut w) = connect(&name).unwrap().split();
+    write_frame(&mut w, &41u32).unwrap();
+    assert_eq!(read_frame::<u32>(&mut r).unwrap(), 42);
+    server.join().unwrap();
+}
+
+#[test]
+fn elevated_and_normal_use_different_pipes() {
+    use wraith_ipc::security::{is_elevated, pipe_name_for, sddl_for};
+    let sid = current_user_sid();
+    assert_ne!(pipe_name_for(&sid, false), pipe_name_for(&sid, true));
+    assert!(pipe_name_for(&sid, true).ends_with("-admin"));
+    // An admin pipe carries a High mandatory label: medium-integrity processes can't open it.
+    assert!(sddl_for(true).contains("S:(ML;;NWNR;;;HI)"));
+    assert!(!sddl_for(false).contains("S:(ML"));
+    if std::env::var_os("WRAITH_PIPE_NAME").is_none() {
+        assert_eq!(pipe_name(), pipe_name_for(&sid, is_elevated()));
+    }
+}
+
+#[test]
+fn server_elevation_is_checked() {
+    use wraith_ipc::security::{is_elevated, process_is_elevated};
+    assert_eq!(process_is_elevated(std::process::id()).unwrap(), is_elevated());
+}

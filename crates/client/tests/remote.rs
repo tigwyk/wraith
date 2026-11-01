@@ -155,3 +155,11 @@ fn server_death_disconnects_events() {
         }
     }
 }
+
+#[test]
+fn shells_get_the_launching_windows_environment() {
+    // The server is long-lived; each new shell must see the env of the window that asked for it.
+    let env = wraith_client::app::spawn_env();
+    assert!(env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH")), "PATH missing");
+    assert!(env.iter().any(|(k, v)| k == "TERM_PROGRAM" && v == "wraith"));
+}

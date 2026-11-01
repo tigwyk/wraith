@@ -21,7 +21,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
 };
 use windows::Win32::System::Threading::CreateEventW;
@@ -29,7 +29,8 @@ use windows::core::{HSTRING, PCWSTR};
 
 /// `WRAITH_PIPE_NAME`, else `\\.\pipe\wraith-<user SID>`.
 pub fn pipe_name() -> String {
-    std::env::var("WRAITH_PIPE_NAME").unwrap_or_else(|_| format!(r"\\.\pipe\wraith-{}", security::current_user_sid()))
+    std::env::var("WRAITH_PIPE_NAME")
+        .unwrap_or_else(|_| security::pipe_name_for(&security::current_user_sid(), security::is_elevated()))
 }
 
 const BUF: u32 = 64 * 1024;
@@ -61,16 +62,27 @@ impl PipeListener {
     /// Wait for the next client. A fresh instance is ready before this returns, so no connect is missed.
     pub fn accept(&mut self) -> io::Result<PipeConn> {
         let h = HANDLE(self.next.as_raw_handle());
-        unsafe {
-            let event = Event::new()?;
-            let mut ov = OVERLAPPED { hEvent: event.0, ..Default::default() };
-            if let Err(e) = ConnectNamedPipe(h, Some(&mut ov)) {
-                if e.code() == ERROR_IO_PENDING.to_hresult() {
-                    let mut n = 0;
-                    GetOverlappedResult(h, &ov, &mut n, true).map_err(win)?;
-                } else if e.code() != ERROR_PIPE_CONNECTED.to_hresult() {
-                    return Err(win(e));
+        loop {
+            let r = unsafe {
+                let event = Event::new()?;
+                let mut ov = OVERLAPPED { hEvent: event.0, ..Default::default() };
+                match ConnectNamedPipe(h, Some(&mut ov)) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => {
+                        let mut n = 0;
+                        GetOverlappedResult(h, &ov, &mut n, true)
+                    }
+                    Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => Ok(()),
+                    Err(e) => Err(e),
                 }
+            };
+            match r {
+                Ok(()) => break,
+                // A client connected and left before we accepted it: reset this instance, wait again.
+                Err(e) if disconnected(&e) => unsafe {
+                    let _ = DisconnectNamedPipe(h);
+                },
+                Err(e) => return Err(win(e)),
             }
         }
         let fresh = create_instance(&self.name, false).map_err(win)?;
@@ -145,6 +157,10 @@ pub fn connect(name: &str) -> io::Result<PipeConn> {
     unsafe { GetNamedPipeServerProcessId(HANDLE(h.as_raw_handle()), &mut pid) }.map_err(win)?;
     if security::process_owner_sid(pid)? != security::current_user_sid() {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "pipe is served by another user's process"));
+    }
+    // Same user but different elevation would hand out admin shells to normal windows (or vice versa).
+    if security::process_is_elevated(pid)? != security::is_elevated() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "pipe is served at a different elevation"));
     }
     Ok(PipeConn { h: Arc::new(h) })
 }
@@ -234,5 +250,15 @@ impl Write for PipeWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl PipeWriter {
+    /// Server side: end the connection now, even while our reader is blocked in a read. The peer
+    /// sees EOF instead of a pipe that silently stopped talking.
+    pub fn disconnect(&self) {
+        unsafe {
+            let _ = DisconnectNamedPipe(HANDLE(self.h.as_raw_handle()));
+        }
     }
 }

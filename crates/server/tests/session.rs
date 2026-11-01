@@ -266,3 +266,54 @@ fn server_stop_kills_all_shells() {
     thread::sleep(Duration::from_millis(200));
     assert!(connect(&pipe).is_err(), "pipe still served after ServerStop");
 }
+
+#[test]
+fn reattach_skips_exited_panes() {
+    let pipe = server();
+    let mut a = Client::connect(&pipe, ClientKind::Gui);
+    let (dead, _) = a.attach("cmd.exe /c exit 3");
+    assert!(a.pump_until(dead, secs(5), |_, ev| matches!(ev, PaneEvent::Exited(3))));
+    a.send(ClientMsg::Detach { pane: dead });
+    thread::sleep(Duration::from_millis(200));
+    let mut b = Client::connect(&pipe, ClientKind::Gui);
+    let (pane, reattached) = b.attach("cmd.exe /k");
+    assert!(!reattached && pane != dead, "a new window must get a live shell, not the exited one");
+    assert!(b.list().iter().all(|p| p.id != dead), "exited panes are cleaned up once detached");
+}
+
+#[test]
+fn dropped_slow_client_sees_its_pipe_close() {
+    let pipe = server();
+    let (mut r, mut w) = connect(&pipe).unwrap().split();
+    write_frame(&mut w, &ClientMsg::Hello { proto_version: PROTO_VERSION, kind: ClientKind::Gui }).unwrap();
+    let _: ServerMsg = read_frame(&mut r).unwrap();
+    write_frame(&mut w, &ClientMsg::Attach { spawn: spawn("cmd.exe /k") }).unwrap();
+    let pane = loop {
+        if let ServerMsg::Attached { pane, .. } = read_frame(&mut r).unwrap() {
+            break pane;
+        }
+    };
+    // Never read: each Text produces an InputWritten event until the server gives up on us.
+    for _ in 0..20_000 {
+        if write_frame(&mut w, &ClientMsg::Cmd { pane, cmd: PaneCmd::Text(String::new()) }).is_err() {
+            break;
+        }
+    }
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    thread::spawn(move || {
+        while read_frame::<ServerMsg>(&mut r).is_ok() {}
+        let _ = tx.send(());
+    });
+    assert!(rx.recv_timeout(secs(10)).is_ok(), "a client the server dropped must see EOF, not hang forever");
+}
+
+#[test]
+fn wire_cannot_shut_down_or_reattach_a_pane() {
+    let pipe = server();
+    let mut a = Client::connect(&pipe, ClientKind::Gui);
+    let (pane, _) = a.attach("cmd.exe /k");
+    a.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Shutdown });
+    thread::sleep(Duration::from_millis(300));
+    a.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Text("echo still-alive\r".into()) });
+    assert!(a.pump_until(pane, secs(5), |t, _| t.contains("still-alive")), "Shutdown must not be accepted from the pipe");
+}

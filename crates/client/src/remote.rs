@@ -62,6 +62,8 @@ pub fn spawn_server(exe: &Path, pipe: &str) -> io::Result<()> {
         std::process::Command::new(exe)
             .arg("--server")
             .env("WRAITH_PIPE_NAME", pipe)
+            // Don't pin the launching window's directory for the server's whole life.
+            .current_dir(std::env::var_os("USERPROFILE").map_or_else(std::env::temp_dir, PathBuf::from))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

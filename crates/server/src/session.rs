@@ -63,7 +63,16 @@ fn serve(pipe: String, mut listener: PipeListener) -> io::Result<()> {
         let stopping = stopping.clone();
         thread::Builder::new().name("wraith-accept".into()).spawn(move || {
             let mut next: ClientId = 1;
-            while let Ok(conn) = listener.accept() {
+            loop {
+                let conn = match listener.accept() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // One bad connection must never stop the server from accepting the next.
+                        tracing::warn!("accept: {e}");
+                        thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
+                };
                 if stopping.load(Ordering::Acquire) {
                     return; // drops the listener: the pipe name is free again
                 }
@@ -80,6 +89,8 @@ fn serve(pipe: String, mut listener: PipeListener) -> io::Result<()> {
                             break;
                         }
                     }
+                    // Dropped (or gone): close the pipe so the client sees EOF instead of a silent server.
+                    w.disconnect();
                 });
                 let tx = tx.clone();
                 thread::spawn(move || {
@@ -143,7 +154,19 @@ impl Server {
         if self.clients.remove(&id).is_none() {
             return;
         }
-        for e in self.panes.values_mut().filter(|e| e.client == Some(id)) {
+        let owned: Vec<PaneId> = self.panes.iter().filter(|(_, e)| e.client == Some(id)).map(|(&p, _)| p).collect();
+        for pane in owned {
+            self.detach(pane);
+        }
+    }
+
+    /// Nobody is looking at `pane` any more. A live shell waits for the next window; an exited one
+    /// is removed, so no window ever reattaches to a dead shell.
+    fn detach(&mut self, pane: PaneId) {
+        let Some(e) = self.panes.get_mut(&pane) else { return };
+        if e.exited.is_some() {
+            self.panes.remove(&pane);
+        } else {
             e.client = None;
             e.detached_at = Some(Instant::now());
         }
@@ -174,15 +197,16 @@ impl Server {
         match m {
             ClientMsg::Hello { .. } | ClientMsg::ServerStop => {}
             ClientMsg::Attach { spawn } => self.attach(id, spawn),
+            // Shutdown and Reattach are the server's own lifecycle commands, never a client's.
+            ClientMsg::Cmd { cmd: PaneCmd::Shutdown | PaneCmd::Reattach, .. } => {}
             ClientMsg::Cmd { pane, cmd } => {
                 if let Some(e) = self.panes.get(&pane).filter(|e| owns(e)) {
                     let _ = e.handle.send(cmd);
                 }
             }
             ClientMsg::Detach { pane } => {
-                if let Some(e) = self.panes.get_mut(&pane).filter(|e| e.client == Some(id)) {
-                    e.client = None;
-                    e.detached_at = Some(Instant::now());
+                if self.panes.get(&pane).is_some_and(|e| e.client == Some(id)) {
+                    self.detach(pane);
                 }
             }
             ClientMsg::Kill { pane } => {
@@ -214,7 +238,7 @@ impl Server {
         let detached = self
             .panes
             .iter()
-            .filter(|(_, e)| e.client.is_none())
+            .filter(|(_, e)| e.client.is_none() && e.exited.is_none())
             .max_by_key(|(_, e)| e.detached_at)
             .map(|(&p, _)| p);
         if let Some(pane) = detached {
@@ -277,6 +301,10 @@ impl Server {
             PaneEvent::Title(t) => e.title = t.clone(),
             PaneEvent::Exited(code) => e.exited = Some(*code),
             _ => {}
+        }
+        if matches!(ev, PaneEvent::Exited(_)) && e.client.is_none() {
+            self.panes.remove(&pane); // exited while detached: nobody will ever look at it
+            return;
         }
         // With nobody attached, frames go unacked and the pane stops producing them by itself.
         if let Some(id) = e.client {

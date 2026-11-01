@@ -375,7 +375,12 @@ impl App {
 
     /// Window X: close the window, keep the shell running in the server for the next launch.
     fn detach_and_close(&mut self) {
-        self.pane.detach();
+        // An exited shell is never worth keeping: end it so the next launch starts fresh.
+        if self.exited.is_some() || self.server_stopped {
+            self.pane.kill();
+        } else {
+            self.pane.detach();
+        }
         unsafe {
             let _ = DestroyWindow(self.win.hwnd());
         }
@@ -567,6 +572,7 @@ impl App {
             }
             PaneEvent::Exited(code) => {
                 if self.config.close_on_exit {
+                    self.pane.kill();
                     unsafe {
                         let _ = DestroyWindow(self.win.hwnd());
                     }
@@ -781,7 +787,7 @@ pub fn run() -> Result<()> {
             .or_else(|| config.command.clone())
             .unwrap_or_else(default_shell),
         cwd: std::env::var("USERPROFILE").ok(),
-        env: vec![("TERM_PROGRAM".into(), "wraith".into())],
+        env: spawn_env(),
         cols: cells.0,
         rows: cells.1,
         cell_w_px: m.w,
@@ -845,4 +851,12 @@ pub fn run() -> Result<()> {
         move |signaled| app.borrow_mut().idle(signaled),
     );
     Ok(())
+}
+
+/// The environment for a new shell: this window's own (the long-lived server's would be stale,
+/// e.g. missing PATH entries added since it started), plus TERM_PROGRAM.
+pub fn spawn_env() -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "TERM_PROGRAM").collect();
+    env.push(("TERM_PROGRAM".into(), "wraith".into()));
+    env
 }
