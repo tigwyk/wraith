@@ -17,6 +17,7 @@ wraith-proto.workspace = true
 wraith-config.workspace = true
 wraith-server.workspace = true
 crossbeam-channel.workspace = true
+unicode-width = "0.2"
 
 [dependencies.windows]
 version = "0.62"
@@ -40,4 +41,5 @@ features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    "Win32_Graphics_Direct2D_Common",
 ]
