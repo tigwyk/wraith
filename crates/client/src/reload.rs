@@ -46,10 +46,14 @@ pub fn format_diagnostics(d: &[Diagnostic]) -> Option<String> {
 /// Load `path`; bad lines keep their defaults and come back as one toast line.
 pub fn reload_file(path: &Path, themes: &Path) -> (Config, Option<String>) {
     let (c, d) = wraith_config::load(path, themes);
-    for diag in &d {
+    log_and_format(c, &d)
+}
+
+fn log_and_format(c: Config, d: &[Diagnostic]) -> (Config, Option<String>) {
+    for diag in d {
         tracing::warn!(file = %diag.file.display(), line = diag.line, "{}", diag.message);
     }
-    (c, format_diagnostics(&d))
+    (c, format_diagnostics(d))
 }
 
 #[derive(Default)]
@@ -163,9 +167,15 @@ pub(crate) fn presented(app: &mut App) {
 }
 
 fn reload(app: &mut App) {
-    let (new, msg) = reload_file(&app.rs.path, &themes_dir());
-    apply_config(app, new);
-    toast(app, "config", msg);
+    match wraith_config::load_checked(&app.rs.path, &themes_dir()) {
+        Ok((new, d)) => {
+            let (new, msg) = log_and_format(new, &d);
+            apply_config(app, new);
+            toast(app, "config", msg);
+        }
+        // Unreadable (e.g. caught mid-save): keep running with the current config.
+        Err(d) => toast(app, "config", format_diagnostics(&[d])),
+    }
 }
 
 /// Apply a freshly loaded config to the running app.

@@ -13,10 +13,11 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClientRect, IDC_IBEAM, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-    PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, WM_CLOSE,
+    PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN,
     WM_DESTROY, WM_DPICHANGED, WM_QUIT, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
     WS_OVERLAPPEDWINDOW, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_PROCESSKEY;
 use windows::core::{PCWSTR, Result, w};
 
 /// Messages the app cares about; everything else arrives as `Raw` (keys, mouse, IME, focus).
@@ -123,8 +124,14 @@ pub fn run_message_loop(
                 HANDLER.with(|h| h.borrow_mut().take());
                 return;
             }
-            // No TranslateMessage: input::KeyTranslator owns key→text (and dead-key state); IME uses WM_IME_*.
-            unsafe { DispatchMessageW(&msg) };
+            // TranslateMessage only for IME keys (it drives ImmTranslateMessage -> WM_IME_COMPOSITION);
+            // everything else goes to input::KeyTranslator, which owns key->text and dead-key state.
+            unsafe {
+                if msg.message == WM_KEYDOWN && msg.wParam.0 == usize::from(VK_PROCESSKEY.0) {
+                    let _ = TranslateMessage(&msg);
+                }
+                DispatchMessageW(&msg);
+            }
         }
         let (ctl, sleep_ms) = idle();
         if let LoopControl::Exit = ctl {

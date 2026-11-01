@@ -22,7 +22,7 @@ fn defaults() {
     let (c, _) = parse_str("", p(), &themes());
     assert_eq!(c.font_family, vec!["Cascadia Mono"]);
     assert_eq!(c.font_size, 12.0);
-    assert_eq!(c.scrollback_limit, 10_000);
+    assert_eq!(c.scrollback_limit, 10_000_000);
     assert_eq!(c.cursor_style, CursorStyle::Block);
     assert_eq!(c.palette[1], Rgb(0xcd, 0, 0)); // xterm default red
     assert_eq!(c.palette[255], Rgb(0xee, 0xee, 0xee));
@@ -113,4 +113,61 @@ fn every_bundled_theme_parses() {
         n += 1;
     }
     assert!(n > 800, "only {n} themes");
+}
+
+#[test]
+fn scrollback_limit_is_bytes_like_ghostty() {
+    let (c, d) = parse_str("scrollback-limit = 10000000
+", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(c.scrollback_limit, 10_000_000);
+    // ~12 bytes per cell: 80 columns -> ~10k lines; never zero for tiny limits.
+    assert_eq!(c.scrollback_lines(80), 10_416);
+    let (c, _) = parse_str("scrollback-limit = 0
+", p(), &themes());
+    assert_eq!(c.scrollback_lines(80), 0);
+}
+
+#[test]
+fn scrollback_limit_is_capped() {
+    let (c, d) = parse_str("scrollback-limit = 1000000000000
+", p(), &themes());
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(c.scrollback_limit, 1 << 30);
+}
+
+fn tmp(name: &str, bytes: &[u8]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("wraith-enc-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("config");
+    std::fs::write(&f, bytes).unwrap();
+    f
+}
+
+#[test]
+fn utf16_config_from_notepad_parses() {
+    let mut bytes = vec![0xFF, 0xFE];
+    for u in "font-size = 15
+".encode_utf16() {
+        bytes.extend(u.to_le_bytes());
+    }
+    let (c, d) = load(&tmp("utf16", &bytes), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(c.font_size, 15.0);
+}
+
+#[test]
+fn non_utf8_config_keeps_valid_lines_and_reports() {
+    // cp1252 "Cafe" with e-acute (0xE9) in a font name: not UTF-8.
+    let (c, d) = load(&tmp("cp1252", b"font-size = 15\nfont-family = Caf\xe9\n"), &themes());
+    assert_eq!(c.font_size, 15.0);
+    assert!(d.iter().any(|d| d.message.contains("UTF-8")), "{d:?}");
+}
+
+#[test]
+fn unreadable_config_is_an_error_not_defaults() {
+    let dir = std::env::temp_dir().join(format!("wraith-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(wraith_config::load_checked(&dir, &themes()).is_err(), "a directory is not readable as a file");
+    assert!(wraith_config::load_checked(&dir.join("missing"), &themes()).is_ok(), "missing file = defaults");
 }

@@ -125,3 +125,10 @@ fn arrows_and_function_keys_by_scancode() {
     assert_eq!(scancode_to_code(0x02, false), KeyCode::Digit1);
     assert_eq!(scancode_to_code(0x0B, false), KeyCode::Digit0);
 }
+
+#[test]
+fn ime_process_key_is_not_sent_to_the_pane() {
+    let us = Layout::load("00000409");
+    // VK_PROCESSKEY: the IME owns this keystroke; it must not become a KeyEvent.
+    assert!(KeyTranslator::default().on_keydown(0xE5, 0x1E, false, false, &state(&[]), us.hkl).is_none());
+}

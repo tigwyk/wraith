@@ -125,3 +125,15 @@ fn click_without_drag_clears_selection() {
     s.press((2, 0), Instant::now(), false);
     assert_eq!(s.release(), None);
 }
+
+#[test]
+fn wheel_accumulates_partial_touchpad_deltas() {
+    use wraith_client::app::wheel_notches;
+    let mut acc = 0;
+    assert_eq!(wheel_notches(&mut acc, 120), 1);
+    assert_eq!(wheel_notches(&mut acc, -240), -2);
+    // Precision touchpads send small deltas; 4 x 30 = one notch.
+    assert_eq!((0..3).map(|_| wheel_notches(&mut acc, 30)).sum::<i32>(), 0);
+    assert_eq!(wheel_notches(&mut acc, 30), 1);
+    assert_eq!(acc, 0);
+}

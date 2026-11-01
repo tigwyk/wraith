@@ -59,7 +59,14 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
         "cursor-style-blink" => set!(cursor_style_blink, boolean),
         "window-padding-x" => set!(window_padding_x, |v: &str| v.parse().map_err(|_| bad(v))),
         "window-padding-y" => set!(window_padding_y, |v: &str| v.parse().map_err(|_| bad(v))),
-        "scrollback-limit" => set!(scrollback_limit, |v: &str| v.parse().map_err(|_| bad(v))),
+        "scrollback-limit" => {
+            // Bytes, like Ghostty. Capped so a typo cannot make memory unbounded (spec 6.3).
+            let n: u64 = if value.is_empty() { d.scrollback_limit as u64 } else { value.parse().map_err(|_| bad(value))? };
+            c.scrollback_limit = n.min(crate::MAX_SCROLLBACK_BYTES as u64) as usize;
+            if n > crate::MAX_SCROLLBACK_BYTES as u64 {
+                return Err(format!("scrollback-limit {n} exceeds 1 GiB; using 1 GiB"));
+            }
+        }
         "copy-on-select" => set!(copy_on_select, boolean),
         "right-click-action" => set!(right_click_action, |v| match v {
             "paste" => Ok(RightClick::Paste),

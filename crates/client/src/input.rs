@@ -6,7 +6,7 @@ use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, ImmSetCompositionWindow,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HKL, ToUnicodeEx, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LWIN, VK_MENU, VK_NUMLOCK, VK_RMENU, VK_RWIN, VK_SHIFT,
+    HKL, ToUnicodeEx, VK_CAPITAL, VK_PROCESSKEY, VK_CONTROL, VK_LCONTROL, VK_LWIN, VK_MENU, VK_NUMLOCK, VK_RMENU, VK_RWIN, VK_SHIFT,
 };
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
 
@@ -57,6 +57,9 @@ fn to_unicode(vk: u16, scancode: u16, state: &[u8; 256], hkl: HKL) -> Result<Opt
 impl KeyTranslator {
     /// `None` for a dead key (its text arrives with the next key) or a key that produces nothing to send.
     pub fn on_keydown(&mut self, vk: u16, scancode: u16, extended: bool, repeat: bool, state: &[u8; 256], hkl: HKL) -> Option<KeyEvent> {
+        if vk == VK_PROCESSKEY.0 {
+            return None; // The IME owns it; text arrives as WM_IME_COMPOSITION.
+        }
         let code = scancode_to_code(scancode, extended);
         let mut m = mods(state);
         // Windows reports AltGr as LCtrl + RAlt.

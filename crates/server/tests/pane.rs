@@ -292,3 +292,14 @@ fn selection_marks_cells_in_frames() {
     });
     assert!(ok, "a frame must mark the selected row's cells");
 }
+
+#[test]
+fn redraw_forces_full_frame_without_size_change() {
+    let h = spawn_pane(opts(&emit("print x"))).unwrap();
+    let mut m = Mirror::default();
+    pump(&h, &mut m, secs(5), |m, _| m.contains("x"));
+    let before = m.last.as_ref().unwrap().seq;
+    h.send(PaneCmd::Redraw).unwrap();
+    let (ok, _) = pump(&h, &mut m, secs(3), |m, _| m.last.as_ref().is_some_and(|f| f.seq > before && f.full));
+    assert!(ok, "font changes must get every row re-sent");
+}

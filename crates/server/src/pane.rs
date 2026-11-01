@@ -58,6 +58,8 @@ pub enum PaneCmd {
     SelectLine { y: u16 },
     CopySelection,
     SetColors { fg: (u8, u8, u8), bg: (u8, u8, u8), palette: Vec<(u8, u8, u8)> },
+    /// Resend every row (e.g. the client's fonts changed but the cell size did not).
+    Redraw,
     Restart,
     Shutdown,
 }
@@ -322,6 +324,10 @@ impl Pane {
             }
             PaneCmd::SetColors { fg, bg, palette } => {
                 self.set_colors(fg, bg, &palette);
+                self.force_full = true;
+                self.changed = true;
+            }
+            PaneCmd::Redraw => {
                 self.force_full = true;
                 self.changed = true;
             }

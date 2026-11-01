@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, VK_F4, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
@@ -37,6 +38,14 @@ pub fn grid_size(client_w: u32, client_h: u32, m: &CellMetrics, pad_x: u16, pad_
     let cols = client_w.saturating_sub(2 * u32::from(pad_x)) / m.w.max(1);
     let rows = client_h.saturating_sub(2 * u32::from(pad_y)) / m.h.max(1);
     Some((cols.clamp(2, u32::from(u16::MAX)) as u16, rows.clamp(1, u32::from(u16::MAX)) as u16))
+}
+
+/// Whole wheel notches in `acc + delta`; the remainder carries over (precision touchpads send small deltas).
+pub fn wheel_notches(acc: &mut i32, delta: i16) -> i32 {
+    *acc += i32::from(delta);
+    let n = *acc / 120;
+    *acc -= n * 120;
+    n
 }
 
 pub fn pixel_to_cell(x: f32, y: f32, origin: (f32, f32), m: &CellMetrics) -> (u16, u16) {
@@ -232,6 +241,7 @@ pub(crate) struct App {
     blink_on: bool,
     next_blink: Instant,
     mouse_down: bool,
+    wheel_acc: i32,
     pub(crate) quit: bool,
 }
 
@@ -255,6 +265,8 @@ impl App {
             self.atlas = a;
         }
         self.resize(self.size_px.0, self.size_px.1, true);
+        // Cached rows hold glyph ids from the old fonts; get every row re-sent even if the cell size is unchanged.
+        let _ = self.pane.send(PaneCmd::Redraw);
     }
 
     fn resize(&mut self, w: u32, h: u32, force: bool) {
@@ -349,11 +361,18 @@ impl App {
         let o = self.origin();
         let m = self.fonts.metrics();
         if msg == WM_MOUSEWHEEL {
-            let delta = ((wparam.0 >> 16) & 0xffff) as i16;
-            let button = if delta > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
-            // Wheel coordinates are screen-relative; position only matters for mouse reports.
-            let ev = MouseEvent { x_px: 0.0, y_px: 0.0, button: Some(button), action: MouseAction::Press, mods: Mods(0) };
-            let _ = self.pane.send(PaneCmd::Mouse(ev));
+            let n = wheel_notches(&mut self.wheel_acc, ((wparam.0 >> 16) & 0xffff) as i16);
+            // Wheel coordinates are screen-relative.
+            let mut pt = POINT { x: x as i32, y: y as i32 };
+            unsafe {
+                let _ = ScreenToClient(self.win.hwnd(), &mut pt);
+            }
+            let button = if n > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+            for _ in 0..n.unsigned_abs() {
+                let (x_px, y_px) = (pt.x as f32 - o.0, pt.y as f32 - o.1);
+                let ev = MouseEvent { x_px, y_px, button: Some(button), action: MouseAction::Press, mods: Mods(0) };
+                let _ = self.pane.send(PaneCmd::Mouse(ev));
+            }
             return;
         }
         if self.mouse_tracking && !shift {
@@ -595,7 +614,7 @@ pub fn run() -> Result<()> {
         rows: cells.1,
         cell_w_px: m.w,
         cell_h_px: m.h,
-        scrollback_lines: config.scrollback_limit,
+        scrollback_lines: config.scrollback_lines(cells.0),
         default_fg: (fg.0, fg.1, fg.2),
         default_bg: (bg.0, bg.1, bg.2),
         palette: palette(&config),
@@ -655,6 +674,7 @@ pub fn run() -> Result<()> {
         blink_on: true,
         next_blink: Instant::now() + Duration::from_millis(600),
         mouse_down: false,
+        wheel_acc: 0,
         quit: false,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);

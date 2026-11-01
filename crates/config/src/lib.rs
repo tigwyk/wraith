@@ -44,7 +44,7 @@ pub struct Config {
     pub cursor_style_blink: bool,
     pub window_padding_x: u16,
     pub window_padding_y: u16,
-    /// Lines (libghostty-vt counts scrollback in lines).
+    /// Bytes, as in Ghostty. See `scrollback_lines` for what the terminal is given.
     pub scrollback_limit: usize,
     pub copy_on_select: bool,
     pub right_click_action: RightClick,
@@ -73,13 +73,26 @@ impl Default for Config {
             cursor_style_blink: true,
             window_padding_x: 2,
             window_padding_y: 2,
-            scrollback_limit: 10_000,
+            scrollback_limit: 10_000_000,
             copy_on_select: false,
             right_click_action: RightClick::Paste,
             command: None,
             close_on_exit: false,
             keybinds: keybind::defaults(),
         }
+    }
+}
+
+/// Upper bound for `scrollback-limit`.
+pub const MAX_SCROLLBACK_BYTES: usize = 1 << 30;
+
+/// Rough memory per scrollback cell, used to turn Ghostty's byte limit into libghostty-vt's line limit.
+const BYTES_PER_CELL: usize = 12;
+
+impl Config {
+    /// Scrollback lines for a terminal `cols` wide (libghostty-vt counts lines; the Ghostty key counts bytes).
+    pub fn scrollback_lines(&self, cols: u16) -> usize {
+        self.scrollback_limit / (usize::from(cols.max(1)) * BYTES_PER_CELL)
     }
 }
 
@@ -97,9 +110,47 @@ pub fn default_path() -> PathBuf {
 }
 
 /// Load `path` (a missing file means defaults, no diagnostics), following `config-file` includes.
+/// An unreadable file gives defaults plus a diagnostic.
 pub fn load(path: &Path, themes_dir: &Path) -> (Config, Vec<Diagnostic>) {
-    let src = std::fs::read_to_string(path).unwrap_or_default();
-    parse_str(&src, path, themes_dir)
+    load_checked(path, themes_dir).unwrap_or_else(|d| (Config::default(), vec![d]))
+}
+
+/// Like `load`, but an existing file that cannot be read is an `Err`, so a hot reload can keep the
+/// running config instead of silently falling back to defaults.
+pub fn load_checked(path: &Path, themes_dir: &Path) -> Result<(Config, Vec<Diagnostic>), Diagnostic> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Config::default(), Vec::new())),
+        Err(e) => return Err(Diagnostic { file: path.into(), line: 0, message: format!("cannot read config: {e}") }),
+    };
+    let (src, warning) = decode(&bytes);
+    let (c, mut d) = parse_str(&src, path, themes_dir);
+    if let Some((line, message)) = warning {
+        d.insert(0, Diagnostic { file: path.into(), line, message });
+    }
+    Ok((c, d))
+}
+
+/// UTF-8, or UTF-16 with a BOM (Notepad's "Unicode"). Invalid UTF-8 is decoded lossily with a warning.
+fn decode(bytes: &[u8]) -> (String, Option<(usize, String)>) {
+    let utf16 = |be: bool| {
+        let units = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| if be { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) });
+        char::decode_utf16(units).map(|r| r.unwrap_or('\u{fffd}')).collect()
+    };
+    match bytes {
+        [0xFF, 0xFE, ..] => (utf16(false), None),
+        [0xFE, 0xFF, ..] => (utf16(true), None),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => (s.to_string(), None),
+            Err(e) => {
+                let line = bytes[..e.valid_up_to()].iter().filter(|&&b| b == b'\n').count() + 1;
+                let msg = "file is not valid UTF-8 (save it as UTF-8); invalid bytes replaced".to_string();
+                (String::from_utf8_lossy(bytes).into_owned(), Some((line, msg)))
+            }
+        },
+    }
 }
 
 /// Parse `src` as if read from `file`. Bad lines keep their defaults and produce a diagnostic.
