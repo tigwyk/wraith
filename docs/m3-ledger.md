@@ -18,3 +18,11 @@ Task 3: Ruling: ModelCmd lives in wraith_proto::model; SpawnOpts gained image_st
 Task 3: Ruling: a window whose workspace is removed (last tab closed) needs a re-attach; Model drops the workspace and creates a fresh default (test pins this). Session (Task 4) must handle 'my workspace vanished' by attaching the most recent detached one.
 Task 3: Ruling: from_json also drops panes not referenced by any tab and resets attached/exit; any dangling reference rejects the whole file.
 Task 3: complete (commits 4195838..f1584d1, tests: rtk proxy cargo test --workspace → exit 0; model 17/17)
+Task 4: Ruling: run_server uses default_layout_path() (WRAITH_LAYOUT_PATH or %LOCALAPPDATA%); spawn_server_thread has NO persistence and spawn_server_thread_at(pipe, Option<PathBuf>) takes an explicit path — tests run in parallel threads, a process-global env var would race — cost if wrong: none.
+Task 4: Ruling: PaneEvent::ImageUpload/ImageDelete variants added now (Task 12 fills them) so routing compiles; Reattach now also re-sends MouseTracking so a window that subscribes later learns the mode.
+Task 4: Ruling: a window whose workspace disappears (last tab closed) is moved server-side to the most recent detached or a new empty workspace (WindowAttached + Snapshot) — pinned by closing_the_last_tab_moves_the_window_to_a_workspace.
+Task 4: Ruling: model commands from a GUI window are limited to its own workspace (+ NewWorkspace anywhere; Close/Rename/MoveTab-to only on workspaces nobody else holds); CLI unrestricted.
+Task 4: Ruling: tests wait for the effect of a model command with a List barrier (snapshots arrive in order before the Panes reply) instead of 'first newer snapshot'.
+Task 4: Note: wraith-client and wraith-cli do not compile against protocol v2 until Task 6; Tasks 4-5 run -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc.
+Task 4: Note: pane tests for cwd added to server/tests/pane.rs (cwd_from_uri_converts_drive_and_posix_paths, osc7_sends_cwd_event).
+Task 4: complete (commits 7f485c3..29e9db4, tests: rtk proxy cargo test -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc → exit 0; session 22/22, pane 19/19, model 17/17)
