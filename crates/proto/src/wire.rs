@@ -4,12 +4,13 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::pane::{PaneCmd, PaneEvent, SpawnOpts};
+use crate::model::{ModelCmd, ModelSnapshot, WorkspaceId};
+use crate::pane::{PaneCmd, PaneEvent};
 
 pub type PaneId = u64;
 
 /// Bumped on any incompatible change to these types.
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 
 /// Largest body a peer may announce; anything bigger drops the connection before allocating.
 pub const MAX_FRAME: u32 = 64 << 20;
@@ -23,9 +24,14 @@ pub enum ClientKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
     Hello { proto_version: u32, kind: ClientKind },
-    Attach { spawn: SpawnOpts },
+    /// Show a workspace in this window. `None`: the most recently detached one, else a new empty one.
+    AttachWindow { workspace: Option<WorkspaceId> },
+    /// Leave the workspace running in the server (window closed).
+    DetachWindow,
+    Model(ModelCmd),
+    /// The panes this window draws now. Frames and images flow only for these.
+    Subscribe { panes: Vec<PaneId> },
     Cmd { pane: PaneId, cmd: PaneCmd },
-    Detach { pane: PaneId },
     Kill { pane: PaneId },
     List,
     ServerStop,
@@ -35,7 +41,11 @@ pub enum ClientMsg {
 pub enum ServerMsg {
     Welcome { server_version: String },
     VersionMismatch { server_version: String },
-    Attached { pane: PaneId, reattached: bool },
+    WindowAttached { workspace: WorkspaceId },
+    /// The whole model, after every change.
+    Snapshot(ModelSnapshot),
+    /// Another window took this window's workspace.
+    WorkspaceTaken { workspace: WorkspaceId },
     Event { pane: PaneId, ev: PaneEvent },
     Panes(Vec<PaneInfo>),
     Error(String),
@@ -48,6 +58,7 @@ pub struct PaneInfo {
     pub attached: bool,
     pub exited: Option<u32>,
     pub shell_pid: u32,
+    pub workspace: WorkspaceId,
 }
 
 pub fn write_frame<T: Serialize>(w: &mut impl Write, msg: &T) -> io::Result<()> {

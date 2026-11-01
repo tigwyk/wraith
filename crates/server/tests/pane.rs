@@ -325,3 +325,31 @@ fn reattach_resends_full_frame_without_ack() {
     let again = again.expect("reattach must produce a frame even though the last one was never acked");
     assert!(again.full && again.seq > first.seq);
 }
+
+#[test]
+fn cwd_from_uri_converts_drive_and_posix_paths() {
+    use wraith_server::pane::cwd_from_uri;
+    assert_eq!(cwd_from_uri("file://host/C:/Users/Lee").as_deref(), Some(r"C:\Users\Lee"));
+    assert_eq!(cwd_from_uri("file:///C:/x%20y").as_deref(), Some(r"C:\x y"));
+    assert_eq!(cwd_from_uri("file://wsl/home/lee/app").as_deref(), Some("/home/lee/app"));
+    assert_eq!(cwd_from_uri("file://host/C:/bad%zz").as_deref(), Some(r"C:\bad%zz"));
+    assert_eq!(cwd_from_uri("http://x/y"), None);
+    assert_eq!(cwd_from_uri("file://nohostpath"), None);
+}
+
+#[test]
+fn osc7_sends_cwd_event() {
+    let h = spawn_pane(opts(&emit("osc7"))).unwrap();
+    let deadline = Instant::now() + secs(5);
+    let mut got = None;
+    while got.is_none() && Instant::now() < deadline {
+        match h.events.recv_timeout(Duration::from_millis(100)) {
+            Ok(PaneEvent::Cwd(c)) => got = Some(c),
+            Ok(PaneEvent::Frame(f)) => {
+                let _ = h.send(PaneCmd::Ready(f.seq));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(got.as_deref(), Some(r"C:\tmp"));
+}

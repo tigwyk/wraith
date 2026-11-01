@@ -49,6 +49,11 @@ pub enum PaneEvent {
     Copied(String),
     PasteNeedsConfirm(String),
     Exited(u32),
+    /// The shell's working directory changed (OSC 7), as a path for its own OS.
+    Cwd(String),
+    /// Pixels of an image a pane displays (Kitty graphics), sent once per image per view.
+    ImageUpload { image_id: u32, width: u32, height: u32, rgba: Vec<u8> },
+    ImageDelete { image_id: u32 },
     MouseTracking(bool),
     /// How long an input command waited between being queued and its bytes reaching the PTY.
     InputWritten { waited: Duration },

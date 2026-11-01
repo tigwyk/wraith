@@ -138,6 +138,8 @@ struct Pane {
     exited: bool,
     mouse_tracking: bool,
     size: (u16, u16, u32, u32),
+    /// The last working directory reported to the session (OSC 7).
+    pwd: String,
 }
 
 fn io_err(e: impl std::fmt::Display) -> io::Error {
@@ -177,6 +179,7 @@ impl Pane {
             force_full: true,
             exited: false,
             mouse_tracking: false,
+            pwd: String::new(),
         };
         let (fg, bg, pal) = (pane.opts.default_fg, pane.opts.default_bg, pane.opts.palette.clone());
         pane.set_colors(fg, bg, &pal);
@@ -300,6 +303,8 @@ impl Pane {
                 self.outstanding = false;
                 self.force_full = true;
                 self.changed = true;
+                // A new view starts with mouse tracking off; tell it what is true now.
+                let _ = self.events.send(PaneEvent::MouseTracking(self.mouse_tracking));
             }
             PaneCmd::Restart => self.restart(),
             PaneCmd::Shutdown => return false,
@@ -451,6 +456,14 @@ impl Pane {
             let _ = self.events.send(PaneEvent::Clipboard(c));
         }
         drop(ob);
+        if let Ok(p) = self.term.pwd()
+            && p != self.pwd
+        {
+            self.pwd = p.to_string();
+            if let Some(dir) = cwd_from_uri(p) {
+                let _ = self.events.send(PaneEvent::Cwd(dir));
+            }
+        }
         let tracking = self.term.is_mouse_tracking().unwrap_or(false);
         if tracking != self.mouse_tracking {
             self.mouse_tracking = tracking;
@@ -476,6 +489,39 @@ impl Pane {
         tracing::debug!(seq = self.seq, rows = frame.dirty_rows.len(), held_us, "frame sent");
         let _ = self.events.send(PaneEvent::Frame(frame));
     }
+}
+
+/// The directory in an OSC 7 `file://host/path` URI, as a path for the shell's OS: a Windows drive path
+/// becomes `C:\x`, anything else stays POSIX (a WSL or Git Bash shell). Percent escapes are decoded.
+pub fn cwd_from_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let path = &rest[rest.find('/')?..];
+    let raw = path.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let escaped = (raw[i] == b'%')
+            .then(|| raw.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match escaped {
+            Some(v) => {
+                bytes.push(v);
+                i += 3;
+            }
+            None => {
+                bytes.push(raw[i]);
+                i += 1;
+            }
+        }
+    }
+    let path = String::from_utf8(bytes).ok()?;
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        return Some(path[1..].replace('/', "\\"));
+    }
+    Some(path)
 }
 
 fn viewport(x: u16, y: u16) -> Point {

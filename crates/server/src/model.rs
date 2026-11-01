@@ -61,6 +61,25 @@ impl Model {
         self.tabs.iter().find(|t| t.root.contains(pane)).map(|t| t.workspace)
     }
 
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    pub fn has_workspace(&self, id: WorkspaceId) -> bool {
+        self.workspaces.iter().any(|w| w.id == id)
+    }
+
+    pub fn workspace_of_tab(&self, tab: TabId) -> Option<WorkspaceId> {
+        self.tabs.iter().find(|t| t.id == tab).map(|t| t.workspace)
+    }
+
+    /// A workspace with no tabs; the window that gets it opens the first tab.
+    pub fn new_empty_workspace(&mut self) -> WorkspaceId {
+        let id = self.add_workspace(None, None, "");
+        self.touch();
+        id
+    }
+
     fn touch(&mut self) {
         self.rev += 1;
     }
