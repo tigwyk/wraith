@@ -945,6 +945,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wraith-cli"
+version = "0.1.0"
+dependencies = [
+ "wraith-ipc",
+ "wraith-proto",
+ "wraith-server",
+]
+
+[[package]]
 name = "wraith-client"
 version = "0.1.0"
 dependencies = [

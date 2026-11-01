@@ -1,0 +1,16 @@
+[package]
+name = "wraith-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wr"
+path = "src/main.rs"
+
+[dependencies]
+wraith-proto.workspace = true
+wraith-ipc.workspace = true
+
+[dev-dependencies]
+wraith-server.workspace = true
