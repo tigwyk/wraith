@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use wraith_ipc::{PipeReader, PipeWriter, connect};
+use wraith_proto::model::ModelCmd;
 use wraith_proto::pane::{PaneCmd, PaneEvent, SpawnOpts};
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, ServerMsg, read_frame, write_frame};
 use wraith_server::session::spawn_server_thread;
@@ -41,12 +42,22 @@ fn gui(pipe: &str) -> (PipeReader, PipeWriter, PaneId) {
         palette: vec![(0, 0, 0); 256],
         image_storage_limit: 320 * 1024 * 1024,
     };
-    write_frame(&mut w, &ClientMsg::Attach { spawn }).unwrap();
-    loop {
-        if let ServerMsg::Attached { pane, .. } = read_frame(&mut r).unwrap() {
-            return (r, w, pane);
+    write_frame(&mut w, &ClientMsg::AttachWindow { workspace: None }).unwrap();
+    let workspace = loop {
+        if let ServerMsg::WindowAttached { workspace } = read_frame(&mut r).unwrap() {
+            break workspace;
         }
-    }
+    };
+    write_frame(&mut w, &ClientMsg::Model(ModelCmd::NewTab { workspace, profile: "cmd".into(), spawn })).unwrap();
+    let pane = loop {
+        if let ServerMsg::Snapshot(s) = read_frame(&mut r).unwrap()
+            && let Some(t) = s.workspace(workspace).and_then(|w| w.active_tab)
+        {
+            break s.tab(t).unwrap().focused;
+        }
+    };
+    write_frame(&mut w, &ClientMsg::Subscribe { panes: vec![pane] }).unwrap();
+    (r, w, pane)
 }
 
 fn server() -> String {

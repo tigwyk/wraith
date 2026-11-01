@@ -5,14 +5,27 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wraith_client::remote::{AttachError, RemotePane, kill_server};
+use wraith_client::link::{AttachError, RemotePane, ServerLink, kill_server};
 use wraith_ipc::connect;
+use wraith_proto::model::ModelCmd;
 use wraith_proto::pane::{PaneEvent, SpawnOpts};
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneInfo, ServerMsg, read_frame, write_frame};
 
 fn unique() -> String {
     static N: AtomicU32 = AtomicU32::new(0);
     format!(r"\\.\pipe\wraith-remote-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Env for a server a test starts: its own layout file, never the user's.
+fn layout_env() -> Vec<(String, String)> {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!("wraith-link-layout-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).unwrap();
+    vec![("WRAITH_LAYOUT_PATH".into(), dir.join("layout.json").display().to_string())]
+}
+
+fn attach(pipe: &str) -> Result<RemotePane, AttachError> {
+    RemotePane::attach_with_env(pipe, spawn(), exe(), &layout_env())
 }
 
 fn exe() -> &'static Path {
@@ -64,7 +77,7 @@ fn stop(pipe: &str) {
 fn spawns_server_when_absent() {
     let pipe = unique();
     assert!(connect(&pipe).is_err());
-    let pane = RemotePane::attach(&pipe, spawn(), exe()).unwrap();
+    let pane = attach(&pipe).unwrap();
     assert!(!pane.reattached);
     let server_pid = connect(&pipe).unwrap().server_pid().unwrap();
     assert_ne!(server_pid, std::process::id(), "server must be its own process");
@@ -75,10 +88,10 @@ fn spawns_server_when_absent() {
 #[test]
 fn detach_then_attach_reattaches() {
     let pipe = unique();
-    let mut a = RemotePane::attach(&pipe, spawn(), exe()).unwrap();
+    let mut a = attach(&pipe).unwrap();
     let id = a.id;
     a.detach();
-    let mut b = RemotePane::attach(&pipe, spawn(), exe()).unwrap();
+    let mut b = attach(&pipe).unwrap();
     assert_eq!((b.id, b.reattached), (id, true));
     b.kill();
     thread::sleep(Duration::from_millis(200));
@@ -96,6 +109,7 @@ fn server_outlives_killed_client_process() {
         .env("WRAITH_PIPE_NAME", &pipe)
         .env("APPDATA", &dir)
         .env("LOCALAPPDATA", &dir)
+        .env("WRAITH_LAYOUT_PATH", dir.join("layout.json"))
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -118,7 +132,7 @@ fn concurrent_launches_share_one_server() {
     let panes: Vec<RemotePane> = (0..8)
         .map(|_| {
             let pipe = pipe.clone();
-            thread::spawn(move || RemotePane::attach(&pipe, spawn(), exe()).unwrap())
+            thread::spawn(move || attach(&pipe).unwrap())
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -143,7 +157,7 @@ fn no_server_binary_reports_no_server() {
 #[test]
 fn server_death_disconnects_events() {
     let pipe = unique();
-    let pane = RemotePane::attach(&pipe, spawn(), exe()).unwrap();
+    let pane = attach(&pipe).unwrap();
     // Drain the first frames so only the disconnect is left.
     while let Ok(PaneEvent::Frame(_) | PaneEvent::Title(_)) = pane.events.recv_timeout(Duration::from_millis(300)) {}
     kill_server(&pipe).unwrap();
@@ -163,4 +177,33 @@ fn shells_get_the_launching_windows_environment() {
     let env = wraith_client::app::spawn_env();
     assert!(env.iter().any(|(k, _)| k.eq_ignore_ascii_case("PATH")), "PATH missing");
     assert!(env.iter().any(|(k, v)| k == "TERM_PROGRAM" && v == "wraith"));
+}
+
+#[test]
+fn link_attach_window_and_open_a_tab() {
+    let pipe = unique();
+    let mut link = ServerLink::connect_with_env(&pipe, exe(), &layout_env()).unwrap();
+    assert!(link.send(ClientMsg::AttachWindow { workspace: None }));
+    let ws = loop {
+        match link.msgs.recv_timeout(Duration::from_secs(5)).unwrap() {
+            ServerMsg::WindowAttached { workspace } => break workspace,
+            _ => {}
+        }
+    };
+    link.send(ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: "cmd".into(), spawn: spawn() }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pane = loop {
+        assert!(Instant::now() < deadline, "no snapshot with a tab");
+        if let Ok(ServerMsg::Snapshot(s)) = link.msgs.recv_timeout(Duration::from_millis(200))
+            && let Some(t) = s.workspace(ws).and_then(|w| w.active_tab)
+        {
+            break s.tab(t).unwrap().focused;
+        }
+    };
+    assert_eq!(list(&pipe).iter().map(|p| p.id).collect::<Vec<_>>(), vec![pane]);
+    link.finish(ClientMsg::DetachWindow);
+    assert!(!link.send(ClientMsg::List), "a finished link refuses sends");
+    thread::sleep(Duration::from_millis(200));
+    assert!(!list(&pipe)[0].attached);
+    stop(&pipe);
 }

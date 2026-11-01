@@ -5,7 +5,7 @@ pub mod gpu;
 pub mod grid;
 pub mod input;
 pub mod reload;
-pub mod remote;
+pub mod link;
 pub mod selection;
 pub mod sprite;
 pub mod window;

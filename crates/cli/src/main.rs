@@ -40,7 +40,7 @@ fn run(args: &[String]) -> Result<(), Fail> {
             for p in list(&mut session()?)? {
                 let state = if p.attached { "attached" } else { "detached" };
                 let exit = p.exited.map_or("running".to_string(), |c| format!("exited {c}"));
-                let _ = writeln!(out, "{}\t{state}\t{exit}\t{}", p.id, p.title);
+                let _ = writeln!(out, "{}\t{state}\t{exit}\t{}\t{}", p.id, p.workspace, p.title);
             }
             Ok(())
         }

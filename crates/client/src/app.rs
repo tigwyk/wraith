@@ -21,7 +21,7 @@ use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo, SpawnOpts};
 
-use crate::remote::{AttachError, RemotePane, kill_server};
+use crate::link::{AttachError, RemotePane, kill_server};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
@@ -584,7 +584,7 @@ impl App {
                 }
             }
             PaneEvent::MouseTracking(on) => self.mouse_tracking = on,
-            PaneEvent::InputWritten { .. } => {}
+            PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) | PaneEvent::ImageUpload { .. } | PaneEvent::ImageDelete { .. } => {}
         }
     }
 

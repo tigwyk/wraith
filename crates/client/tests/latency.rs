@@ -23,7 +23,7 @@ fn ui_thread_never_holds_pane_output() {
     std::thread::sleep(Duration::from_secs(10));
     let _ = child.kill();
     let _ = child.wait();
-    let _ = wraith_client::remote::kill_server(&pipe); // the client started it; don't leave it running
+    let _ = wraith_client::link::kill_server(&pipe); // the client started it; don't leave it running
     std::thread::sleep(Duration::from_millis(300));
 
     let logs = dir.join("wraith").join("logs");

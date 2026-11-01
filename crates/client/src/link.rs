@@ -1,5 +1,5 @@
-//! The client's view of one pane living in the server (spec §3.1, §8).
-//! Same `send` / `events` shape as the in-process pane, so the app barely notices the pipe.
+//! The client's connection to the server (spec §3.1, §3.4, §8): connect-or-spawn, hello, and two
+//! threads so the UI never blocks on the pipe.
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use wraith_ipc::connect;
+use wraith_proto::model::ModelCmd;
 use wraith_proto::pane::{PaneCmd, PaneEvent, SpawnOpts};
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, ServerMsg, read_frame, write_frame};
 
@@ -39,21 +40,12 @@ impl std::fmt::Display for AttachError {
     }
 }
 
-pub struct RemotePane {
-    pub id: PaneId,
-    pub reattached: bool,
-    /// Disconnects when the server goes away.
-    pub events: Receiver<PaneEvent>,
-    out: Option<Sender<ClientMsg>>,
-    writer: Option<JoinHandle<()>>,
-}
-
 pub fn log_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from).join("wraith").join("logs")
 }
 
 /// Start `exe --server` detached, outside any job the client is in, so it outlives the client.
-pub fn spawn_server(exe: &Path, pipe: &str) -> io::Result<()> {
+pub fn spawn_server(exe: &Path, pipe: &str, env: &[(String, String)]) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -62,6 +54,7 @@ pub fn spawn_server(exe: &Path, pipe: &str) -> io::Result<()> {
         std::process::Command::new(exe)
             .arg("--server")
             .env("WRAITH_PIPE_NAME", pipe)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             // Don't pin the launching window's directory for the server's whole life.
             .current_dir(std::env::var_os("USERPROFILE").map_or_else(std::env::temp_dir, PathBuf::from))
             .stdin(std::process::Stdio::null())
@@ -92,9 +85,22 @@ pub fn kill_server(pipe: &str) -> io::Result<()> {
     }
 }
 
-impl RemotePane {
-    /// Connect (starting `server_exe` if nobody listens), say hello, and attach a pane.
-    pub fn attach(pipe: &str, spawn: SpawnOpts, server_exe: &Path) -> Result<RemotePane, AttachError> {
+/// A connected, greeted link to the server. Messages arrive on `msgs`; it disconnects when the
+/// server goes away.
+pub struct ServerLink {
+    pub msgs: Receiver<ServerMsg>,
+    out: Option<Sender<ClientMsg>>,
+    writer: Option<JoinHandle<()>>,
+}
+
+impl ServerLink {
+    /// Connect (starting `server_exe` if nobody listens) and say hello.
+    pub fn connect(pipe: &str, server_exe: &Path) -> Result<ServerLink, AttachError> {
+        ServerLink::connect_with_env(pipe, server_exe, &[])
+    }
+
+    /// Like `connect`, with extra environment for a server this call has to start.
+    pub fn connect_with_env(pipe: &str, server_exe: &Path, server_env: &[(String, String)]) -> Result<ServerLink, AttachError> {
         let deadline = Instant::now() + START_TIMEOUT;
         let mut started = false;
         let conn = loop {
@@ -104,7 +110,7 @@ impl RemotePane {
                 Err(e) if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::TimedOut => {
                     if !started {
                         started = true;
-                        if let Err(e) = spawn_server(server_exe, pipe) {
+                        if let Err(e) = spawn_server(server_exe, pipe, server_env) {
                             tracing::warn!("starting server {}: {e}", server_exe.display());
                         }
                     }
@@ -124,25 +130,13 @@ impl RemotePane {
             ServerMsg::VersionMismatch { server_version } => return Err(AttachError::VersionMismatch { server_version }),
             other => return Err(AttachError::Io(io::Error::other(format!("unexpected reply {other:?}")))),
         }
-        write_frame(&mut w, &ClientMsg::Attach { spawn }).map_err(io)?;
-        let (id, reattached) = loop {
-            match read_frame::<ServerMsg>(&mut r).map_err(io)? {
-                ServerMsg::Attached { pane, reattached } => break (pane, reattached),
-                ServerMsg::Error(e) => return Err(AttachError::Io(io::Error::other(e))),
-                _ => {}
-            }
-        };
-
-        let (ev_tx, events) = unbounded();
+        let (msg_tx, msgs) = unbounded();
         thread::Builder::new()
             .name("wraith-pipe-read".into())
             .spawn(move || {
-                // Ends (dropping ev_tx, so `events` disconnects) when the server goes away.
+                // Ends (dropping msg_tx, so `msgs` disconnects) when the server goes away.
                 while let Ok(m) = read_frame::<ServerMsg>(&mut r) {
-                    if let ServerMsg::Event { pane, ev } = m
-                        && pane == id
-                        && ev_tx.send(ev).is_err()
-                    {
+                    if msg_tx.send(m).is_err() {
                         return;
                     }
                 }
@@ -159,37 +153,106 @@ impl RemotePane {
                 }
             })
             .map_err(io)?;
-        Ok(RemotePane { id, reattached, events, out: Some(out), writer: Some(writer) })
+        Ok(ServerLink { msgs, out: Some(out), writer: Some(writer) })
     }
 
-    /// Queue a command for this pane; never blocks the UI thread on the pipe.
-    pub fn send(&self, cmd: PaneCmd) -> Result<(), PaneCmd> {
-        match &self.out {
-            Some(out) => out.send(ClientMsg::Cmd { pane: self.id, cmd }).map_err(|e| match e.into_inner() {
-                ClientMsg::Cmd { cmd, .. } => cmd,
-                _ => unreachable!(),
-            }),
-            None => Err(cmd),
-        }
-    }
-
-    /// Leave the shell running in the server (window X). Later sends fail.
-    pub fn detach(&mut self) {
-        self.finish(ClientMsg::Detach { pane: self.id });
-    }
-
-    /// End the shell (close_surface). Later sends fail.
-    pub fn kill(&mut self) {
-        self.finish(ClientMsg::Kill { pane: self.id });
+    /// Queue a message; never blocks the UI thread on the pipe. False once the link is finished.
+    pub fn send(&self, msg: ClientMsg) -> bool {
+        self.out.as_ref().is_some_and(|o| o.send(msg).is_ok())
     }
 
     /// Send a last message and wait until it is on the pipe (the process may exit right after).
-    fn finish(&mut self, last: ClientMsg) {
+    pub fn finish(&mut self, last: ClientMsg) {
         if let Some(out) = self.out.take() {
             let _ = out.send(last);
         }
         if let Some(w) = self.writer.take() {
             let _ = w.join();
         }
+    }
+}
+
+/// One pane of the server's first tab, in the shape the single-pane app expects. A stand-in until the
+/// window view (Task 8) drives `ServerLink` directly.
+pub struct RemotePane {
+    pub id: PaneId,
+    pub reattached: bool,
+    /// Disconnects when the server goes away.
+    pub events: Receiver<PaneEvent>,
+    link: ServerLink,
+}
+
+impl RemotePane {
+    /// Attach a window and use the focused pane of its active tab, opening a tab with `spawn` if it has none.
+    pub fn attach(pipe: &str, spawn: SpawnOpts, server_exe: &Path) -> Result<RemotePane, AttachError> {
+        RemotePane::attach_with_env(pipe, spawn, server_exe, &[])
+    }
+
+    pub fn attach_with_env(pipe: &str, spawn: SpawnOpts, server_exe: &Path, server_env: &[(String, String)]) -> Result<RemotePane, AttachError> {
+        let link = ServerLink::connect_with_env(pipe, server_exe, server_env)?;
+        let wrong = |what: &str| AttachError::Io(io::Error::other(what.to_string()));
+        link.send(ClientMsg::AttachWindow { workspace: None });
+        let mut workspace = None;
+        let mut opened = false;
+        let (pane, reattached, snap) = loop {
+            match link.msgs.recv_timeout(Duration::from_secs(5)).map_err(|_| wrong("server did not answer the attach"))? {
+                ServerMsg::WindowAttached { workspace: w } => workspace = Some(w),
+                ServerMsg::Error(e) => return Err(AttachError::Io(io::Error::other(e))),
+                ServerMsg::Snapshot(s) => {
+                    let Some(w) = workspace else { continue };
+                    let focused = s.workspace(w).and_then(|w| w.active_tab).and_then(|t| s.tab(t)).map(|t| t.focused);
+                    match focused {
+                        Some(p) => break (p, !opened, s),
+                        None if !opened => {
+                            opened = true;
+                            link.send(ClientMsg::Model(ModelCmd::NewTab { workspace: w, profile: "default".into(), spawn: spawn.clone() }));
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        };
+        link.send(ClientMsg::Subscribe { panes: vec![pane] });
+        let (ev_tx, events) = unbounded();
+        if let Some(meta) = snap.pane(pane) {
+            if !meta.title.is_empty() {
+                let _ = ev_tx.send(PaneEvent::Title(meta.title.clone()));
+            }
+            if let Some(code) = meta.exit {
+                let _ = ev_tx.send(PaneEvent::Exited(code));
+            }
+        }
+        let msgs = link.msgs.clone();
+        thread::Builder::new()
+            .name("wraith-pane-events".into())
+            .spawn(move || {
+                // Ends (dropping ev_tx) when the server goes away.
+                for m in msgs {
+                    if let ServerMsg::Event { pane: p, ev } = m
+                        && p == pane
+                        && ev_tx.send(ev).is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .map_err(AttachError::Io)?;
+        Ok(RemotePane { id: pane, reattached, events, link })
+    }
+
+    /// Queue a command for this pane; never blocks the UI thread on the pipe.
+    pub fn send(&self, cmd: PaneCmd) -> Result<(), PaneCmd> {
+        if self.link.send(ClientMsg::Cmd { pane: self.id, cmd: cmd.clone() }) { Ok(()) } else { Err(cmd) }
+    }
+
+    /// Leave the shell running in the server (window X). Later sends fail.
+    pub fn detach(&mut self) {
+        self.link.finish(ClientMsg::DetachWindow);
+    }
+
+    /// End the shell (close_surface). Later sends fail.
+    pub fn kill(&mut self) {
+        self.link.finish(ClientMsg::Kill { pane: self.id });
     }
 }

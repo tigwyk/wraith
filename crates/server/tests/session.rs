@@ -443,11 +443,25 @@ fn exited_pane_survives_detach() {
 #[test]
 fn dropped_slow_client_sees_its_pipe_close() {
     let pipe = server();
-    let mut c = Client::gui(&pipe);
-    c.attach_window(None);
-    let (_, pane) = c.new_tab("cmd.exe /k");
-    c.subscribe(&[pane]);
-    let Client { mut w, rx, .. } = c;
+    // A raw connection: nothing reads it until the server has given up on it.
+    let (mut r, mut w) = connect(&pipe).unwrap().split();
+    write_frame(&mut w, &ClientMsg::Hello { proto_version: PROTO_VERSION, kind: ClientKind::Gui }).unwrap();
+    let _: ServerMsg = read_frame(&mut r).unwrap();
+    write_frame(&mut w, &ClientMsg::AttachWindow { workspace: None }).unwrap();
+    let ws = loop {
+        if let ServerMsg::WindowAttached { workspace } = read_frame(&mut r).unwrap() {
+            break workspace;
+        }
+    };
+    write_frame(&mut w, &ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: "t".into(), spawn: spawn("cmd.exe /k") })).unwrap();
+    let pane = loop {
+        if let ServerMsg::Snapshot(s) = read_frame(&mut r).unwrap()
+            && let Some(t) = s.workspace(ws).and_then(|w| w.active_tab)
+        {
+            break s.tab(t).unwrap().focused;
+        }
+    };
+    write_frame(&mut w, &ClientMsg::Subscribe { panes: vec![pane] }).unwrap();
     // Never read: each Text produces an InputWritten event until the server gives up on us.
     for _ in 0..20_000 {
         if write_frame(&mut w, &ClientMsg::Cmd { pane, cmd: PaneCmd::Text(String::new()) }).is_err() {
@@ -456,7 +470,7 @@ fn dropped_slow_client_sees_its_pipe_close() {
     }
     let (tx, done) = crossbeam_channel::bounded(1);
     thread::spawn(move || {
-        while rx.recv().is_ok() {}
+        while read_frame::<ServerMsg>(&mut r).is_ok() {}
         let _ = tx.send(());
     });
     assert!(done.recv_timeout(secs(10)).is_ok(), "a client the server dropped must see EOF, not hang forever");
