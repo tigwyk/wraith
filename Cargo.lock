@@ -579,6 +579,13 @@ dependencies = [
 [[package]]
 name = "wraith-client"
 version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "windows",
+ "wraith-config",
+ "wraith-proto",
+ "wraith-server",
+]
 
 [[package]]
 name = "wraith-config"

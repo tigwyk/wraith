@@ -333,7 +333,7 @@ impl Pane {
 
     fn write_input(&mut self, sent: Instant, bytes: &[u8]) {
         // Typing returns the viewport to the live screen.
-        let _ = self.term.scroll_viewport(ScrollViewport::Bottom);
+        self.term.scroll_viewport(ScrollViewport::Bottom);
         let _ = self.pty.write(bytes);
         let _ = self.events.send(PaneEvent::InputWritten { waited: sent.elapsed() });
     }
@@ -409,7 +409,7 @@ impl Pane {
     }
 
     fn scroll(&mut self, s: ScrollViewport) {
-        let _ = self.term.scroll_viewport(s);
+        self.term.scroll_viewport(s);
         self.changed = true;
     }
 
@@ -481,15 +481,9 @@ impl Pane {
             return;
         }
         self.changed = false;
-        let Ok(snap) = self.rs.update(&self.term) else { return };
-        let Ok(mut frame) = build_frame(&snap, self.seq + 1, self.force_full) else { return };
-        if frame.dirty_rows.is_empty() && !frame.full {
-            // Cursor or color changes still need a frame; content-free updates with no visible change don't.
-            if !matches!(snap.dirty(), Ok(libghostty_vt::render::Dirty::Clean)) {
-                return;
-            }
-        }
-        drop(snap);
+        // Sent even with no dirty rows: the cursor or colors may have changed.
+        let frame = self.rs.update(&self.term).and_then(|snap| build_frame(&snap, self.seq + 1, self.force_full));
+        let Ok(mut frame) = frame else { return };
         if let Ok(sb) = self.term.scrollbar() {
             frame.scrollbar = wraith_proto::Scrollbar { total: sb.total, offset: sb.offset, len: sb.len };
         }

@@ -1,0 +1,164 @@
+//! Win32 top-level window: per-monitor DPI, dark title bar, optional Mica, message loop.
+use std::cell::RefCell;
+
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{
+    DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
+};
+use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+    GetClientRect, IDC_IBEAM, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+    PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE,
+    WM_DESTROY, WM_DPICHANGED, WM_QUIT, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
+    WS_OVERLAPPEDWINDOW, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+};
+use windows::core::{PCWSTR, Result, w};
+
+/// Messages the app cares about; everything else arrives as `Raw` (keys, mouse, IME, focus).
+pub enum WinMsg {
+    Resize { w: u32, h: u32 },
+    DpiChanged { dpi: u32, suggested: RECT },
+    Close,
+    Raw { msg: u32, wparam: WPARAM, lparam: LPARAM },
+}
+
+type Handler = Box<dyn FnMut(HWND, WinMsg) -> Option<LRESULT>>;
+
+thread_local! {
+    static HANDLER: RefCell<Option<Handler>> = const { RefCell::new(None) };
+}
+
+pub struct Window {
+    hwnd: HWND,
+}
+
+impl Window {
+    pub fn create(title: &str, w: i32, h: i32, mica: bool) -> Result<Window> {
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            let hinst = GetModuleHandleW(None)?;
+            let class = w!("WraithWindow");
+            let wc = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(wndproc),
+                hInstance: hinst.into(),
+                hCursor: LoadCursorW(None, IDC_IBEAM)?,
+                hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+                lpszClassName: class,
+                ..Default::default()
+            };
+            RegisterClassExW(&wc);
+            let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
+            // No redirection bitmap: the flip-model swap chain is the only surface.
+            let hwnd = CreateWindowExW(
+                WS_EX_NOREDIRECTIONBITMAP,
+                class,
+                PCWSTR(title.as_ptr()),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                w,
+                h,
+                None,
+                None,
+                Some(hinst.into()),
+                None,
+            )?;
+            let dark: i32 = 1;
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&raw const dark).cast(), 4);
+            if mica {
+                let backdrop = DWMSBT_MAINWINDOW;
+                let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&raw const backdrop).cast(), 4);
+            }
+            Ok(Window { hwnd })
+        }
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    pub fn show(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_SHOW);
+        }
+    }
+
+    pub fn dpi(&self) -> u32 {
+        unsafe { GetDpiForWindow(self.hwnd) }.max(96)
+    }
+
+    pub fn client_size(&self) -> (u32, u32) {
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetClientRect(self.hwnd, &mut r);
+        }
+        ((r.right - r.left).max(0) as u32, (r.bottom - r.top).max(0) as u32)
+    }
+}
+
+pub enum LoopControl {
+    Continue,
+    Exit,
+}
+
+/// Run until `WM_QUIT`. `handler` receives window messages; `idle` runs whenever the queue is empty
+/// (or when `wake` is signalled) and returns how long the loop may sleep before calling it again.
+pub fn run_message_loop(
+    handler: impl FnMut(HWND, WinMsg) -> Option<LRESULT> + 'static,
+    mut idle: impl FnMut() -> (LoopControl, u32),
+) {
+    HANDLER.with(|h| *h.borrow_mut() = Some(Box::new(handler)));
+    let mut msg = MSG::default();
+    loop {
+        // Window messages (input) are always drained before the app does frame work.
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if msg.message == WM_QUIT {
+                HANDLER.with(|h| h.borrow_mut().take());
+                return;
+            }
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        let (ctl, sleep_ms) = idle();
+        if let LoopControl::Exit = ctl {
+            HANDLER.with(|h| h.borrow_mut().take());
+            return;
+        }
+        unsafe { MsgWaitForMultipleObjectsEx(None, sleep_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+    }
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        let ev = match msg {
+            WM_SIZE => Some(WinMsg::Resize { w: (lparam.0 & 0xffff) as u32, h: ((lparam.0 >> 16) & 0xffff) as u32 }),
+            WM_DPICHANGED => Some(WinMsg::DpiChanged {
+                dpi: (wparam.0 & 0xffff) as u32,
+                suggested: *(lparam.0 as *const RECT),
+            }),
+            WM_CLOSE => Some(WinMsg::Close),
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                None
+            }
+            _ => Some(WinMsg::Raw { msg, wparam, lparam }),
+        };
+        if let Some(ev) = ev {
+            // try_borrow: a handler that re-enters (e.g. SetWindowPos inside DpiChanged) falls back to default.
+            let r = HANDLER.with(|h| h.try_borrow_mut().ok().and_then(|mut h| h.as_mut().and_then(|f| f(hwnd, ev))));
+            if let Some(r) = r {
+                return r;
+            }
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
