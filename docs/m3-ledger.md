@@ -10,3 +10,7 @@ Pre-flight:
 - T12 ImagePlacement/PaneEvent -> T13 store/draw: consistent.
 Task 1: Ruling: layout_never_below_min asserts bounds/count when the area cannot fit the minimums (plan text said 'min or exactly min'); found+fixed a b-rect offset past the area when the usable span is 0 — cost if wrong: none.
 Task 1: complete (commits 90c5735..79d55d5, tests: rtk proxy cargo test -p wraith-proto → exit 0, 15 model tests pass)
+Task 2: Ruling: added shell-integration key (detect|none|pwsh|bash|zsh → bool) and Config.shell_integration here, since Task 5 reads it — cost if wrong: none.
+Task 2: Ruling: client app.rs gets a temporary wildcard arm for the new Actions so the workspace builds; Task 8 replaces it.
+Task 2: Note: test source with Windows paths uses forward slashes (tool heredocs halve backslashes); parser still tested for drive-colon handling.
+Task 2: complete (commits f2a69e3..997ee9b, tests: rtk proxy cargo test --workspace → exit 0; config 22+15 tests)
