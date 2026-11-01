@@ -32,3 +32,7 @@ Task 5: Ruling: integration is skipped for any command that already carries -Com
 Task 5: Ruling: added wslenv_with() and wired it into session.start_pane so TERM_PROGRAM and WRAITH_PANE_ID cross into WSL (spec §3.5 WSLENV); WRAITH_PIPE stays Windows-only.
 Task 5: Note: zsh/bash scripts are checked for OSC strings only; a real zsh/bash run is part of Task 14 acceptance (manual); the PowerShell script is parse-checked by powershell.exe in tests.
 Task 5: complete (commits 33f14fb..3d5ab66, tests: rtk proxy cargo test -p wraith-proto -p wraith-server -p wraith-config -p wraith-ipc → exit 0; profile 16/16)
+Task 6: Ruling: remote.rs became link.rs with ServerLink (all messages) PLUS a thin single-pane RemotePane adapter (AttachWindow, use/open the first tab's focused pane, Subscribe) so app.rs compiles and runs until Task 8 drives ServerLink directly; RemotePane is deleted in Task 8 — cost if wrong: throwaway ~100 lines.
+Task 6: Ruling: spawn_server/connect gained an env slice (attach_with_env) so tests start servers with their own WRAITH_LAYOUT_PATH instead of touching the user's layout.json; latency.rs already isolates through LOCALAPPDATA.
+Task 6: Ruling: fixed my Task 4 test dropped_slow_client_sees_its_pipe_close — its helper thread kept draining the pipe, so the client was not slow and it only passed by timing (found by the first full-workspace run); now a raw connection that stops reading; 3/3 green reruns.
+Task 6: complete (commits 4d9f520..b30bae4, tests: rtk proxy cargo test --workspace → exit 0, 37 suites ok; link 8/8, cli all)
