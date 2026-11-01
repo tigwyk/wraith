@@ -968,6 +968,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wraith-ipc"
+version = "0.1.0"
+dependencies = [
+ "windows",
+ "wraith-proto",
+]
+
+[[package]]
 name = "wraith-proto"
 version = "0.1.0"
 dependencies = [

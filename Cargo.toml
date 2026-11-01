@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/config", "crates/server", "crates/client"]
+members = ["crates/proto", "crates/config", "crates/ipc", "crates/server", "crates/client"]
 
 [workspace.package]
 edition = "2024"
@@ -11,6 +11,7 @@ license = "MIT"
 wraith-proto = { path = "crates/proto" }
 wraith-config = { path = "crates/config" }
 wraith-server = { path = "crates/server" }
+wraith-ipc = { path = "crates/ipc" }
 libghostty-vt = "=0.2.2"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
