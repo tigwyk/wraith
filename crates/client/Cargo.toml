@@ -1,0 +1,11 @@
+[package]
+name = "wraith-client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wraith"
+path = "src/main.rs"
+
+[dependencies]

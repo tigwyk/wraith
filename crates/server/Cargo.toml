@@ -1,0 +1,8 @@
+[package]
+name = "wraith-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+libghostty-vt.workspace = true
