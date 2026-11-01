@@ -99,7 +99,7 @@ pub fn default_backend() -> &'static Backend {
         });
         let b = load_backend(path.as_deref().filter(|p| p.exists()));
         if matches!(b, Backend::Inbox) {
-            eprintln!("wraith: bundled conpty.dll not found; using inbox ConPTY (no inline images)");
+            tracing::warn!("bundled conpty.dll not found; using inbox ConPTY (no inline images)");
         }
         b
     })

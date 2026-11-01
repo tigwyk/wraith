@@ -9,6 +9,7 @@ libghostty-vt.workspace = true
 windows.workspace = true
 wraith-proto.workspace = true
 crossbeam-channel.workspace = true
+tracing.workspace = true
 
 [build-dependencies]
 sha2 = "0.10"

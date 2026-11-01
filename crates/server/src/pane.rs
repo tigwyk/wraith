@@ -453,7 +453,7 @@ impl Pane {
                 self.force_full = true;
                 self.changed = true;
             }
-            Err(e) => eprintln!("wraith: restart failed: {e}"),
+            Err(e) => tracing::warn!("pane restart failed: {e}"),
         }
     }
 

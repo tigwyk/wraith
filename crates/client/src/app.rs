@@ -220,7 +220,8 @@ pub(crate) struct App {
     keys: KeyTranslator,
     ime: Ime,
     sel: Selection,
-    matcher: KeybindMatcher,
+    pub(crate) matcher: KeybindMatcher,
+    pub(crate) rs: crate::reload::State,
     mouse_tracking: bool,
     focused: bool,
     dirty: bool,
@@ -248,7 +249,7 @@ impl App {
     pub(crate) fn rebuild_fonts(&mut self) {
         match FontStack::new(&self.config.font_family, self.font_size, self.win.dpi(), &self.config.font_feature) {
             Ok(f) => self.fonts = f,
-            Err(e) => eprintln!("wraith: font: {e}"),
+            Err(e) => tracing::warn!("font: {e}"),
         }
         if let Ok(a) = GlyphAtlas::new(&self.gpu, 2048) {
             self.atlas = a;
@@ -528,13 +529,21 @@ impl App {
             self.render();
         }
         let until_blink = self.next_blink.saturating_duration_since(Instant::now()).as_millis() as u32;
-        let sleep = if self.config.cursor_style_blink { until_blink.max(1) } else { 1000 };
+        let mut sleep = if self.config.cursor_style_blink { until_blink.max(1) } else { 1000 };
+        if let Some(t) = crate::reload::next_deadline(self) {
+            sleep = sleep.min(t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
+        }
         // A pending key sequence must time out even with no other activity.
         (LoopControl::Continue, if self.matcher.since.is_some() { sleep.min(100) } else { sleep })
     }
 
+    pub(crate) fn request_redraw(&mut self) {
+        self.dirty = true;
+    }
+
     fn render(&mut self) {
         self.dirty = false;
+        crate::reload::render_start(self);
         let exit_line = self.exited.map(|c| format!("[process exited {c}] Enter: restart · ctrl+shift+w: close"));
         self.grid.set_overlay(crate::grid::Overlay::Exit, exit_line.as_deref(), &self.fonts);
         self.sc.wait();
@@ -635,6 +644,7 @@ pub fn run() -> Result<()> {
         ime: Ime,
         sel: Selection::new(Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }))),
         matcher,
+        rs: crate::reload::State::default(),
         mouse_tracking: false,
         focused: true,
         dirty: true,

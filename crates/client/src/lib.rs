@@ -4,6 +4,6 @@ pub mod font;
 pub mod gpu;
 pub mod grid;
 pub mod input;
-mod reload;
+pub mod reload;
 pub mod selection;
 pub mod window;

@@ -18,6 +18,10 @@ wraith-config.workspace = true
 wraith-server.workspace = true
 crossbeam-channel.workspace = true
 unicode-width = "0.2"
+notify = "8"
+tracing.workspace = true
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dependencies.windows]
 version = "0.62"
