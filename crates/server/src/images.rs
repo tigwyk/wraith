@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use libghostty_vt::Terminal;
 use libghostty_vt::alloc::{Allocator, Bytes};
-use libghostty_vt::kitty::graphics::{Compression, DecodePng, DecodedImage, ImageFormat, PlacementIterator, set_png_decoder};
+use libghostty_vt::kitty::graphics::{DecodePng, DecodedImage, ImageFormat, PlacementIterator, set_png_decoder};
 use wraith_proto::ImagePlacement;
 use wraith_proto::pane::PaneEvent;
 
@@ -32,11 +32,17 @@ impl DecodePng for PngDecoder {
     }
 }
 
-/// Install the PNG decoder for terminals on this thread (libghostty keeps it per thread).
+/// Install the PNG decoder, once per process. libghostty's hook is process-global and unsynchronized,
+/// so every thread calls this before its first libghostty call: the one real install then runs while
+/// no thread can be inside libghostty (the others wait on the `Once`).
 pub fn install_png_decoder() {
-    if let Err(e) = set_png_decoder(Some(Box::new(PngDecoder))) {
-        tracing::warn!("kitty graphics: no PNG decoder: {e}");
-    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: see above; no other thread has reached libghostty yet.
+        if let Err(e) = unsafe { set_png_decoder(Some(Box::new(PngDecoder))) } {
+            tracing::warn!("kitty graphics: no PNG decoder: {e}");
+        }
+    });
 }
 
 /// Stored pixels as RGBA8, or `None` when `data` is shorter than `w`×`h` says.
@@ -126,11 +132,8 @@ impl ImageSync {
                 tracing::warn!(image = p.image_id, w, h, "kitty image too large to send; skipped");
                 return false;
             }
-            if img.compression().is_ok_and(|c| c != Compression::None) {
-                tracing::warn!(image = p.image_id, "compressed kitty image in storage; skipped");
-                return false;
-            }
-            let Some(rgba) = img.format().ok().zip(img.data().ok()).and_then(|(f, d)| to_rgba(f, w, h, d)) else { return false };
+            // Stored pixels are always decompressed (zlib inflated, PNG decoded) by libghostty.
+            let Some(rgba) = img.format().ok().zip(img.data().ok().flatten()).and_then(|(f, d)| to_rgba(f, w, h, d)) else { return false };
             events.push(PaneEvent::ImageUpload { image_id: p.image_id, width: w, height: h, rgba });
             self.sent.insert(p.image_id, generation);
             true

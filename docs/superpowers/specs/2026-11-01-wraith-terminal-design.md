@@ -281,7 +281,7 @@ Each milestone gets its own implementation plan.
 ## 11. Known risks
 
 1. **libghostty-vt on Windows is untested** (docs.rs builds only for Linux, and the API is pre-1.0). M0 de-risks this. Pin the crate version and wrap it in the `server` crate so API breaks stay local.
-2. **Zig version:** the crate needs Zig 0.17.x. The dev machine has 0.16.0 and must upgrade.
+2. **Zig version and libghostty-vt source:** Wraith vendors libghostty-rs (`vendor/libghostty-rs`, see its `VENDORED.md`) with bindings regenerated against a pinned Ghostty `main` commit, which needs Zig 0.17.x. (M0–M3 ran on the published 0.2.2 crate, whose older Ghostty pin needed Zig 0.15.x.) Moving the pin means re-running `gen-bindings` and the full suite.
 3. **No OSC 9/777/133 callbacks in libghostty-vt:** handled with a sidecar `osc::Parser` fed from the byte stream. It must handle OSC split across read chunks.
 4. **ConPTY quirks (resolved in M0):** inbox ConPTY passes OSC 9/777/133/7 but strips the Kitty APC. The bundled ConPTY in passthrough mode passes all of them, native and WSL (`docs/m0-findings.md`). Remaining risk: a future ConPTY package changes passthrough behaviour. Mitigation: the version is pinned, and the passthrough tests run in CI.
 5. **Unpackaged toasts** require an AUMID shortcut. Without the installer, first run creates it.

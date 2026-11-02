@@ -19,7 +19,6 @@ use libghostty_vt::terminal::{
     ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point, PointCoordinate,
     PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, Terminal,
 };
-use libghostty_vt::TerminalOptions;
 pub use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, SelRange};
 
@@ -157,10 +156,11 @@ impl Pane {
     fn new(opts: PaneOptions, events: Sender<PaneEvent>) -> io::Result<Pane> {
         let (cols, rows) = clamp_size(opts.cols, opts.rows);
         let (pty, chunks) = start_pty(&opts, cols, rows)?;
-        let mut term = Terminal::new(TerminalOptions { cols, rows, max_scrollback: opts.scrollback_lines })
-            .map_err(io_err)?;
-        term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
+        // Before this thread's first libghostty call: the decoder hook is process-global.
         crate::images::install_png_decoder();
+        let mut term = Terminal::new(cols, rows).map_err(io_err)?;
+        term.set_scrollback_max_lines(Some(opts.scrollback_lines)).map_err(io_err)?;
+        term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
         term.set_kitty_image_storage_limit(opts.image_storage_limit).map_err(io_err)?;
         let outbox = Rc::new(RefCell::new(Outbox::default()));
         install_callbacks(&mut term, &outbox).map_err(io_err)?;
@@ -454,7 +454,7 @@ impl Pane {
         if std::mem::take(&mut ob.title)
             && let Ok(t) = self.term.title()
         {
-            let _ = self.events.send(PaneEvent::Title(t.to_string()));
+            let _ = self.events.send(PaneEvent::Title(String::from_utf8_lossy(t).into_owned()));
         }
         if std::mem::take(&mut ob.bell) {
             let _ = self.events.send(PaneEvent::Bell);
@@ -463,11 +463,11 @@ impl Pane {
             let _ = self.events.send(PaneEvent::Clipboard(c));
         }
         drop(ob);
-        if let Ok(p) = self.term.pwd()
+        if let Ok(p) = self.term.pwd().map(String::from_utf8_lossy)
             && p != self.pwd
         {
-            self.pwd = p.to_string();
-            if let Some(dir) = cwd_from_uri(p) {
+            self.pwd = p.into_owned();
+            if let Some(dir) = cwd_from_uri(&self.pwd) {
                 let _ = self.events.send(PaneEvent::Cwd(dir));
             }
         }
@@ -567,10 +567,9 @@ fn install_callbacks(term: &mut Terminal<'static, 'static>, outbox: &Rc<RefCell<
     term.on_bell(move |_t| ob.borrow_mut().bell = true)?;
     let ob = outbox.clone();
     term.on_clipboard_write(move |_t, w| {
-        if let Some(c) = w.contents().find(|c| c.mime.starts_with("text/plain")) {
-            ob.borrow_mut().clipboard = Some(c.data.to_string());
+        if let Some(c) = w.contents().find(|c| c.mime.starts_with(b"text/plain")) {
+            ob.borrow_mut().clipboard = Some(String::from_utf8_lossy(c.data).into_owned());
         }
-        Ok(())
     })?;
     // The bundled OpenConsole sends DA1 at startup and waits for an answer.
     term.on_device_attributes(|_t| {

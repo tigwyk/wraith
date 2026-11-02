@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/proto", "crates/config", "crates/ipc", "crates/server", "crates/client", "crates/cli"]
+# Vendored libghostty-rs keeps its own workspace (see vendor/libghostty-rs/VENDORED.md).
+exclude = ["vendor"]
 
 [workspace.package]
 edition = "2024"
@@ -12,7 +14,7 @@ wraith-proto = { path = "crates/proto" }
 wraith-config = { path = "crates/config" }
 wraith-server = { path = "crates/server" }
 wraith-ipc = { path = "crates/ipc" }
-libghostty-vt = "=0.2.2"
+libghostty-vt = { path = "vendor/libghostty-rs/crates/libghostty-vt" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 crossbeam-channel = "0.5"

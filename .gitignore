@@ -1,3 +1,5 @@
 /target
 /.superpowers
 /.tools
+/vendor/libghostty-rs/target
+/vendor/libghostty-rs/Cargo.lock

@@ -3,10 +3,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use libghostty_vt::render::{CellIterator, Dirty, RowIterator};
-use libghostty_vt::{RenderState, Terminal, TerminalOptions, key};
+use libghostty_vt::{RenderState, Terminal, key};
 
 fn term(cols: u16, rows: u16) -> Terminal<'static, 'static> {
-    Terminal::new(TerminalOptions { cols, rows, max_scrollback: 1000 }).unwrap()
+    let mut t = Terminal::new(cols, rows).unwrap();
+    t.set_scrollback_max_lines(Some(1000)).unwrap();
+    t
 }
 
 /// Text of viewport row `y`, one grapheme per cell, empty cells as spaces.

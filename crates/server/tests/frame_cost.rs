@@ -1,11 +1,12 @@
 //! Per-frame work must scale with the viewport, not the history (spec §6.3).
 use std::time::{Duration, Instant};
 
-use libghostty_vt::{RenderState, Terminal, TerminalOptions};
+use libghostty_vt::{RenderState, Terminal};
 use wraith_server::frame_build::build_frame;
 
 fn time_full_frames(scrollback_lines: usize) -> Duration {
-    let mut t = Terminal::new(TerminalOptions { cols: 200, rows: 60, max_scrollback: 20_000 }).unwrap();
+    let mut t = Terminal::new(200, 60).unwrap();
+    t.set_scrollback_max_lines(Some(20_000)).unwrap();
     for i in 0..(60 + scrollback_lines) {
         t.vt_write(format!("\x1b[3{}mline {i} {}\r\n", i % 8, "x".repeat(150)).as_bytes());
     }

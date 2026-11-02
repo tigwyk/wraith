@@ -1,12 +1,14 @@
 //! Kitty graphics: placements from libghostty, image uploads to the client (spec §3.4, M3).
-use libghostty_vt::{Terminal, TerminalOptions};
+use libghostty_vt::Terminal;
 use wraith_proto::pane::PaneEvent;
 use wraith_server::images::{ImageSync, collect, install_png_decoder};
 
 const BIG: usize = 64 << 20;
 
 fn term() -> Terminal<'static, 'static> {
-    let mut t = Terminal::new(TerminalOptions { cols: 20, rows: 5, max_scrollback: 100 }).unwrap();
+    install_png_decoder(); // before any libghostty call on this thread (the hook is process-global)
+    let mut t = Terminal::new(20, 5).unwrap();
+    t.set_scrollback_max_lines(Some(100)).unwrap();
     t.resize(20, 5, 8, 16).unwrap();
     t.set_kitty_image_storage_limit(1 << 20).unwrap();
     t
@@ -47,7 +49,6 @@ fn rgba_transmit_and_display_yields_placement() {
 
 #[test]
 fn png_transmit_decodes() {
-    install_png_decoder();
     let mut t = term();
     t.vt_write(b"\x1b_Ga=T,f=100,i=3,q=2;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==\x1b\\");
     let (ev, placements) = ImageSync::default().sync(&t, BIG);
