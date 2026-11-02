@@ -146,10 +146,10 @@ pub fn process_cwd(p: &Profile, cwd: Option<&str>) -> Option<String> {
     }
 }
 
-/// `existing` WSLENV plus the variables the integration scripts read.
+/// `existing` WSLENV plus the variables the integration scripts and agent hooks (`wr.exe hook`) read.
 pub fn wslenv_with(existing: Option<&str>) -> String {
     let mut parts: Vec<&str> = existing.unwrap_or("").split(':').filter(|s| !s.is_empty()).collect();
-    for v in ["TERM_PROGRAM", "WRAITH_PANE_ID"] {
+    for v in ["TERM_PROGRAM", "WRAITH_PANE_ID", "WRAITH_PIPE"] {
         if !parts.contains(&v) {
             parts.push(v);
         }

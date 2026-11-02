@@ -1,6 +1,11 @@
-//! `wr`: script a running Wraith server.
+//! `wr`: script a running Wraith server, and connect coding agents to it.
 //!   wr ctl list | send-text <id> <text> | kill <id> | server-stop
+//!   wr hook claude|codex|generic ...            (called by agents; always exits 0, silently)
+//!   wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
 //! Exit codes: 0 ok, 1 usage error / server error / unknown pane, 2 no server running (never starts one).
+mod hook;
+mod install;
+
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -8,7 +13,8 @@ use wraith_ipc::{PipeReader, PipeWriter, connect, pipe_name};
 use wraith_proto::pane::PaneCmd;
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo, ServerMsg, read_frame, write_frame};
 
-const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> | server-stop";
+const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> | server-stop
+       wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]";
 
 enum Fail {
     Usage(String),
@@ -33,6 +39,12 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<(), Fail> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        ["hook", rest @ ..] => hook::run(rest),
+        ["install-hooks", rest @ ..] => return install::run(true, rest).map_err(Fail::Usage),
+        ["uninstall-hooks", rest @ ..] => return install::run(false, rest).map_err(Fail::Usage),
+        _ => {}
+    }
     let pane = |s: &str| s.parse::<PaneId>().map_err(|_| Fail::Usage(format!("not a pane id: {s}")));
     match args.as_slice() {
         ["ctl", "list"] => {

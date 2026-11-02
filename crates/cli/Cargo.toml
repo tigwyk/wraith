@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 wraith-proto.workspace = true
 wraith-ipc.workspace = true
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [dev-dependencies]
 wraith-server.workspace = true
+crossbeam-channel.workspace = true

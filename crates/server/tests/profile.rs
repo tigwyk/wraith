@@ -174,7 +174,8 @@ fn ps1_script_parses() {
 #[test]
 fn wslenv_forwards_integration_variables_once() {
     use wraith_server::profile::wslenv_with;
-    assert_eq!(wslenv_with(None), "TERM_PROGRAM:WRAITH_PANE_ID");
-    assert_eq!(wslenv_with(Some("A/p:TERM_PROGRAM")), "A/p:TERM_PROGRAM:WRAITH_PANE_ID");
-    assert_eq!(wslenv_with(Some("")), "TERM_PROGRAM:WRAITH_PANE_ID");
+    // WRAITH_PIPE too: an agent hook inside WSL runs wr.exe, which needs it to reach the server.
+    assert_eq!(wslenv_with(None), "TERM_PROGRAM:WRAITH_PANE_ID:WRAITH_PIPE");
+    assert_eq!(wslenv_with(Some("A/p:TERM_PROGRAM")), "A/p:TERM_PROGRAM:WRAITH_PANE_ID:WRAITH_PIPE");
+    assert_eq!(wslenv_with(Some("")), "TERM_PROGRAM:WRAITH_PANE_ID:WRAITH_PIPE");
 }
