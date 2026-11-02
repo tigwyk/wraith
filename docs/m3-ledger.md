@@ -84,3 +84,10 @@ Task 14: Ruling: `kitten` is not installed; scripts/kitty-show.py stands in for 
 Task 14: Not run: four-pane flood with the ctrl+shift+f12 overlay; zsh integration; screenshot of directional focus/zoom (unit-tested).
 Task 14: spec updated: §3.4 snapshot ruling, §4.2 sidebar note (Agents section in M4).
 Task 14: complete (tests: cargo test --workspace → exit 0; clippy -D warnings → exit 0; acceptance in docs/m3-acceptance.md)
+Final review: self-review (the session's rules disallow starting a reviewer subagent unasked) — weaker than a fresh reviewer.
+Final: checked Review Focus 1–5 (all have tests), image re-upload after unsubscribe/resubscribe (Reattach resets ImageSync), tab-drag permissions (MoveTab within own workspace), NC hit test vs reserved caption width, draw order (dim and chrome drawn over images). No Critical/Important findings open; the two found during acceptance (restore cwd, missing tab drag) were fixed with RED→GREEN tests.
+Final: Ruling: RemotePane stays in link.rs — it is now the driver of the link integration tests (incl. remote_input_round_trip_is_fast), not dead code — cost if wrong: ~70 lines kept.
+Final: minor (deferred): restore checks Path::is_dir on the saved cwd, which can stall on an unreachable UNC path.
+Final: minor (deferred): images use point sampling even when scaled; Unicode-placeholder (virtual) placements are not drawn.
+Final: minor (deferred): Alt+Space always opens the window menu, shadowing a user keybind on alt+space.
+Final: minor (deferred): new_window starts a plain wraith.exe, so a window launched with -e opens its sibling on the default profile.
