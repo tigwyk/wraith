@@ -11,11 +11,18 @@ use wraith_proto::pane::PaneEvent;
 /// PNG → RGBA8 with the `png` crate (libghostty only stores RGBA from a decoder).
 struct PngDecoder;
 
+/// Ghostty's largest Kitty image side, in pixels.
+const MAX_SIDE: u32 = 10_000;
+
 impl DecodePng for PngDecoder {
     fn decode_png<'alloc>(&mut self, alloc: &'alloc Allocator<'_>, data: &[u8]) -> Option<DecodedImage<'alloc>> {
         let mut d = png::Decoder::new(std::io::Cursor::new(data));
         d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = d.read_info().ok()?;
+        // The header's size is untrusted: never allocate for more than libghostty would keep.
+        if reader.info().width > MAX_SIDE || reader.info().height > MAX_SIDE {
+            return None;
+        }
         let mut buf = vec![0; reader.output_buffer_size()?];
         let info = reader.next_frame(&mut buf).ok()?;
         let format = match info.color_type {

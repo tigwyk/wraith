@@ -60,6 +60,47 @@ fn png_transmit_decodes() {
     assert_eq!(placements.len(), 1);
 }
 
+/// A valid PNG header and empty image data, claiming `w`×`h` RGBA pixels.
+fn png_claiming(w: u32, h: u32) -> Vec<u8> {
+    fn crc(data: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+        }
+        !c
+    }
+    let chunk = |kind: &[u8], body: &[u8]| -> Vec<u8> {
+        let typed = [kind, body].concat();
+        [&(body.len() as u32).to_be_bytes()[..], &typed, &crc(&typed).to_be_bytes()].concat()
+    };
+    let ihdr = [&w.to_be_bytes()[..], &h.to_be_bytes(), &[8, 6, 0, 0, 0]].concat();
+    [&b"\x89PNG\r\n\x1a\n"[..], &chunk(b"IHDR", &ihdr), &chunk(b"IDAT", &[0x78, 0x9c, 3, 0, 0, 0, 0, 1]), &chunk(b"IEND", &[])].concat()
+}
+
+fn peak_commit() -> usize {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    let mut c = PROCESS_MEMORY_COUNTERS::default();
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, size_of::<PROCESS_MEMORY_COUNTERS>() as u32) }.unwrap();
+    c.PeakPagefileUsage
+}
+
+#[test]
+fn png_claiming_a_huge_size_is_rejected_before_allocating() {
+    // A few bytes claiming 20000x20000 RGBA would make the decoder commit 1.6 GB (a bigger claim
+    // aborts the whole server when the allocation fails).
+    let mut t = term();
+    let before = peak_commit();
+    t.vt_write(format!("\x1b_Ga=T,f=100,i=4,q=2;{}\x1b\\", b64(&png_claiming(20_000, 20_000))).as_bytes());
+    let grew = peak_commit().saturating_sub(before);
+    assert!(grew < 256 << 20, "decoding committed {} MB", grew >> 20);
+    let (ev, _) = ImageSync::default().sync(&t, BIG);
+    assert!(ev.is_empty(), "{ev:?}");
+}
+
 #[test]
 fn gray_and_rgb_expand_to_rgba() {
     use libghostty_vt::kitty::graphics::ImageFormat;
