@@ -154,3 +154,33 @@ fn move_tab_lists_other_workspaces() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].choice, Choice::Workspace(2));
 }
+
+#[test]
+fn select_clamps_to_items() {
+    let mut p = Palette::new(Mode::Palette, palette_items(&binds()));
+    p.select(3);
+    assert_eq!(p.selected, 3);
+    p.select(10_000);
+    assert_eq!(p.selected, p.visible().len() - 1);
+    p.type_text("zzzz");
+    p.select(2);
+    assert_eq!(p.selected, 0, "nothing visible: stays at 0");
+}
+
+#[test]
+fn scroll_moves_selection_by_rows_and_clamps() {
+    use wraith_client::palette::SHOWN;
+    let mut p = Palette::new(Mode::Palette, palette_items(&binds()));
+    let n = p.visible().len();
+    assert!(n > SHOWN + 3, "enough actions to scroll");
+    p.scroll(3);
+    assert_eq!((p.selected, p.top), (3, 0), "still on screen: the list does not move");
+    p.scroll(20);
+    assert_eq!(p.selected, 23.min(n - 1));
+    assert!(p.top <= p.selected && p.selected < p.top + SHOWN, "selection kept on screen");
+    p.scroll(-1000);
+    assert_eq!((p.selected, p.top), (0, 0));
+    p.scroll(1000);
+    assert_eq!(p.selected, n - 1);
+    assert_eq!(p.top, n - SHOWN);
+}

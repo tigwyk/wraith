@@ -13,7 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
-use crate::palette::{Choice, Mode, Palette, move_tab_items, palette_items, picker_items};
+use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
 use crate::selection::Selection;
 
 /// Pixel space of the window: its client size, the font's cell, pane padding and chrome heights.
@@ -132,6 +132,13 @@ type SidebarLayout = (Vec<(WorkspaceId, Rect)>, Vec<(TabId, Rect)>, Rect);
 pub struct Find {
     pub pane: PaneId,
     pub query: String,
+}
+
+/// Where the open palette is drawn: its panel and each shown row (index into `Palette::visible()`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteLayout {
+    pub panel: Rect,
+    pub rows: Vec<(usize, Rect)>,
 }
 
 /// One row of the sidebar's Agents list.
@@ -286,11 +293,7 @@ impl WindowView {
             KeyCode::ArrowUp => p.up(),
             KeyCode::ArrowDown => p.down(),
             KeyCode::Backspace => p.backspace(),
-            KeyCode::Enter | KeyCode::NumpadEnter => {
-                let (choice, mode) = (p.accept(), p.mode);
-                self.palette = None;
-                return Some(choice.map_or_else(Out::default, |c| self.run_choice(c, mode, ctx)));
-            }
+            KeyCode::Enter | KeyCode::NumpadEnter => return Some(self.accept_palette(ctx)),
             _ => {
                 if let Some(t) = ev.text.as_deref().filter(|_| !ev.mods.has(Mods::CTRL | Mods::ALT)) {
                     p.type_text(t);
@@ -298,6 +301,50 @@ impl WindowView {
             }
         }
         Some(Out::default())
+    }
+
+    /// Run the selected row and close the palette.
+    fn accept_palette(&mut self, ctx: &SpawnCtx) -> Out {
+        let Some(p) = self.palette.take() else { return Out::default() };
+        p.accept().map_or_else(Out::default, |c| self.run_choice(c, p.mode, ctx))
+    }
+
+    /// The wheel over the open palette: `rows` down (negative: up).
+    pub fn scroll_palette(&mut self, rows: i32) {
+        if let Some(p) = &mut self.palette {
+            p.scroll(rows);
+        }
+    }
+
+    /// Centered under the tab bar, at most `SHOWN` rows: the query line, then the rows.
+    pub fn palette_layout(&self) -> Option<PaletteLayout> {
+        let p = self.palette.as_ref()?;
+        let (cw, row_h) = (self.geom.cell.0 as i32, self.geom.cell.1 as i32 + 6);
+        let client_w = self.geom.client.0;
+        let n = p.visible().len().saturating_sub(p.top).min(SHOWN);
+        let w = (60 * cw).min(client_w - 2 * cw).max(10 * cw);
+        let panel = Rect { x: (client_w - w) / 2, y: self.geom.bar_h + 12, w, h: (n as i32 + 1) * row_h + 10 };
+        let rows = (0..n).map(|k| (p.top + k, Rect { x: panel.x, y: panel.y + 5 + (k as i32 + 1) * row_h, w: panel.w, h: row_h })).collect();
+        Some(PaletteLayout { panel, rows })
+    }
+
+    /// A press while the palette may be open: a row runs, the panel keeps it open, anywhere else
+    /// closes it (and the press goes no further). `None`: not open.
+    pub fn palette_click(&mut self, hit: &Hit, ctx: &SpawnCtx) -> Option<Out> {
+        self.palette.as_ref()?;
+        match hit {
+            Hit::PaletteRow(i) => {
+                if let Some(p) = &mut self.palette {
+                    p.select(*i);
+                }
+                Some(self.accept_palette(ctx))
+            }
+            Hit::Palette => Some(Out::default()),
+            _ => {
+                self.palette = None;
+                Some(Out::default())
+            }
+        }
     }
 
     fn run_choice(&mut self, choice: Choice, mode: Mode, ctx: &SpawnCtx) -> Out {
@@ -378,6 +425,12 @@ impl WindowView {
     /// Recompute the hover target after the model or the geometry changed under a still pointer.
     fn rehover(&mut self) -> bool {
         let hit = self.pointer.map(|(x, y)| self.hit(x, y));
+        // The palette follows the pointer, as menus do.
+        if let (Some(Hit::PaletteRow(i)), Some(p)) = (&hit, &mut self.palette)
+            && hit != self.hovered
+        {
+            p.select(*i);
+        }
         let changed = hit != self.hovered;
         self.hovered = hit;
         changed
@@ -916,6 +969,11 @@ impl WindowView {
     }
 
     pub fn hit(&self, x: i32, y: i32) -> Hit {
+        if let Some(l) = self.palette_layout()
+            && l.panel.contains(x, y)
+        {
+            return l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(Hit::Palette, |(i, _)| Hit::PaletteRow(*i));
+        }
         let mut regions = self.regions();
         regions.sidebar = self.sidebar_rect();
         let (tabs, new_tab) = self.tab_layout();

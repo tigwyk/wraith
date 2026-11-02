@@ -58,6 +58,10 @@ pub enum Hit {
     Pane(PaneId),
     /// Empty sidebar area.
     Sidebar,
+    /// A row of the open command palette: an index into `Palette::visible()`.
+    PaletteRow(usize),
+    /// Inside the open palette, but not on a row.
+    Palette,
     /// Empty tab bar area (drags the window).
     Bar,
     None,

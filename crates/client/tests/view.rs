@@ -775,3 +775,54 @@ fn capture_lost_clears_press() {
     v.release();
     assert_eq!(v.pressed(), None);
 }
+
+#[test]
+fn palette_hit_takes_precedence_over_panes() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let (_, r) = v.palette_layout().map(|l| l.rows[0]).unwrap_or_default();
+    assert_eq!(r.w, 0, "closed: no layout");
+    v.open_palette(Mode::Palette, &ctx());
+    let l = v.palette_layout().unwrap();
+    let (i, r) = l.rows[1];
+    assert_eq!(v.hit(r.x + 20, r.y + 2), Hit::PaletteRow(i), "over pane 1, but the palette is on top");
+    assert_eq!(v.hit(l.panel.x + 5, l.panel.y + 2), Hit::Palette, "the query line");
+    assert!(matches!(v.hit(5, 300), Hit::Pane(_)), "outside the panel");
+}
+
+#[test]
+fn hover_on_palette_row_selects_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    let (i, r) = v.palette_layout().unwrap().rows[4];
+    v.hover_at(r.x + 20, r.y + 2);
+    assert_eq!(v.palette().unwrap().selected, i);
+}
+
+#[test]
+fn click_on_palette_row_runs_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "new tab");
+    v.palette_key(&key(KeyCode::ArrowDown), &ctx());
+    let (i, r) = v.palette_layout().unwrap().rows[0];
+    let hit = v.hit(r.x + 20, r.y + 2);
+    assert_eq!(hit, Hit::PaletteRow(i));
+    let out = v.palette_click(&hit, &ctx()).unwrap();
+    assert!(v.palette().is_none(), "running a row closes the palette");
+    assert!(matches!(out.msgs.as_slice(), [ClientMsg::Model(ModelCmd::NewTab { .. })]), "the clicked row, not the selected one: {out:?}");
+}
+
+#[test]
+fn click_outside_palette_closes_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert!(v.palette_click(&Hit::Pane(1), &ctx()).is_none(), "closed: the click is not consumed");
+    v.open_palette(Mode::Palette, &ctx());
+    assert_eq!(v.palette_click(&Hit::Palette, &ctx()), Some(Default::default()), "inside the panel: stays open");
+    assert!(v.palette().is_some());
+    assert_eq!(v.palette_click(&Hit::Pane(1), &ctx()), Some(Default::default()), "consumed: the pane gets no click");
+    assert!(v.palette().is_none());
+}

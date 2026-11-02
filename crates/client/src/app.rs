@@ -522,6 +522,11 @@ impl App {
             unsafe {
                 let _ = ScreenToClient(self.win.hwnd(), &mut pt);
             }
+            if matches!(self.view.hit(pt.x, pt.y), Hit::PaletteRow(_) | Hit::Palette) {
+                self.view.scroll_palette(-n);
+                self.dirty = true;
+                return;
+            }
             let pane = match self.view.hit(pt.x, pt.y) {
                 Hit::Pane(p) => Some(p),
                 _ => self.view.focused(),
@@ -569,8 +574,14 @@ impl App {
             self.view.release();
             self.dirty = true;
         }
+        if msg == WM_LBUTTONDOWN
+            && let Some(out) = self.view.palette_click(&hit, &self.spawn_ctx)
+        {
+            self.dirty = true;
+            return self.run_out(out);
+        }
         if msg == WM_LBUTTONDOWN {
-            if !matches!(hit, Hit::Pane(_) | Hit::Divider(_) | Hit::Sidebar | Hit::Bar | Hit::None) {
+            if !matches!(hit, Hit::Pane(_) | Hit::Divider(_) | Hit::Sidebar | Hit::Bar | Hit::None | Hit::PaletteRow(_) | Hit::Palette) {
                 self.view.press(hit.clone());
                 self.dirty = true;
             }
@@ -1301,12 +1312,9 @@ impl App {
             p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
         // Command palette / picker, centered over everything.
-        if let Some(pal) = self.view.palette() {
-            let (cw, row_h) = (m.w as i32, m.h as i32 + 6);
+        if let (Some(pal), Some(layout)) = (self.view.palette(), self.view.palette_layout()) {
+            let (cw, panel) = (m.w as i32, layout.panel);
             let items = pal.visible();
-            let shown = items.len().min(12);
-            let w = (60 * cw).min(self.size_px.0 as i32 - 2 * cw).max(10 * cw);
-            let panel = Rect { x: (self.size_px.0 as i32 - w) / 2, y: regions.tabbar.h + 12, w, h: (shown as i32 + 1) * row_h + 10 };
             p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, accent, 1.0);
             p.rect(panel, col.bar_bg, 1.0);
             let title = match pal.mode {
@@ -1315,10 +1323,9 @@ impl App {
                 Mode::MoveTab => "Move tab to › ",
             };
             p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}▏", pal.query), col.bar_fg, 1.0);
-            let first = pal.selected.saturating_sub(shown.saturating_sub(1));
-            for (n, item) in items.iter().skip(first).take(shown).enumerate() {
-                let r = Rect { x: panel.x, y: panel.y + 5 + (n as i32 + 1) * row_h, w: panel.w, h: row_h };
-                if first + n == pal.selected {
+            for &(i, r) in &layout.rows {
+                let Some(item) = items.get(i) else { continue };
+                if i == pal.selected {
                     p.rect(r, col.tab_active_bg, 1.0);
                     p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
                 }
