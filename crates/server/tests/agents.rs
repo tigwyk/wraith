@@ -20,5 +20,6 @@ fn agent_scan_reads_long_command_lines() {
     let detect = wraith_server::agentscan::compile(&[("marked".into(), "AGENT_MARKER_END".into())]);
     let found = wraith_server::agentscan::scan(&[p.id()], &detect);
     let _ = p.kill();
+    let _ = p.wait();
     assert_eq!(found.as_deref(), Some("marked"));
 }
