@@ -185,9 +185,8 @@ fn link_attach_window_and_open_a_tab() {
     let mut link = ServerLink::connect_with_env(&pipe, exe(), &layout_env()).unwrap();
     assert!(link.send(ClientMsg::AttachWindow { workspace: None }));
     let ws = loop {
-        match link.msgs.recv_timeout(Duration::from_secs(5)).unwrap() {
-            ServerMsg::WindowAttached { workspace } => break workspace,
-            _ => {}
+        if let ServerMsg::WindowAttached { workspace } = link.msgs.recv_timeout(Duration::from_secs(5)).unwrap() {
+            break workspace;
         }
     };
     link.send(ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: "cmd".into(), spawn: spawn() }));

@@ -71,17 +71,17 @@ pub struct HitCtx<'a> {
 }
 
 pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
-    if c.regions.tabbar.contains(x, y) {
-        if let Some((id, r)) = c.tabs.iter().find(|(_, r)| r.contains(x, y)) {
-            return if close_rect(*r, c.cell_w).contains(x, y) { Hit::TabClose(*id) } else { Hit::Tab(*id) };
-        }
-        return if c.new_tab.contains(x, y) { Hit::NewTab } else { Hit::Bar };
-    }
     if c.regions.sidebar.is_some_and(|s| s.contains(x, y)) {
         if let Some((id, _)) = c.workspaces.iter().find(|(_, r)| r.contains(x, y)) {
             return Hit::Workspace(*id);
         }
         return if c.new_workspace.contains(x, y) { Hit::NewWorkspace } else { Hit::Sidebar };
+    }
+    if c.regions.tabbar.contains(x, y) {
+        if let Some((id, r)) = c.tabs.iter().find(|(_, r)| r.contains(x, y)) {
+            return if close_rect(*r, c.cell_w).contains(x, y) { Hit::TabClose(*id) } else { Hit::Tab(*id) };
+        }
+        return if c.new_tab.contains(x, y) { Hit::NewTab } else { Hit::Bar };
     }
     if c.regions.content.contains(x, y) {
         if let Some(i) = c.dividers.iter().position(|d| {

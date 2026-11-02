@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, VK_F4, VK_MENU, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
@@ -213,6 +213,9 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
+/// Not exported by the windows crate.
+const WM_MOUSELEAVE: u32 = 0x02A3;
+
 pub(crate) struct App {
     pub(crate) win: Window,
     pub(crate) gpu: Gpu,
@@ -271,7 +274,7 @@ impl App {
             cell: (m.w, m.h),
             pad: self.pad_px(),
             bar_h: m.h as i32 + 10,
-            sidebar_cols: None,
+            sidebar_cols: self.view.geometry().sidebar_cols,
         }
     }
 
@@ -362,6 +365,12 @@ impl App {
                     && self.confirm("A process is still running in this terminal. End it?")
                 {
                     let msgs = self.view.close_pane(pane);
+                    self.send_all(msgs);
+                }
+                if let Some(ws) = out.confirm_close_workspace
+                    && self.confirm("Processes are still running in this workspace. Close it?")
+                {
+                    let msgs = self.view.close_workspace(ws);
                     self.send_all(msgs);
                 }
                 if out.ui == Some(Ui::NewWindow) {
@@ -477,9 +486,24 @@ impl App {
             }
             return;
         }
+        if msg == WM_MOUSEMOVE {
+            // Ask for WM_MOUSELEAVE so the hover-revealed sidebar can start its grace when the pointer leaves.
+            let mut track = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.win.hwnd(), dwHoverTime: 0 };
+            unsafe {
+                let _ = TrackMouseEvent(&mut track);
+            }
+            let before = self.view.floating_sidebar();
+            self.view.pointer_moved(x, y, Instant::now());
+            self.dirty |= before != self.view.floating_sidebar();
+        }
         let hit = self.view.hit(x, y);
         if msg == WM_LBUTTONDOWN {
             match hit {
+                Hit::Workspace(w) => {
+                    let msgs = self.view.workspace_click(w);
+                    return self.send_all(msgs);
+                }
+                Hit::NewWorkspace => return self.action(Action::NewWorkspace),
                 Hit::Divider(i) => {
                     self.view.start_divider_drag(i);
                     unsafe {
@@ -487,7 +511,10 @@ impl App {
                     }
                     return;
                 }
-                Hit::Tab(t) => return self.link.send(ClientMsg::Model(wraith_proto::model::ModelCmd::SelectTab(t))).then_some(()).unwrap_or(()),
+                Hit::Tab(t) => {
+                    self.link.send(ClientMsg::Model(wraith_proto::model::ModelCmd::SelectTab(t)));
+                    return;
+                }
                 Hit::TabClose(t) => return self.close_tab(t),
                 Hit::NewTab => return self.action(Action::NewTab),
                 Hit::Pane(p) => {
@@ -615,6 +642,9 @@ impl App {
                         return Some(LRESULT(0));
                     }
                 }
+                WM_MOUSELEAVE => {
+                    self.view.pointer_left(Instant::now());
+                }
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     self.focused = msg == WM_SETFOCUS;
                     self.dirty = true;
@@ -662,11 +692,11 @@ impl App {
                 self.set_title();
                 self.dirty = true;
             }
-            ServerMsg::WorkspaceTaken { .. } => {
+            ServerMsg::WorkspaceTaken { workspace } => {
                 // Another window took ours: show whatever is free (or a new workspace).
-                self.view.on_reconnect();
+                let msgs = self.view.on_workspace_taken(workspace);
+                self.send_all(msgs);
                 self.grids.clear();
-                self.link.send(ClientMsg::AttachWindow { workspace: None });
                 self.dirty = true;
             }
             ServerMsg::Event { pane, ev } => self.on_pane_event(pane, ev),
@@ -774,11 +804,14 @@ impl App {
             self.next_blink = now + Duration::from_millis(600);
             self.dirty = true;
         }
+        if self.view.tick(now) {
+            self.dirty = true;
+        }
         crate::reload::poll(self);
         self.try_render(false);
         let until_blink = self.next_blink.saturating_duration_since(Instant::now()).as_millis() as u32;
         let mut sleep = if self.config.cursor_style_blink { until_blink.max(1) } else { 1000 };
-        if let Some(t) = crate::reload::next_deadline(self) {
+        if let Some(t) = crate::reload::next_deadline(self).into_iter().chain(self.view.next_deadline()).min() {
             sleep = sleep.min(t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
         }
         // A pending key sequence must time out even with no other activity.
@@ -878,6 +911,34 @@ impl App {
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        // Sidebar: docked, or floating over the panes while the pointer rests on the left edge.
+        if let Some(s) = self.view.sidebar_rect() {
+            p.rect(s, col.bar_bg, 1.0);
+            if self.view.floating_sidebar().is_some() {
+                p.rect(Rect { x: s.x + s.w - 1, y: s.y, w: 1, h: s.h }, col.divider, 1.0);
+            }
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, s.x + pad_x, 6, "WORKSPACES", col.bar_fg_dim, 1.0);
+            let (rects, new_row) = self.view.workspace_rects();
+            let rows = self.view.sidebar_rows();
+            let chip = m.h as i32 / 2;
+            for ((_, r), row) in rects.iter().zip(&rows) {
+                if row.current {
+                    p.rect(*r, col.tab_active_bg, 1.0);
+                    p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                }
+                let c = ((row.color >> 16) as u8, (row.color >> 8) as u8, row.color as u8);
+                p.rect(Rect { x: r.x + pad_x, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, c, 1.0);
+                let tx = r.x + pad_x + chip + pad_x;
+                let cells = ((r.w - (tx - r.x) - pad_x) / m.w as i32).max(0) as usize;
+                let tc = if row.current { col.bar_fg } else { col.bar_fg_dim };
+                let name = truncate_cells(&row.name, cells);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, tx, r.y + (r.h - m.h as i32) / 2, &name, tc, if row.elsewhere { 0.6 } else { 1.0 });
+                if row.attention {
+                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                }
+            }
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", col.bar_fg_dim, 1.0);
+        }
         // Notices.
         let notice = |p: &mut Painter, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, text: &str, at_bottom: bool, left: bool| {
             let w = crate::paint::text_width(fonts, text);
@@ -1054,6 +1115,7 @@ pub fn run() -> Result<()> {
     };
     let mut view = WindowView::new(geom, double_click);
     view.set_dim_opacity(config.unfocused_split_opacity);
+    view.set_sidebar(config.sidebar_visible, config.sidebar_width);
     let app = Rc::new(RefCell::new(App {
         win,
         gpu,

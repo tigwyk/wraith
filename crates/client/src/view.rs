@@ -3,7 +3,7 @@
 //! protocol messages. Pure state, no window or GPU, so it is tested directly.
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wraith_config::{Action, Config, SplitTarget};
 use wraith_proto::model::{Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
@@ -73,6 +73,7 @@ pub enum Ui {
 pub struct Out {
     pub msgs: Vec<ClientMsg>,
     pub confirm_close: Option<PaneId>,
+    pub confirm_close_workspace: Option<WorkspaceId>,
     pub ui: Option<Ui>,
 }
 
@@ -98,6 +99,30 @@ struct Drag {
     divider: Divider,
 }
 
+/// One workspace row of the sidebar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SidebarRow {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub color: u32,
+    /// An agent in the workspace needs input (always false until agent state exists, M4).
+    pub attention: bool,
+    pub current: bool,
+    /// Another window shows it.
+    pub elsewhere: bool,
+}
+
+/// How long the hover-revealed sidebar lingers after the pointer leaves it (spec §4.2).
+const HOVER_GRACE: Duration = Duration::from_millis(300);
+/// Width of the left-edge strip that reveals a hidden sidebar.
+const HOVER_STRIP: i32 = 8;
+
+#[derive(Default)]
+struct Hover {
+    revealed: bool,
+    leave_at: Option<Instant>,
+}
+
 pub struct WindowView {
     geom: Geometry,
     snap: ModelSnapshot,
@@ -111,6 +136,13 @@ pub struct WindowView {
     dim_opacity: f32,
     double_click: Duration,
     drag: Option<Drag>,
+    sidebar_visible: bool,
+    sidebar_cols: u16,
+    hover: Hover,
+    /// We asked for a new workspace and will attach it when it shows up.
+    awaiting_new_ws: bool,
+    known_ws: HashSet<WorkspaceId>,
+    configured_done: bool,
 }
 
 impl WindowView {
@@ -127,7 +159,121 @@ impl WindowView {
             dim_opacity: 1.0,
             double_click,
             drag: None,
+            sidebar_visible: false,
+            sidebar_cols: 24,
+            hover: Hover::default(),
+            awaiting_new_ws: false,
+            known_ws: HashSet::new(),
+            configured_done: false,
         }
+    }
+
+    /// Dock the sidebar (or hide it); panes are resized to the space left.
+    pub fn set_sidebar(&mut self, visible: bool, cols: u16) -> Vec<ClientMsg> {
+        self.sidebar_visible = visible;
+        self.sidebar_cols = cols;
+        self.geom.sidebar_cols = visible.then_some(cols);
+        self.hover = Hover::default();
+        self.relayout()
+    }
+
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_visible
+    }
+
+    fn sidebar_px(&self) -> i32 {
+        (i32::from(self.sidebar_cols) * self.geom.cell.0 as i32).clamp(0, self.geom.client.0.max(0) / 2)
+    }
+
+    /// The hover-revealed sidebar: drawn over the panes, never resizing them.
+    pub fn floating_sidebar(&self) -> Option<Rect> {
+        (!self.sidebar_visible && self.hover.revealed).then(|| Rect { x: 0, y: 0, w: self.sidebar_px(), h: self.geom.client.1.max(0) })
+    }
+
+    /// The sidebar being shown, docked or floating.
+    pub fn sidebar_rect(&self) -> Option<Rect> {
+        self.regions().sidebar.or_else(|| self.floating_sidebar())
+    }
+
+    pub fn pointer_moved(&mut self, x: i32, _y: i32, now: Instant) {
+        if self.sidebar_visible {
+            return;
+        }
+        if x < HOVER_STRIP {
+            self.hover = Hover { revealed: true, leave_at: None };
+        } else if self.hover.revealed {
+            self.hover.leave_at = if x < self.sidebar_px() { None } else { self.hover.leave_at.or(Some(now)) };
+        }
+    }
+
+    pub fn pointer_left(&mut self, now: Instant) {
+        if self.hover.revealed {
+            self.hover.leave_at.get_or_insert(now);
+        }
+    }
+
+    /// Hide the floating sidebar once its grace is over; true when that changed what is drawn.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        match self.hover.leave_at {
+            Some(t) if self.hover.revealed && now >= t + HOVER_GRACE => {
+                self.hover = Hover::default();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.hover.leave_at.filter(|_| self.hover.revealed).map(|t| t + HOVER_GRACE)
+    }
+
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        self.snap
+            .workspaces
+            .iter()
+            .map(|w| SidebarRow {
+                id: w.id,
+                name: w.name.clone(),
+                color: w.color,
+                attention: false,
+                current: Some(w.id) == self.workspace,
+                elsewhere: w.attached && Some(w.id) != self.workspace,
+            })
+            .collect()
+    }
+
+    /// Row rectangles of the sidebar and its trailing "new workspace" row.
+    pub fn workspace_rects(&self) -> (Vec<(WorkspaceId, Rect)>, Rect) {
+        let Some(s) = self.sidebar_rect() else { return (Vec::new(), Rect::default()) };
+        let cell_h = self.geom.cell.1 as i32;
+        let (row_h, y0) = (cell_h + 8, 6 + cell_h + 6);
+        let rows: Vec<(WorkspaceId, Rect)> =
+            self.snap.workspaces.iter().enumerate().map(|(i, w)| (w.id, Rect { x: s.x, y: y0 + i as i32 * row_h, w: s.w, h: row_h })).collect();
+        let new = Rect { x: s.x, y: y0 + rows.len() as i32 * row_h, w: s.w, h: row_h };
+        (rows, new)
+    }
+
+    /// A click on a workspace row: show it here (taking it from another window if needed).
+    pub fn workspace_click(&self, id: WorkspaceId) -> Vec<ClientMsg> {
+        if self.workspace == Some(id) { Vec::new() } else { vec![ClientMsg::AttachWindow { workspace: Some(id) }] }
+    }
+
+    /// Another window took our workspace: ask for a free one (or a new one); the window stays open.
+    pub fn on_workspace_taken(&mut self, ws: WorkspaceId) -> Vec<ClientMsg> {
+        if self.workspace != Some(ws) {
+            return Vec::new();
+        }
+        self.workspace = None;
+        self.requested_tab_for = None;
+        self.subscribed.clear();
+        self.panes.clear();
+        self.drag = None;
+        vec![ClientMsg::AttachWindow { workspace: None }]
+    }
+
+    /// The user confirmed closing a workspace (or it had nothing running).
+    pub fn close_workspace(&self, ws: WorkspaceId) -> Vec<ClientMsg> {
+        vec![ClientMsg::Model(ModelCmd::CloseWorkspace(ws))]
     }
 
     pub fn snapshot(&self) -> &ModelSnapshot {
@@ -156,6 +302,9 @@ impl WindowView {
         self.colored.clear();
         self.panes.clear();
         self.drag = None;
+        self.known_ws.clear();
+        self.awaiting_new_ws = false;
+        self.configured_done = false;
     }
 
     pub fn set_dim_opacity(&mut self, opacity: f32) {
@@ -269,6 +418,29 @@ impl WindowView {
         self.sent_size.retain(|p, _| live.contains(p));
         self.colored.retain(|p| live.contains(p));
         let mut msgs = Vec::new();
+        let ids: HashSet<WorkspaceId> = self.snap.workspaces.iter().map(|w| w.id).collect();
+        if self.awaiting_new_ws
+            && let Some(new) = ids.iter().filter(|i| !self.known_ws.contains(i)).max()
+        {
+            self.awaiting_new_ws = false;
+            msgs.push(ClientMsg::AttachWindow { workspace: Some(*new) });
+        }
+        if !self.configured_done {
+            self.configured_done = true;
+            for def in &ctx.config.workspaces {
+                if !self.snap.workspaces.iter().any(|w| w.name == def.name) {
+                    let prof = ctx.profile(None);
+                    msgs.push(ClientMsg::Model(ModelCmd::NewWorkspace {
+                        name: Some(def.name.clone()),
+                        root_dir: def.dir.clone(),
+                        profile: prof.name.clone(),
+                        layout: def.layout.clone(),
+                        spawn: ctx.spawn(prof, def.dir.as_deref(), self.est_cells(), self.cell_px()),
+                    }));
+                }
+            }
+        }
+        self.known_ws = ids;
         if let Some(ws) = self.workspace.and_then(|w| self.snap.workspace(w))
             && ws.tabs.is_empty()
         {
@@ -301,6 +473,10 @@ impl WindowView {
     }
 
     pub fn action(&mut self, a: Action, ctx: &SpawnCtx) -> Out {
+        if a == Action::ToggleSidebar {
+            let visible = !self.sidebar_visible;
+            return Out::msgs(self.set_sidebar(visible, self.sidebar_cols));
+        }
         let Some(ws) = self.workspace else { return Out::default() };
         let tab = self.active_tab().cloned();
         let tabs = self.snap.workspace(ws).map(|w| w.tabs.clone()).unwrap_or_default();
@@ -362,6 +538,29 @@ impl WindowView {
                     Out { confirm_close: Some(t.focused), ..Out::default() }
                 }
             }
+            Action::NewWorkspace => {
+                self.awaiting_new_ws = true;
+                let prof = ctx.profile(None);
+                let home = std::env::var("USERPROFILE").ok();
+                Out::model(ModelCmd::NewWorkspace {
+                    name: None,
+                    root_dir: None,
+                    profile: prof.name.clone(),
+                    layout: "single".into(),
+                    spawn: ctx.spawn(prof, home.as_deref(), self.est_cells(), self.cell_px()),
+                })
+            }
+            Action::CloseWorkspace => {
+                let running = self.snap.tabs.iter().filter(|t| t.workspace == ws).flat_map(|t| t.root.leaves()).any(|p| self.pane_exit(p).is_none());
+                if running { Out { confirm_close_workspace: Some(ws), ..Out::default() } } else { Out::msgs(self.close_workspace(ws)) }
+            }
+            Action::NextWorkspace | Action::PreviousWorkspace if self.snap.workspaces.len() > 1 => {
+                let ids: Vec<WorkspaceId> = self.snap.workspaces.iter().map(|w| w.id).collect();
+                let i = ids.iter().position(|&w| w == ws).unwrap_or(0);
+                let n = ids.len();
+                let to = ids[if a == Action::NextWorkspace { (i + 1) % n } else { (i + n - 1) % n }];
+                Out::msgs(vec![ClientMsg::AttachWindow { workspace: Some(to) }])
+            }
             Action::CommandPalette => Out { ui: Some(Ui::Palette), ..Out::default() },
             Action::WorkspacePicker => Out { ui: Some(Ui::Picker), ..Out::default() },
             Action::MoveTabToWorkspace => Out { ui: Some(Ui::MoveTab), ..Out::default() },
@@ -408,16 +607,18 @@ impl WindowView {
     }
 
     pub fn hit(&self, x: i32, y: i32) -> Hit {
-        let regions = self.regions();
+        let mut regions = self.regions();
+        regions.sidebar = self.sidebar_rect();
         let (tabs, new_tab) = self.tab_layout(0);
+        let (workspaces, new_workspace) = self.workspace_rects();
         let panes = self.visible();
         let dividers = self.dividers();
         let c = HitCtx {
             regions: &regions,
             tabs: &tabs,
             new_tab,
-            workspaces: &[],
-            new_workspace: Rect::default(),
+            workspaces: &workspaces,
+            new_workspace,
             panes: &panes,
             dividers: &dividers,
             cell_w: self.geom.cell.0 as i32,

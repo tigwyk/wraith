@@ -79,7 +79,7 @@ pub fn git_bash_profile(program_files: &Path) -> Option<Profile> {
 
 /// Distro names from `wsl.exe -l -q` output (UTF-16LE). Docker's internal distros are not shells.
 pub fn decode_wsl_list(bytes: &[u8]) -> Vec<String> {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
     String::from_utf16_lossy(&units)
         .trim_start_matches('\u{feff}')
         .lines()

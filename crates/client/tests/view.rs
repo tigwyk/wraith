@@ -94,7 +94,13 @@ fn snapshot_creates_views_and_subscribes_only_visible_tab() {
     assert_eq!(subscribes(&msgs), vec![vec![1, 2]]);
     // 1000x574 content, one 1 px divider: panes 500 and 499 px wide, minus 2 px padding a side.
     assert_eq!(resizes(&msgs), vec![(1, 62, 35), (2, 61, 35)]);
-    let colors: Vec<PaneId> = msgs.iter().filter_map(|m| matches!(m, ClientMsg::Cmd { cmd: PaneCmd::SetColors { .. }, .. }).then(|| if let ClientMsg::Cmd { pane, .. } = m { *pane } else { 0 })).collect();
+    let colors: Vec<PaneId> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            ClientMsg::Cmd { pane, cmd: PaneCmd::SetColors { .. } } => Some(*pane),
+            _ => None,
+        })
+        .collect();
     assert_eq!(colors, vec![1, 2]);
     assert!(matches!(msgs.last(), Some(ClientMsg::Subscribe { .. })), "subscribe last, so the first frame has the right size and colors");
     let ids: Vec<PaneId> = v.visible().iter().map(|(p, _)| *p).collect();
@@ -282,4 +288,156 @@ fn palette_and_window_actions_are_ui_requests() {
     assert_eq!(v.action(Action::CommandPalette, &ctx()).ui, Some(Ui::Palette));
     assert_eq!(v.action(Action::WorkspacePicker, &ctx()).ui, Some(Ui::Picker));
     assert_eq!(v.action(Action::NewWindow, &ctx()).ui, Some(Ui::NewWindow));
+}
+
+// ---- Task 9: sidebar and workspace switching ----
+
+use std::time::Instant;
+use wraith_config::WorkspaceDef;
+
+fn ws(id: WorkspaceId, name: &str, attached: bool) -> Workspace {
+    Workspace { id, name: name.into(), root_dir: None, color: 0x3366cc, tabs: vec![], active_tab: None, profile: "pwsh".into(), attached, last_used: id }
+}
+
+/// `snap(10)` plus workspaces 2 and 3 (both empty, detached).
+fn three_workspaces() -> ModelSnapshot {
+    let mut s = snap(10);
+    s.workspaces.push(ws(2, "web", false));
+    s.workspaces.push(ws(3, "infra", false));
+    s
+}
+
+fn with_sidebar() -> WindowView {
+    let mut v = view();
+    v.set_sidebar(true, 24);
+    v
+}
+
+#[test]
+fn toggle_sidebar_changes_regions() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    assert_eq!(v.regions().sidebar, Some(Rect { x: 0, y: 0, w: 192, h: 600 }));
+    assert_eq!(v.regions().content.x, 192);
+    let docked_cols = v.visible()[0].1.w;
+    let out = v.action(Action::ToggleSidebar, &ctx());
+    assert_eq!(v.regions().sidebar, None);
+    assert_eq!(v.regions().content.x, 0);
+    assert!(v.visible()[0].1.w > docked_cols);
+    assert!(!resizes(&out.msgs).is_empty(), "panes grow into the freed space");
+    v.action(Action::ToggleSidebar, &ctx());
+    assert!(v.regions().sidebar.is_some());
+}
+
+#[test]
+fn hover_strip_reveals_after_grace_and_hides_after_300ms() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    v.action(Action::ToggleSidebar, &ctx());
+    let t0 = Instant::now();
+    assert!(v.floating_sidebar().is_none());
+    v.pointer_moved(3, 100, t0);
+    assert_eq!(v.floating_sidebar(), Some(Rect { x: 0, y: 0, w: 192, h: 600 }));
+    assert_eq!(v.regions().content.x, 0, "revealing floats over the panes, it does not resize them");
+    v.pointer_moved(100, 100, t0 + Duration::from_millis(100));
+    assert!(v.floating_sidebar().is_some(), "inside the sidebar it stays");
+    v.pointer_moved(600, 100, t0 + Duration::from_millis(200));
+    assert!(!v.tick(t0 + Duration::from_millis(300)), "300 ms grace not over yet");
+    assert!(v.floating_sidebar().is_some());
+    assert!(v.next_deadline().is_some());
+    assert!(v.tick(t0 + Duration::from_millis(520)));
+    assert!(v.floating_sidebar().is_none());
+    v.pointer_moved(3, 100, t0 + Duration::from_secs(1));
+    v.pointer_left(t0 + Duration::from_secs(1));
+    assert!(v.tick(t0 + Duration::from_millis(1400)), "leaving the window starts the grace too");
+    assert!(v.floating_sidebar().is_none());
+}
+
+#[test]
+fn clicking_workspace_sends_attach_window() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let (rows, _) = v.workspace_rects();
+    assert_eq!(rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    let r2 = rows[1].1;
+    assert_eq!(v.hit(r2.x + 5, r2.y + 5), Hit::Workspace(2));
+    assert_eq!(v.workspace_click(2), vec![ClientMsg::AttachWindow { workspace: Some(2) }]);
+    assert!(v.workspace_click(1).is_empty(), "already showing it");
+}
+
+#[test]
+fn next_previous_workspace_wrap() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let attach = |id| vec![ClientMsg::AttachWindow { workspace: Some(id) }];
+    assert_eq!(v.action(Action::NextWorkspace, &ctx()).msgs, attach(2));
+    assert_eq!(v.action(Action::PreviousWorkspace, &ctx()).msgs, attach(3));
+}
+
+#[test]
+fn workspace_taken_attaches_another_without_closing_window() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    assert!(v.on_workspace_taken(9).is_empty(), "not our workspace");
+    assert_eq!(v.workspace(), Some(1));
+    assert_eq!(v.on_workspace_taken(1), vec![ClientMsg::AttachWindow { workspace: None }]);
+    assert_eq!(v.workspace(), None);
+    assert!(v.visible().is_empty(), "nothing is drawn for a workspace we no longer hold");
+}
+
+#[test]
+fn new_workspace_is_attached_when_it_appears() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let out = v.action(Action::NewWorkspace, &ctx());
+    let [ClientMsg::Model(ModelCmd::NewWorkspace { name, root_dir, profile, layout, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((name.as_deref(), root_dir.as_deref(), profile.as_str(), layout.as_str()), (None, None, "pwsh", "single"));
+    let mut s = three_workspaces();
+    s.workspaces.push(ws(4, "Workspace 4", false));
+    let msgs = v.on_snapshot(s.clone(), &ctx());
+    assert!(msgs.contains(&ClientMsg::AttachWindow { workspace: Some(4) }), "{msgs:?}");
+    s.workspaces.push(ws(5, "someone else's", false));
+    assert!(!v.on_snapshot(s, &ctx()).iter().any(|m| matches!(m, ClientMsg::AttachWindow { .. })), "only the workspace we asked for");
+}
+
+#[test]
+fn configured_workspaces_missing_from_snapshot_are_created_once() {
+    let mut c = ctx();
+    c.config.workspaces = vec![
+        WorkspaceDef { name: "api".into(), dir: Some("C:/src".into()), layout: "cols".into() },
+        WorkspaceDef { name: "web".into(), dir: None, layout: "single".into() },
+    ];
+    let mut v = view();
+    let msgs = v.on_snapshot(three_workspaces(), &c); // "web" exists already
+    let made: Vec<_> = msgs
+        .iter()
+        .filter_map(|m| match m {
+            ClientMsg::Model(ModelCmd::NewWorkspace { name, root_dir, layout, spawn, .. }) => Some((name.clone(), root_dir.clone(), layout.clone(), spawn.cwd.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(made, vec![(Some("api".to_string()), Some("C:/src".to_string()), "cols".to_string(), Some("C:/src".to_string()))]);
+    let again = v.on_snapshot(three_workspaces(), &c);
+    assert!(!again.iter().any(|m| matches!(m, ClientMsg::Model(ModelCmd::NewWorkspace { .. }))), "created once per window");
+}
+
+#[test]
+fn close_workspace_asks_when_shells_run() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let out = v.action(Action::CloseWorkspace, &ctx());
+    assert!(out.msgs.is_empty());
+    assert_eq!(out.confirm_close_workspace, Some(1));
+    assert_eq!(v.close_workspace(1), vec![ClientMsg::Model(ModelCmd::CloseWorkspace(1))]);
+}
+
+#[test]
+fn attention_dot_is_false_in_m3() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let rows = v.sidebar_rows();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|r| !r.attention));
+    assert!(rows[0].current && !rows[1].current);
+    assert_eq!(rows[1].name, "web");
 }
