@@ -448,6 +448,7 @@ impl App {
             Some(Ui::Palette) => self.view.open_palette(Mode::Palette, &self.spawn_ctx),
             Some(Ui::Picker) => self.view.open_palette(Mode::Picker, &self.spawn_ctx),
             Some(Ui::MoveTab) => self.view.open_palette(Mode::MoveTab, &self.spawn_ctx),
+            Some(Ui::Settings) => {}
             None => {}
         }
     }

@@ -63,6 +63,7 @@ pub enum Action {
     MoveTabToWorkspace,
     ToggleSidebar,
     NewWindow,
+    OpenSettings,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +121,7 @@ impl Action {
             Action::MoveTabToWorkspace => "move_tab_to_workspace",
             Action::ToggleSidebar => "toggle_sidebar",
             Action::NewWindow => "new_window",
+            Action::OpenSettings => "open_settings",
         }
     }
 }
@@ -158,6 +160,7 @@ pub fn all_actions() -> Vec<(Action, &'static str)> {
         (CloseSurface, "close_surface"),
         (NewWindow, "new_window"),
         (ToggleSidebar, "toggle_sidebar"),
+        (OpenSettings, "open_settings"),
         (CommandPalette, "command_palette"),
         (Find, "find"),
         (Copy, "copy_to_clipboard"),
@@ -263,6 +266,7 @@ fn parse_action(s: &str) -> Result<Action, String> {
         "move_tab_to_workspace" => Action::MoveTabToWorkspace,
         "toggle_sidebar" => Action::ToggleSidebar,
         "new_window" => Action::NewWindow,
+        "open_settings" => Action::OpenSettings,
         _ => return Err(format!("unknown action `{name}`")),
     })
 }
@@ -295,6 +299,7 @@ pub fn defaults() -> Vec<Keybind> {
         "ctrl+shift+f=find",
         "ctrl+shift+o=workspace_picker",
         "ctrl+shift+n=new_window",
+        "ctrl+comma=open_settings",
     ]
     .iter()
     .map(|s| parse_keybind(s).expect("default keybind"))

@@ -70,6 +70,7 @@ pub enum Ui {
     Picker,
     MoveTab,
     NewWindow,
+    Settings,
 }
 
 /// What a shell exit does (see `WindowView::on_exit`).
@@ -841,6 +842,9 @@ impl WindowView {
     }
 
     pub fn action(&mut self, a: Action, ctx: &SpawnCtx) -> Out {
+        if a == Action::OpenSettings {
+            return Out { ui: Some(Ui::Settings), ..Out::default() };
+        }
         if a == Action::ToggleSidebar {
             let visible = !self.sidebar_visible;
             return Out::msgs(self.set_sidebar(visible, self.sidebar_cols));

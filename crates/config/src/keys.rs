@@ -85,7 +85,8 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             if value.is_empty() {
                 n = AgentNotify { when_always: n.when_always, quiet: n.quiet, ..AgentNotify::default() };
             }
-            for w in value.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            // `none`, alone, turns every way off (an empty value means the default instead).
+            for w in value.split(',').map(str::trim).filter(|w| !w.is_empty() && value.trim() != "none") {
                 match w {
                     "toast" => n.toast = true,
                     "flash" => n.flash = true,
