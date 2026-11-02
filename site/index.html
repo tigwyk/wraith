@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wraith — a native Windows terminal</title>
+<meta name="description" content="A fast, native Windows terminal built on libghostty-vt. Shells that outlive the window, workspaces, splits, inline images, and coding agents that ask for you.">
+<link rel="icon" href="wraith.svg" type="image/svg+xml">
+<meta property="og:title" content="Wraith — a native Windows terminal">
+<meta property="og:description" content="Ghostty's terminal core in a native Win32 window. Shells that outlive the window, and agents that ask for you.">
+<meta property="og:image" content="wraith-256.png">
+<style>
+  :root {
+    --bg: #0b0d10;
+    --bg-2: #12151a;
+    --panel: #161a20;
+    --line: #232832;
+    --fg: #e6e9ef;
+    --dim: #8b93a1;
+    --blue: #0078d4;
+    --blue-hi: #3b9cff;
+    --orange: #ff8a3d;
+    --green: #3ccf91;
+    --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, ui-monospace, monospace;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --r: 12px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+  a { color: var(--blue-hi); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd { font-family: var(--mono); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  /* nav */
+  nav { position: sticky; top: 0; z-index: 10; background: rgba(11,13,16,.82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; align-items: center; gap: 24px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; color: var(--fg); font-size: 17px; }
+  .brand img { width: 26px; height: 26px; image-rendering: pixelated; }
+  nav .links { margin-left: auto; display: flex; gap: 22px; font-size: 14.5px; }
+  nav .links a { color: var(--dim); }
+  nav .links a:hover { color: var(--fg); text-decoration: none; }
+
+  /* hero */
+  .hero { padding: 72px 0 40px; text-align: center; position: relative; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; inset: -40% -10% auto; height: 620px; background: radial-gradient(closest-side, rgba(0,120,212,.28), transparent 70%); pointer-events: none; }
+  .mascot { width: 128px; height: 128px; image-rendering: pixelated; position: relative; animation: float 4.5s ease-in-out infinite; filter: drop-shadow(0 18px 30px rgba(0,120,212,.35)); }
+  @keyframes float { 50% { transform: translateY(-8px); } }
+  h1 { font-size: clamp(36px, 6vw, 60px); line-height: 1.08; letter-spacing: -.02em; margin: 26px auto 14px; max-width: 14ch; position: relative; }
+  h1 em { font-style: normal; background: linear-gradient(90deg, var(--blue-hi), #8fd3ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { color: var(--dim); font-size: clamp(17px, 2.2vw, 20px); max-width: 640px; margin: 0 auto 30px; position: relative; }
+  .lede code { color: var(--fg); font-size: .92em; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; position: relative; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid var(--line); color: var(--fg); background: var(--panel); }
+  .btn:hover { text-decoration: none; border-color: #36404f; }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { background: #1688e0; }
+  .meta { color: var(--dim); font-size: 13.5px; margin-top: 14px; position: relative; }
+
+  /* window mock */
+  .window { margin: 52px auto 0; max-width: 940px; text-align: left; border-radius: 14px; border: 1px solid #2a303b; background: #0d0f12; box-shadow: 0 40px 90px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02); overflow: hidden; font: 13px/1.55 var(--mono); position: relative; }
+  .bar { display: flex; align-items: stretch; height: 36px; background: #14171c; border-bottom: 1px solid #22272f; }
+  .bar .side-h { width: 190px; padding: 0 12px; display: flex; align-items: center; color: #6c7482; font-size: 11.5px; letter-spacing: .08em; border-right: 1px solid #22272f; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 0 14px; color: #8b93a1; border-right: 1px solid #1d2128; white-space: nowrap; }
+  .tab.on { color: var(--fg); background: #0d0f12; box-shadow: inset 0 -2px 0 var(--blue-hi); }
+  .tab .x { color: #59606c; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 0 rgba(255,138,61,.6); animation: ping 1.6s ease-out infinite; }
+  @keyframes ping { 70% { box-shadow: 0 0 0 7px rgba(255,138,61,0); } 100% { box-shadow: 0 0 0 0 rgba(255,138,61,0); } }
+  .spin { color: var(--blue-hi); }
+  .caps { margin-left: auto; display: flex; gap: 18px; align-items: center; padding: 0 16px; color: #6c7482; }
+  .body { display: grid; grid-template-columns: 190px 1fr; min-height: 330px; }
+  .side { border-right: 1px solid #1d2128; padding: 10px 0; background: #0f1215; }
+  .side .row { padding: 3px 12px; color: #a6adba; display: flex; align-items: center; gap: 8px; }
+  .side .row.cur { color: var(--fg); background: #171b21; box-shadow: inset 2px 0 0 var(--blue-hi); }
+  .chip { width: 8px; height: 8px; border-radius: 2px; }
+  .side .leaf { padding-left: 30px; color: #6c7482; }
+  .side .hd { margin: 14px 12px 4px; color: #6c7482; font-size: 11px; letter-spacing: .08em; }
+  .side .agent { justify-content: space-between; }
+  .panes { display: grid; grid-template-columns: 1.25fr 1fr; grid-template-rows: 1fr 1fr; }
+  .pane { padding: 12px 14px; color: #c9ced8; overflow: hidden; }
+  .pane > div { white-space: pre; }
+  .pane.a { grid-row: span 2; border-right: 1px solid #262c35; box-shadow: inset 0 0 0 1px rgba(59,156,255,.55); }
+  .pane.c { border-top: 1px solid #262c35; }
+  .p { color: var(--green); }
+  .d { color: #6c7482; }
+  .y { color: #e5c07b; }
+  .o { color: var(--orange); }
+  .b { color: var(--blue-hi); }
+  .cur-blk { display: inline-block; width: .6em; height: 1.1em; background: #c9ced8; vertical-align: text-bottom; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .toast { position: absolute; left: 214px; bottom: 18px; width: 300px; background: #1d2129; border: 1px solid #2f3643; border-radius: 10px; padding: 12px 14px; font: 13px/1.45 var(--sans); box-shadow: 0 16px 40px rgba(0,0,0,.5); animation: rise .6s 1.2s both cubic-bezier(.2,.8,.2,1); }
+  .toast b { display: block; font-weight: 600; margin-bottom: 2px; }
+  .toast span { color: var(--dim); }
+  .toast .open { margin-top: 10px; display: inline-block; padding: 4px 12px; border-radius: 6px; background: #2a303b; font-size: 12.5px; }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+
+  /* sections */
+  section { padding: 84px 0 0; }
+  .kicker { color: var(--blue-hi); font-size: 13px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+  h2 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -.015em; line-height: 1.15; margin: 8px 0 14px; }
+  .sub { color: var(--dim); max-width: 640px; margin: 0 0 36px; font-size: 17px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
+  .card h3 { margin: 12px 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--dim); font-size: 15px; }
+  .ico { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; background: rgba(0,120,212,.14); color: var(--blue-hi); font: 600 17px var(--mono); }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .split > * { min-width: 0; }
+  ul.ticks { list-style: none; padding: 0; margin: 0; }
+  ul.ticks li { padding-left: 26px; position: relative; margin: 10px 0; color: #c3c8d2; }
+  ul.ticks li::before { content: ""; position: absolute; left: 4px; top: .62em; width: 8px; height: 8px; border-radius: 50%; background: var(--orange); }
+  .harness { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .harness span { font: 13px var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: #c3c8d2; background: var(--bg-2); }
+
+  pre.code { margin: 0; background: #0d0f12; border: 1px solid var(--line); border-radius: var(--r); padding: 18px 76px 18px 20px; overflow-x: auto; font-size: 14px; line-height: 1.7; color: #c9ced8; position: relative; }
+  .copy { position: absolute; top: 10px; right: 10px; font: 12px var(--sans); color: var(--dim); background: #1a1e25; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  .copy:hover { color: var(--fg); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  td { padding: 9px 0; border-bottom: 1px solid var(--line); color: #c3c8d2; }
+  td:first-child { width: 48%; }
+  kbd { font-size: 12.5px; padding: 2px 7px; border-radius: 5px; border: 1px solid #2f3643; border-bottom-width: 2px; background: #161a20; color: var(--fg); white-space: nowrap; }
+
+  .road { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .ms { border: 1px solid var(--line); background: var(--bg-2); border-radius: 10px; padding: 14px 16px; }
+  .ms .n { font: 600 12px var(--mono); color: var(--green); }
+  .ms.todo .n { color: var(--dim); }
+  .ms p { margin: 4px 0 0; font-size: 14px; color: #c3c8d2; }
+
+  footer { margin-top: 96px; border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--dim); font-size: 14px; }
+  footer .wrap { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  footer img { width: 20px; height: 20px; image-rendering: pixelated; }
+  footer .r { margin-left: auto; }
+
+  @media (max-width: 860px) {
+    .grid { grid-template-columns: 1fr 1fr; }
+    .split { grid-template-columns: 1fr; }
+    .road { grid-template-columns: 1fr 1fr; }
+    .body { grid-template-columns: 1fr; }
+    .side, .bar .side-h { display: none; }
+    .toast { width: auto; left: 18px; right: 18px; }
+  }
+  @media (max-width: 560px) {
+    nav .links a.hide-s { display: none; }
+    .grid { grid-template-columns: 1fr; }
+    .panes { grid-template-columns: 1fr; }
+    .pane.a { grid-row: auto; border-right: 0; }
+    .pane.b { border-top: 1px solid #262c35; }
+    .tab:nth-of-type(n+3), .caps { display: none; }
+    .window { font-size: 12px; }
+    .toast { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="wraith.svg" alt="">Wraith</a>
+    <div class="links">
+      <a class="hide-s" href="#features">Features</a>
+      <a class="hide-s" href="#agents">Agents</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/tigwyk/wraith">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="mascot" src="wraith.svg" alt="Wraith's mascot: a ghost made of four window panes">
+    <h1>A terminal that <em>haunts</em> your session, not your CPU.</h1>
+    <p class="lede">Wraith is a fast, native Windows terminal built on Ghostty's <code>libghostty-vt</code>. Shells outlive the window, workspaces keep your tabs apart, and coding agents tap you on the shoulder when they need you.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/tigwyk/wraith/releases/latest">Download for Windows</a>
+      <a class="btn" href="https://github.com/tigwyk/wraith">View on GitHub</a>
+    </div>
+    <div class="meta">Windows 10 1809+ and Windows 11 · x64 · per-user install, no admin</div>
+
+    <div class="window" role="img" aria-label="A Wraith window: a sidebar of workspaces and agents, three tabs, and three split panes, with a toast saying Claude needs input">
+      <div class="bar">
+        <div class="side-h">WORKSPACES</div>
+        <div class="tab"><span class="b">◆</span> claude <span class="dot"></span> <span class="x">×</span></div>
+        <div class="tab on">pwsh <span class="x">×</span></div>
+        <div class="tab"><span class="b">✱</span> codex <span class="spin">⠹</span> <span class="x">×</span></div>
+        <div class="tab"><span class="d">+</span></div>
+        <div class="caps"><span>─</span><span>□</span><span>✕</span></div>
+      </div>
+      <div class="body">
+        <aside class="side">
+          <div class="row cur"><span class="chip" style="background:#3b9cff"></span>api</div>
+          <div class="row leaf">claude</div>
+          <div class="row leaf">pwsh</div>
+          <div class="row leaf">codex</div>
+          <div class="row"><span class="chip" style="background:#3ccf91"></span>web</div>
+          <div class="row"><span class="chip" style="background:#c678dd"></span>infra</div>
+          <div class="hd">AGENTS</div>
+          <div class="row agent"><span><span class="o">●</span> claude</span><span class="d">asks</span></div>
+          <div class="row agent"><span><span class="b">◐</span> codex</span><span class="d">working</span></div>
+        </aside>
+        <div class="panes">
+          <div class="pane a">
+            <div><span class="p">PS C:\src\api&gt;</span> cargo test --workspace</div>
+            <div class="d">   Compiling wraith-server v0.1.0</div>
+            <div class="d">    Finished test profile in 4.21s</div>
+            <div>test result: <span class="p">ok</span>. 453 passed; 0 failed</div>
+            <div>&nbsp;</div>
+            <div><span class="p">PS C:\src\api&gt;</span> wr events --json</div>
+            <div class="y">{"event":"agent","pane":3,"state":"asking"}</div>
+            <div>&nbsp;</div>
+            <div><span class="p">PS C:\src\api&gt;</span> <span class="cur-blk"></span></div>
+          </div>
+          <div class="pane b">
+            <div><span class="p">you@wsl</span>:<span class="b">~/web</span>$ git status</div>
+            <div>On branch <span class="y">main</span></div>
+            <div class="d">nothing to commit, working tree clean</div>
+          </div>
+          <div class="pane c">
+            <div><span class="p">PS C:\src\api&gt;</span> kitten icat mascot.png</div>
+            <div style="margin-top:8px"><img src="wraith.svg" alt="" width="56" height="56" style="image-rendering:pixelated"></div>
+          </div>
+        </div>
+      </div>
+      <div class="toast"><b>Claude Code needs input — api/claude</b><span>May I run <code>cargo fmt</code> on the workspace?</span><br><span class="open">Open</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <div class="kicker">Why Wraith</div>
+    <h2>Ghostty's fidelity. Windows' own window.</h2>
+    <p class="sub">The terminal core is Ghostty's. Everything around it is written in Rust on raw Win32, Direct3D 11 and DirectWrite, with no web view and no runtime.</p>
+    <div class="grid">
+      <div class="card"><div class="ico">↺</div><h3>Shells outlive the window</h3><p>A background server owns every shell. Close the window, reopen it, and your screens are exactly where you left them. Scrollback survives a server restart too.</p></div>
+      <div class="card"><div class="ico">▦</div><h3>Workspaces, tabs, splits</h3><p>Each workspace groups its own tabs. Split panes any direction, drag tabs to reorder, and the whole layout comes back after a restart.</p></div>
+      <div class="card"><div class="ico">⚡</div><h3>Fast, and stays fast</h3><p>Keystrokes are written before output is parsed, and frames re-shape only what changed. Typing stays quick after millions of lines, even while another pane floods.</p></div>
+      <div class="card"><div class="ico">◩</div><h3>Inline images</h3><p>Photos and agent screenshots render in place through the Kitty graphics protocol: <code>kitten icat</code>, <code>chafa</code>, <code>yazi</code>.</p></div>
+      <div class="card"><div class="ico">⌘</div><h3>Command palette</h3><p>Every action, fuzzy-searchable, with its current key. A workspace picker, scrollback search, and hover feedback on every button.</p></div>
+      <div class="card"><div class="ico">≡</div><h3>Ghostty-style config</h3><p>The same file syntax and key names, the whole Ghostty theme set, keybind sequences like <code>ctrl+a&gt;c</code>, and hot reload on save.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="wrap split">
+    <div>
+      <div class="kicker">Coding agents</div>
+      <h2>Your agent asks. Wraith finds you.</h2>
+      <p class="sub" style="margin-bottom:20px">Run Claude Code in one tab and Codex in another, then go do something else. When an agent in a hidden tab needs an answer, you know within a second.</p>
+      <ul class="ticks">
+        <li>Harness icon and a working spinner on each agent's tab</li>
+        <li>A toast that opens straight to the pane, plus a taskbar flash and badge</li>
+        <li>An Agents list in the sidebar: waiting first, oldest first</li>
+        <li>Hooks for exact state, with passive detection as the fallback</li>
+        <li><code>wr events --json</code> to script on top of it all</li>
+      </ul>
+      <div class="harness"><span>claude</span><span>codex</span><span>gemini</span><span>aider</span><span>opencode</span><span>copilot</span><span>cursor-agent</span><span>amp</span><span>goose</span></div>
+    </div>
+    <pre class="code"><button class="copy" data-copy="wr install-hooks claude&#10;wr install-hooks codex">Copy</button><span class="d"># exact state from the agents themselves</span>
+<span class="p">PS&gt;</span> wr install-hooks claude
+<span class="p">PS&gt;</span> wr install-hooks codex
+
+<span class="d"># any other tool or script</span>
+<span class="p">PS&gt;</span> wr hook generic --state ask \
+      --name deploy --message "Ship it?"
+
+<span class="d"># watch everything as JSON lines</span>
+<span class="p">PS&gt;</span> wr events --json
+<span class="y">{"event":"agent","pane":3,"harness":"claude",
+ "state":"asking","attention":true}</span></pre>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap split">
+    <div>
+      <div class="kicker">Install</div>
+      <h2>Two minutes, no admin.</h2>
+      <p class="sub" style="margin-bottom:20px">Grab the zip from the <a href="https://github.com/tigwyk/wraith/releases/latest">latest release</a>, unpack it, and run the installer. It copies Wraith to <code>%LOCALAPPDATA%\Programs\Wraith</code>, puts <code>wr</code> on your <code>PATH</code>, and adds the Start Menu shortcut toasts need.</p>
+      <pre class="code"><button class="copy" data-copy=".\install.ps1">Copy</button><span class="p">PS&gt;</span> .\install.ps1            <span class="d"># or -DryRun to see what it does</span>
+<span class="p">PS&gt;</span> wr config check          <span class="d"># %APPDATA%\wraith\config</span></pre>
+    </div>
+    <div>
+      <table>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd></td><td>New tab</td></tr>
+        <tr><td><kbd>Alt</kbd> <kbd>Shift</kbd> <kbd>+</kbd> / <kbd>−</kbd></td><td>Split right / down</td></tr>
+        <tr><td><kbd>Alt</kbd> <kbd>←↑→↓</kbd></td><td>Move between panes</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd></td><td>Command palette</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></td><td>Workspace picker</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>Find in scrollback</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F12</kbd></td><td>Latency overlay</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <div class="kicker">Status</div>
+    <h2>Young, and the author's daily driver.</h2>
+    <p class="sub">Built milestone by milestone, each with its own plan and acceptance run.</p>
+    <div class="road">
+      <div class="ms"><div class="n">M0 ✓</div><p>libghostty-vt on Windows</p></div>
+      <div class="ms"><div class="n">M1 ✓</div><p>Renderer, input, IME, themes</p></div>
+      <div class="ms"><div class="n">M2 ✓</div><p>Server and client split</p></div>
+      <div class="ms"><div class="n">M3 ✓</div><p>Workspaces, splits, images</p></div>
+      <div class="ms"><div class="n">M4 ✓</div><p>Coding-agent awareness</p></div>
+      <div class="ms"><div class="n">M5 ✓</div><p>Search, persistence, packaging</p></div>
+      <div class="ms"><div class="n">M6 ✓</div><p>Hover feedback and motion</p></div>
+      <div class="ms"><div class="n">M7 ✓</div><p>wr events, right-click menu, inline IME</p></div>
+      <div class="ms todo"><div class="n">Next</div><p>Drop-down window</p></div>
+      <div class="ms todo"><div class="n">Next</div><p>Settings GUI</p></div>
+      <div class="ms todo"><div class="n">Next</div><p>Auto-update</p></div>
+      <div class="ms todo"><div class="n">Next</div><p>ARM64</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <img src="wraith.svg" alt="">
+    <span>Wraith · built on <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s libghostty-vt</span>
+    <span class="r"><a href="https://github.com/tigwyk/wraith">GitHub</a> · <a href="https://github.com/tigwyk/wraith/releases">Releases</a></span>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; }
+    catch { b.textContent = 'Press Ctrl+C'; }
+    setTimeout(() => b.textContent = 'Copy', 1600);
+  }));
+</script>
+</body>
+</html>
