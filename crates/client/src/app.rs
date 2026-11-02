@@ -865,6 +865,7 @@ impl App {
     fn set_caption_hover(&mut self, c: Option<Caption>) {
         if self.caption_hover != c {
             self.caption_hover = c;
+            self.view.restart_tooltip();
             self.dirty = true;
         }
     }
@@ -1050,6 +1051,12 @@ impl App {
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
         }
+        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable
+        // paces it), with a short timeout in case the compositor does not signal.
+        if self.motion.active(Instant::now()) {
+            self.dirty = true;
+            sleep = sleep.min(16);
+        }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
         // Still dirty: wake as soon as the compositor can take the frame.
@@ -1085,6 +1092,8 @@ impl App {
         let (bg, fg) = (rgb(c.background), rgb(c.foreground));
         let accent = c.selection_background.map_or((0x61, 0xaf, 0xef), rgb);
         let col = chrome_colors(bg, fg, accent);
+        // Where this window's focus is: accent while it is the active window, dimmed otherwise.
+        let cue = if self.focused { accent } else { col.bar_fg_dim };
         let sel = c.selection_background.map_or((0x3e, 0x44, 0x51), rgb);
         let opacity = c.background_opacity;
         let blink = self.blink_on || !c.cursor_style_blink;
@@ -1144,7 +1153,7 @@ impl App {
                     Rect { x: r.x, y: r.y, w: 1, h: r.h },
                     Rect { x: r.x + r.w - 1, y: r.y, w: 1, h: r.h },
                 ] {
-                    p.rect(edge, accent, 1.0);
+                    p.rect(edge, cue, 1.0);
                 }
             }
         }
@@ -1198,7 +1207,7 @@ impl App {
         }
         let under = tabs.iter().find(|(t, _)| Some(*t) == active).map(|(_, r)| Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 });
         if let Some(u) = self.motion.slide(|m| &mut m.underline, under, None, now) {
-            p.rect(u, accent, 1.0);
+            p.rect(u, cue, 1.0);
         }
         if let Some(c) = wash(&Hit::NewTab) {
             p.rect(plus, c, 1.0);
@@ -1269,7 +1278,7 @@ impl App {
             }
             let bar = rects.iter().zip(&rows).find(|(_, row)| row.current).map(|((_, r), _)| Rect { x: r.x, y: r.y, w: 2, h: r.h });
             if let Some(b) = self.motion.slide(|m| &mut m.ws_bar, bar, None, now) {
-                p.rect(b, accent, 1.0);
+                p.rect(b, cue, 1.0);
             }
             // Each workspace's tabs, indented under it; the tab this window shows is highlighted.
             let shown = self.view.active_tab().map(|t| t.id);
@@ -1407,6 +1416,37 @@ impl App {
         }
         if let Some(t) = &self.stats {
             notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, false, false);
+        }
+        // Tooltip for an icon-only button the pointer rests on, below it and inside the window.
+        if self.view.tooltip_due(now) {
+            let caption = self.caption_hover.and_then(|c| self.caption_rects().into_iter().find(|(k, _)| *k == c)).map(|(c, r)| {
+                let name = match c {
+                    Caption::Minimize => "Minimize",
+                    Caption::Maximize if self.win.is_maximized() => "Restore",
+                    Caption::Maximize => "Maximize",
+                    Caption::Close => "Close",
+                };
+                (name.to_string(), r)
+            });
+            let button = self.view.hovered().and_then(|h| {
+                let text = chrome::tooltip_for(h, &self.config.keybinds)?;
+                let r = match h {
+                    Hit::NewTab => plus,
+                    Hit::TabClose(t) => chrome::close_rect(tabs.iter().find(|(id, _)| id == t)?.1, m.w as i32),
+                    Hit::NewWorkspace => self.view.workspace_rects().1,
+                    _ => return None,
+                };
+                Some((text, r))
+            });
+            if let Some((text, r)) = caption.or(button) {
+                let w = crate::paint::text_width(&self.fonts, &text) + 2 * pad_x;
+                let h = m.h as i32 + 6;
+                let x = (r.x + r.w / 2 - w / 2).clamp(0, (self.size_px.0 as i32 - w).max(0));
+                let tip = Rect { x, y: r.y + r.h + 4, w, h };
+                p.rect(Rect { x: tip.x - 1, y: tip.y - 1, w: tip.w + 2, h: tip.h + 2 }, col.divider, 1.0);
+                p.rect(tip, col.bar_bg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, tip.x + pad_x, tip.y + 3, &text, col.bar_fg, 1.0);
+            }
         }
         self.motion.end(now);
         batches.push(Batch { quads: q, texture: None });

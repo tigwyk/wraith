@@ -152,6 +152,8 @@ pub struct AgentRow {
 
 /// How long the hover-revealed sidebar lingers after the pointer leaves it (spec §4.2).
 const HOVER_GRACE: Duration = Duration::from_millis(300);
+/// How long the pointer rests on a button before its tooltip shows.
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 /// Width of the left-edge strip that reveals a hidden sidebar.
 const HOVER_STRIP: i32 = 8;
 
@@ -191,6 +193,9 @@ pub struct WindowView {
     hovered: Option<Hit>,
     /// The chrome target a held left button went down on.
     pressed: Option<Hit>,
+    /// When the pointer came to rest on its current target, and whether that target's tooltip is up.
+    tip_since: Option<Instant>,
+    tip_shown: bool,
 }
 
 impl WindowView {
@@ -219,6 +224,8 @@ impl WindowView {
             pointer: None,
             hovered: None,
             pressed: None,
+            tip_since: None,
+            tip_shown: false,
         }
     }
 
@@ -433,7 +440,21 @@ impl WindowView {
         }
         let changed = hit != self.hovered;
         self.hovered = hit;
+        if changed {
+            self.restart_tooltip();
+        }
         changed
+    }
+
+    /// The pointer moved to another target (a caption button counts): the tooltip wait starts over.
+    pub fn restart_tooltip(&mut self) {
+        self.tip_since = Some(Instant::now());
+        self.tip_shown = false;
+    }
+
+    /// The pointer has rested long enough for a tooltip.
+    pub fn tooltip_due(&self, now: Instant) -> bool {
+        self.tip_since.is_some_and(|t| now >= t + TOOLTIP_DELAY)
     }
 
     pub fn hovered(&self) -> Option<&Hit> {
@@ -463,6 +484,10 @@ impl WindowView {
 
     /// Hide the floating sidebar once its grace is over; true when that changed what is drawn.
     pub fn tick(&mut self, now: Instant) -> bool {
+        if !self.tip_shown && self.tooltip_due(now) {
+            self.tip_shown = true;
+            return true;
+        }
         match self.hover.leave_at {
             Some(t) if self.hover.revealed && now >= t + HOVER_GRACE => {
                 self.hover = Hover::default();
@@ -473,7 +498,9 @@ impl WindowView {
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.hover.leave_at.filter(|_| self.hover.revealed).map(|t| t + HOVER_GRACE)
+        let tip = self.tip_since.filter(|_| !self.tip_shown).map(|t| t + TOOLTIP_DELAY);
+        let grace = self.hover.leave_at.filter(|_| self.hover.revealed).map(|t| t + HOVER_GRACE);
+        tip.into_iter().chain(grace).min()
     }
 
     pub fn sidebar_rows(&self) -> Vec<SidebarRow> {

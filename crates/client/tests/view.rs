@@ -826,3 +826,19 @@ fn click_outside_palette_closes_it() {
     assert_eq!(v.palette_click(&Hit::Pane(1), &ctx()), Some(Default::default()), "consumed: the pane gets no click");
     assert!(v.palette().is_none());
 }
+
+#[test]
+fn tooltip_due_after_rest_and_resets_on_move() {
+    use std::time::Instant;
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(390, 10); // the new-tab button, after tabs 10 and 11
+    assert_eq!(v.hovered(), Some(&Hit::NewTab));
+    assert!(!v.tooltip_due(Instant::now()), "not at once");
+    assert!(v.tooltip_due(Instant::now() + Duration::from_millis(600)), "after resting 500 ms");
+    assert!(v.next_deadline().is_some(), "the loop wakes to show it");
+    assert!(v.tick(Instant::now() + Duration::from_millis(600)), "showing it needs one redraw");
+    assert!(!v.tick(Instant::now() + Duration::from_millis(700)), "only one");
+    v.hover_at(50, 10);
+    assert!(!v.tooltip_due(Instant::now() + Duration::from_millis(100)), "a new target starts the wait again");
+}

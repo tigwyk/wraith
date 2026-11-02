@@ -127,3 +127,31 @@ fn cursor_over_tracking_pane_is_arrow() {
     assert_eq!(cursor_for(&Hit::Tab(10), &[], false), Cursor::Arrow);
     assert_eq!(cursor_for(&Hit::None, &[], false), Cursor::Arrow);
 }
+
+#[test]
+fn tooltip_names_action_and_binding() {
+    use wraith_client::chrome::tooltip_for;
+    let binds = wraith_config::Config::default().keybinds;
+    assert_eq!(tooltip_for(&Hit::NewTab, &binds).as_deref(), Some("New tab  Ctrl+Shift+T"));
+    assert!(tooltip_for(&Hit::TabClose(3), &binds).unwrap().starts_with("Close tab"));
+    assert!(tooltip_for(&Hit::NewWorkspace, &binds).unwrap().starts_with("New workspace"));
+    assert_eq!(tooltip_for(&Hit::NewTab, &[]).as_deref(), Some("New tab"), "unbound: the name alone");
+}
+
+#[test]
+fn tooltip_follows_rebinding() {
+    use wraith_client::chrome::tooltip_for;
+    let mut binds = wraith_config::Config::default().keybinds;
+    binds.retain(|k| k.action != wraith_config::Action::NewTab);
+    binds.push(wraith_config::parse_keybind("ctrl+t=new_tab").unwrap());
+    assert_eq!(tooltip_for(&Hit::NewTab, &binds).as_deref(), Some("New tab  Ctrl+T"));
+}
+
+#[test]
+fn no_tooltip_for_panes_or_rows() {
+    use wraith_client::chrome::tooltip_for;
+    let binds = wraith_config::Config::default().keybinds;
+    for h in [Hit::Pane(1), Hit::Tab(1), Hit::Workspace(1), Hit::Agent(1), Hit::SidebarTab(1), Hit::Divider(0), Hit::Bar, Hit::None] {
+        assert_eq!(tooltip_for(&h, &binds), None, "{h:?}");
+    }
+}

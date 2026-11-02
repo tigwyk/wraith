@@ -134,6 +134,22 @@ pub fn cursor_for(hit: &Hit, dividers: &[Divider], tracking: bool) -> Cursor {
     }
 }
 
+/// What an icon-only button does, with its current binding: `New tab  Ctrl+Shift+T`. Rows that show
+/// their own text get none.
+pub fn tooltip_for(hit: &Hit, keybinds: &[wraith_config::Keybind]) -> Option<String> {
+    use wraith_config::Action;
+    let (name, action) = match hit {
+        Hit::NewTab => ("New tab", Action::NewTab),
+        Hit::TabClose(_) => ("Close tab", Action::CloseTab),
+        Hit::NewWorkspace => ("New workspace", Action::NewWorkspace),
+        _ => return None,
+    };
+    Some(match keybinds.iter().find(|k| k.action == action) {
+        Some(k) => format!("{name}  {}", crate::palette::trigger_text(k)),
+        None => name.to_string(),
+    })
+}
+
 type Rgb = (u8, u8, u8);
 
 /// `a` blended `t` of the way toward `b`.
