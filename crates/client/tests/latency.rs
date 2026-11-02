@@ -1,7 +1,19 @@
 #![cfg(windows)]
 //! A TUI repainting the screen on every token must not have its output held back by the UI thread
 //! waiting on vsync (spec §6.3). Measured from the real binary's debug log.
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// `held_us` of every "frame sent" line logged so far (none while the log folder doesn't exist yet).
+fn held(logs: &Path) -> Vec<u64> {
+    let text: String = std::fs::read_dir(logs)
+        .map(|d| d.filter_map(|e| std::fs::read_to_string(e.ok()?.path()).ok()).collect())
+        .unwrap_or_default();
+    text.lines()
+        .filter(|l| l.contains("frame sent"))
+        .filter_map(|l| l.split("held_us=").nth(1)?.split_whitespace().next()?.parse().ok())
+        .collect()
+}
 
 #[test]
 fn ui_thread_never_holds_pane_output() {
@@ -20,22 +32,19 @@ fn ui_thread_never_holds_pane_output() {
         .env_remove("NO_COLOR")
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_secs(10));
+    // Wait for frames rather than a fixed time: PowerShell's cold start on a CI runner can take most of
+    // a fixed window.
+    let logs = dir.join("wraith").join("logs");
+    let start = Instant::now();
+    while held(&logs).len() < 20 && start.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let _ = child.kill();
     let _ = child.wait();
     let _ = wraith_client::link::kill_server(&pipe); // the client started it; don't leave it running
     std::thread::sleep(Duration::from_millis(300));
 
-    let logs = dir.join("wraith").join("logs");
-    let text: String = std::fs::read_dir(&logs)
-        .unwrap()
-        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap_or_default())
-        .collect();
-    let mut held: Vec<u64> = text
-        .lines()
-        .filter(|l| l.contains("frame sent"))
-        .filter_map(|l| l.split("held_us=").nth(1)?.split_whitespace().next()?.parse().ok())
-        .collect();
+    let mut held = held(&logs);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(held.len() >= 5, "only {} frames logged", held.len());
     held.sort_unstable();
