@@ -318,6 +318,11 @@ impl GridRenderer {
         self.search.as_ref()
     }
 
+    /// Some cell on screen is selected (the selection lives in the pane; frames mark its cells).
+    pub fn has_selection(&self) -> bool {
+        self.rows.iter().any(|r| !r.sels.is_empty())
+    }
+
     pub fn cursor_pos(&self) -> Option<(u16, u16)> {
         self.cursor.filter(|c| c.visible).map(|c| (c.x, c.y))
     }

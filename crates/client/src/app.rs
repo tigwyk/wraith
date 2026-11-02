@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
 use windows::core::{PCWSTR, Result};
@@ -630,6 +631,8 @@ impl App {
         let pane = self.mouse_down.or(if let Hit::Pane(p) = hit { Some(p) } else { None });
         let Some(pane) = pane else { return };
         let (copy_on_select, right_paste) = (self.config.copy_on_select, self.config.right_click_action == RightClick::Paste);
+        let right_menu = self.config.right_click_action == RightClick::Menu;
+        let mut open_menu = false;
         let Some(pv) = self.view.panes.get_mut(&pane) else { return };
         let (ox, oy) = (pv.rect.x + pad.0, pv.rect.y + pad.1);
         if pv.mouse_tracking && !shift {
@@ -675,10 +678,44 @@ impl App {
                     out.push(PaneCmd::Paste(t));
                 }
             }
+            // Only reached without mouse tracking: a program that tracks the mouse got the click above.
+            WM_RBUTTONDOWN if right_menu => open_menu = true,
             _ => {}
         }
         for c in out {
             self.send_pane(pane, c);
+        }
+        if open_menu {
+            self.context_menu(pane, x, y);
+        }
+    }
+
+    /// `right-click-action = menu`: focus the pane, then run the chosen row's action on it.
+    fn context_menu(&mut self, pane: PaneId, x: i32, y: i32) {
+        let msgs = self.view.pane_click(pane);
+        self.send_all(msgs);
+        let has_selection = self.grids.get(&pane).is_some_and(GridRenderer::has_selection);
+        let items = chrome::context_menu(has_selection, &self.config.keybinds);
+        let hwnd = self.win.hwnd();
+        let chosen = unsafe {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (i, item) in items.iter().enumerate() {
+                let label = wide(&item.label);
+                let flags = match item.action {
+                    None => MF_SEPARATOR,
+                    Some(_) if item.enabled => MF_STRING,
+                    Some(_) => MF_STRING | MF_GRAYED,
+                };
+                let _ = AppendMenuW(menu, flags, i + 1, PCWSTR(label.as_ptr()));
+            }
+            let mut pt = POINT { x, y };
+            let _ = ClientToScreen(hwnd, &mut pt);
+            let id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as usize;
+            let _ = DestroyMenu(menu);
+            id.checked_sub(1).and_then(|i| items.get(i)).and_then(|it| it.action)
+        };
+        if let Some(a) = chosen {
+            self.action(a);
         }
     }
 

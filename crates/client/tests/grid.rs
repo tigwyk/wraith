@@ -262,3 +262,15 @@ fn search_hits_are_highlighted_selected_one_stronger() {
     r.draw(&opts());
     assert_eq!(r.cell(3, 1), [1, 2, 3, 255], "closing the search clears the highlights");
 }
+
+#[test]
+fn has_selection_follows_the_frame() {
+    let mut r = rig();
+    r.grid.apply(&frame(true, vec![row(1, vec![run("ab", Color::Default, Color::Default, 0)])], None), &r.fonts);
+    assert!(!r.grid.has_selection());
+    let sel = run("ab", Color::Default, Color::Default, StyleFlags::SELECTED);
+    r.grid.apply(&frame(false, vec![row(2, vec![sel])], None), &r.fonts);
+    assert!(r.grid.has_selection());
+    r.grid.apply(&frame(false, vec![row(2, vec![run("ab", Color::Default, Color::Default, 0)])], None), &r.fonts);
+    assert!(!r.grid.has_selection(), "cleared when the row loses it");
+}

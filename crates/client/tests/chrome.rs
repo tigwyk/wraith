@@ -155,3 +155,47 @@ fn no_tooltip_for_panes_or_rows() {
         assert_eq!(tooltip_for(&h, &binds), None, "{h:?}");
     }
 }
+
+#[test]
+fn context_menu_copy_needs_selection() {
+    use wraith_client::chrome::context_menu;
+    use wraith_config::Action;
+    let binds = wraith_config::Config::default().keybinds;
+    let find = |m: &[wraith_client::chrome::MenuItem], a: Action| m.iter().find(|i| i.action == Some(a)).unwrap().enabled;
+    assert!(!find(&context_menu(false, &binds), Action::Copy));
+    assert!(find(&context_menu(true, &binds), Action::Copy));
+    assert!(find(&context_menu(false, &binds), Action::Paste));
+}
+
+#[test]
+fn context_menu_labels_carry_keys() {
+    use wraith_client::chrome::context_menu;
+    let binds = wraith_config::Config::default().keybinds;
+    let m = context_menu(true, &binds);
+    assert!(m[0].label.ends_with("\tCtrl+Shift+C"), "{:?}", m[0].label);
+    let unbound = context_menu(true, &[]);
+    assert_eq!(unbound[0].label, "Copy", "no binding: no tab");
+}
+
+#[test]
+fn context_menu_order_and_separators() {
+    use wraith_client::chrome::context_menu;
+    use wraith_config::Action::*;
+    use wraith_proto::model::Dir;
+    let actions: Vec<_> = context_menu(false, &[]).iter().map(|i| i.action).collect();
+    assert_eq!(
+        actions,
+        vec![
+            Some(Copy),
+            Some(Paste),
+            None,
+            Some(NewSplit(Dir::Right)),
+            Some(NewSplit(Dir::Down)),
+            None,
+            Some(NewTab),
+            Some(CommandPalette),
+            None,
+            Some(CloseSurface),
+        ]
+    );
+}
