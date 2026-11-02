@@ -524,10 +524,10 @@ impl App {
             }
             return;
         }
-        if self.view.dragging() {
+        if self.view.dragging() || self.view.dragging_tab() {
             match msg {
                 WM_MOUSEMOVE => {
-                    let msgs = self.view.drag_divider(x, y);
+                    let msgs = if self.view.dragging_tab() { self.view.drag_tab(x) } else { self.view.drag_divider(x, y) };
                     self.send_all(msgs);
                     self.dirty = true;
                 }
@@ -568,6 +568,11 @@ impl App {
                 }
                 Hit::Tab(t) => {
                     self.link.send(ClientMsg::Model(wraith_proto::model::ModelCmd::SelectTab(t)));
+                    // A press on a tab may become a drag along the bar (reorder).
+                    self.view.start_tab_drag(t);
+                    unsafe {
+                        SetCapture(self.win.hwnd());
+                    }
                     return;
                 }
                 Hit::TabClose(t) => return self.close_tab(t),

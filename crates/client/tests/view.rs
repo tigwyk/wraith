@@ -282,6 +282,21 @@ fn clicking_and_dragging() {
 }
 
 #[test]
+fn dragging_a_tab_over_another_reorders_once() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let (tabs, _) = v.tab_layout();
+    let over_second = tabs[1].1.x + tabs[1].1.w / 2;
+    v.start_tab_drag(10);
+    assert!(v.drag_tab(tabs[0].1.x + 3).is_empty(), "still over its own slot");
+    assert_eq!(v.drag_tab(over_second), vec![ClientMsg::Model(ModelCmd::MoveTab { tab: 10, to: 1, index: Some(1) })]);
+    assert!(v.drag_tab(over_second + 2).is_empty(), "the move is shown at once, so it is not sent again");
+    assert_eq!(v.tab_layout().0.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![11, 10]);
+    v.end_drag();
+    assert!(v.drag_tab(0).is_empty(), "no drag after release");
+}
+
+#[test]
 fn tabs_leave_room_for_caption_buttons() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());

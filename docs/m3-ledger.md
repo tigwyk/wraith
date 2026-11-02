@@ -78,3 +78,9 @@ Task 13: Ruling: image_quad is a pure function (dest from cell + offsets + place
 Task 13: textures are freed with the pane (snapshot no longer lists it), and all of them on WindowAttached/WorkspaceTaken (the server re-uploads on Reattach).
 Task 13: scripts/kitty-show.py added (minimal icat: PNG file or --gradient, chunked f=100). Live: a 320x160 gradient shows inline and scrolls with text, clipped at the pane top (docs/screenshots/2026-11-01-m3-8-inline-image.png, -9-image-scrolled.png).
 Task 13: complete (tests: cargo test -p wraith-client → exit 0, images 10/10; clippy -D warnings → exit 0)
+Task 14: Ruling (found during acceptance): tab drag-to-reorder (spec §4.2) had no client gesture; added WindowView::start_tab_drag/drag_tab (optimistic local reorder, one MoveTab{index} per slot change) and wired a press on a tab to start it — test dragging_a_tab_over_another_reorders_once RED→GREEN; verified live — cost if wrong: none.
+Task 14: Ruling: acceptance used a separate release target dir (target/accept) because the user's own Wraith runs from target/release; release builds need .tools Zig 0.15.2 on PATH (winget's 0.17 fails) — cost if wrong: none.
+Task 14: Ruling: `kitten` is not installed; scripts/kitty-show.py stands in for icat (PNG f=100, chunked) — cost if wrong: icat's own placement options (scaling, unicode placeholders) untested.
+Task 14: Not run: four-pane flood with the ctrl+shift+f12 overlay; zsh integration; screenshot of directional focus/zoom (unit-tested).
+Task 14: spec updated: §3.4 snapshot ruling, §4.2 sidebar note (Agents section in M4).
+Task 14: complete (tests: cargo test --workspace → exit 0; clippy -D warnings → exit 0; acceptance in docs/m3-acceptance.md)

@@ -137,6 +137,8 @@ pub struct WindowView {
     dim_opacity: f32,
     double_click: Duration,
     drag: Option<Drag>,
+    /// The tab being dragged along the tab bar.
+    tab_drag: Option<TabId>,
     sidebar_visible: bool,
     sidebar_cols: u16,
     hover: Hover,
@@ -163,6 +165,7 @@ impl WindowView {
             dim_opacity: 1.0,
             double_click,
             drag: None,
+            tab_drag: None,
             sidebar_visible: false,
             sidebar_cols: 24,
             hover: Hover::default(),
@@ -729,6 +732,31 @@ impl WindowView {
 
     pub fn end_drag(&mut self) {
         self.drag = None;
+        self.tab_drag = None;
+    }
+
+    pub fn start_tab_drag(&mut self, tab: TabId) {
+        self.tab_drag = Some(tab);
+    }
+
+    pub fn dragging_tab(&self) -> bool {
+        self.tab_drag.is_some()
+    }
+
+    /// Move the dragged tab to the slot under `x`; the bar shows it at once and the server is told.
+    pub fn drag_tab(&mut self, x: i32) -> Vec<ClientMsg> {
+        let (Some(tab), Some(ws)) = (self.tab_drag, self.workspace) else { return Vec::new() };
+        let (rects, _) = self.tab_layout();
+        let Some(from) = rects.iter().position(|(t, _)| *t == tab) else { return Vec::new() };
+        let to = rects.iter().position(|(_, r)| x < r.x + r.w).unwrap_or(rects.len() - 1);
+        if to == from {
+            return Vec::new();
+        }
+        if let Some(w) = self.snap.workspaces.iter_mut().find(|w| w.id == ws) {
+            w.tabs.retain(|&t| t != tab);
+            w.tabs.insert(to.min(w.tabs.len()), tab);
+        }
+        vec![ClientMsg::Model(ModelCmd::MoveTab { tab, to: ws, index: Some(to) })]
     }
 
     /// Move the grabbed divider to the pointer; the panes follow immediately and the server is told.
