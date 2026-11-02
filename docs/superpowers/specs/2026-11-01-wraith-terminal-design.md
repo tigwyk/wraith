@@ -279,7 +279,7 @@ Each milestone gets its own implementation plan.
 | M3 | Workspaces, tabs, splits, sidebar, palette, workspace picker, profiles, shell integration, layout persistence, multiple windows. Inline images (Kitty graphics, §6.1). | Full chrome works. Server restart restores layout. `kitten icat photo.jpg` shows the photo inline, and it scrolls with the text. |
 | M4 | Agent integration: `agent` crate, hooks + installers, passive detection, attention roll-up, taskbar + Windows toasts. | Claude Code and Codex in hidden tabs produce a toast within 1 s of asking. Clicking it focuses the pane. |
 | M5 | Backlog: scrollback search, quake/drop-down window, settings GUI, installer + winget + auto-update, ARM64, scrollback persistence. | Prioritized after M4. |
-| Backlog | Quake/drop-down window, settings GUI, auto-update, ARM64 (left from M5). **Hover feedback on clickable chrome:** sidebar workspaces, tabs and agent rows (and tab bar tabs) react to mouse hover, so users discover the window is mouse-friendly rather than assuming keyboard-only. | Unscheduled. |
+| Backlog | Quake/drop-down window, settings GUI, auto-update, ARM64 (left from M5). **Hover feedback on clickable chrome:** sidebar workspaces, tabs and agent rows (and tab bar tabs) react to mouse hover, so users discover the window is mouse-friendly rather than assuming keyboard-only. **Polish ("juice") pass:** make Wraith enticing to use: easy to navigate, responsive-feeling, and better than users expect from a terminal. Includes hover and press feedback, subtle motion on state changes (tab, sidebar, palette, badges), clear focus cues, and discoverable affordances. Animation never costs input latency (spec §6.3). | Unscheduled. |
 
 ## 11. Known risks
 

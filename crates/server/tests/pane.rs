@@ -29,6 +29,7 @@ fn opts(cmdline: &str) -> PaneOptions {
         palette: vec![(1, 2, 3); 256],
         image_storage_limit: 64 << 20,
         agent_detect: vec![],
+        restore: None,
     }
 }
 

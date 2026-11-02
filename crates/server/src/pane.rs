@@ -2,7 +2,7 @@
 //! Input is always written before more output is parsed (spec §6.3).
 use std::cell::RefCell;
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +42,8 @@ pub struct PaneOptions {
     pub image_storage_limit: u64,
     /// `agent-detect` entries: extra (name, regex) process matchers.
     pub agent_detect: Vec<(String, String)>,
+    /// History saved at the last server stop: restored above the new shell, then deleted.
+    pub restore: Option<PathBuf>,
 }
 
 pub struct PaneHandle {
@@ -168,9 +170,24 @@ impl Pane {
         let (pty, chunks) = start_pty(&opts, cols, rows)?;
         // Before this thread's first libghostty call: the decoder hook is process-global.
         crate::images::install_png_decoder();
-        let mut term = Terminal::new(cols, rows).map_err(io_err)?;
+        let restored = opts.restore.as_deref().and_then(restore_terminal);
+        let was_restored = restored.is_some();
+        let mut term = match restored {
+            Some(t) => t,
+            None => Terminal::new(cols, rows).map_err(io_err)?,
+        };
         term.set_scrollback_max_lines(Some(opts.scrollback_lines)).map_err(io_err)?;
         term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
+        if was_restored {
+            // Reset what the old program left (alternate screen, modes), write a marker right after the
+            // old output, then scroll it all into history so the fresh shell starts on a clean screen.
+            let restored = format!(
+                "\x1b[?1049l\x1b[0m\x1b[!p\r\n\x1b[2m── restored {} ──\x1b[0m{}",
+                local_time(),
+                "\r\n".repeat(usize::from(rows))
+            );
+            term.vt_write(restored.as_bytes());
+        }
         term.set_kitty_image_storage_limit(opts.image_storage_limit).map_err(io_err)?;
         let outbox = Rc::new(RefCell::new(Outbox::default()));
         install_callbacks(&mut term, &outbox).map_err(io_err)?;
@@ -347,6 +364,12 @@ impl Pane {
                     SearchCmd::Close => self.search = None,
                 }
                 self.changed = true;
+            }
+            PaneCmd::SaveScrollback(path) => {
+                if let Err(e) = save_terminal(&mut self.term, Path::new(&path)) {
+                    tracing::warn!("saving history to {path}: {e}");
+                }
+                let _ = self.events.send(PaneEvent::ScrollbackSaved);
             }
             PaneCmd::Restart => self.restart(),
             PaneCmd::Shutdown => return false,
@@ -676,4 +699,36 @@ fn install_callbacks(term: &mut Terminal<'static, 'static>, outbox: &Rc<RefCell<
         })
     })?;
     Ok(())
+}
+
+/// Write the terminal's complete state (screen, history, modes) atomically: temp file, then rename.
+fn save_terminal(term: &mut Terminal<'static, 'static>, path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    term.encode_snapshot(&mut f).map_err(io_err)?;
+    f.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
+/// The terminal saved in `path`, which is deleted either way. `None` (logged) for an unreadable or
+/// undecodable snapshot, e.g. one from another libghostty version.
+fn restore_terminal(path: &Path) -> Option<Terminal<'static, 'static>> {
+    let bytes = std::fs::read(path).ok();
+    let _ = std::fs::remove_file(path);
+    let bytes = bytes?;
+    match libghostty_vt::snapshot::Decoder::new_buf(&bytes).and_then(|d| d.decode()) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!("history in {} could not be restored ({e}); starting fresh", path.display());
+            None
+        }
+    }
+}
+
+fn local_time() -> String {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute)
 }

@@ -877,7 +877,7 @@ impl App {
                 self.last_seq = Some(f.seq);
                 self.dirty = true;
             }
-            PaneEvent::Title(_) | PaneEvent::Bell | PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) | PaneEvent::Agent(_) | PaneEvent::AgentProcess(_) => {}
+            PaneEvent::Title(_) | PaneEvent::Bell | PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) | PaneEvent::Agent(_) | PaneEvent::AgentProcess(_) | PaneEvent::ScrollbackSaved => {}
             PaneEvent::Clipboard(t) | PaneEvent::Copied(t) => set_clipboard(self.win.hwnd(), &t),
             PaneEvent::PasteNeedsConfirm(t) => {
                 let lines = t.lines().count().max(1);

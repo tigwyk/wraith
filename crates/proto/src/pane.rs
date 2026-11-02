@@ -9,6 +9,9 @@ use crate::{FrameDelta, KeyEvent, MouseEvent, SelRange};
 pub enum PaneCmd {
     /// Scrollback search in this pane (M5).
     Search(SearchCmd),
+    /// Server-internal: write the terminal's full state to this file (answered with
+    /// `PaneEvent::ScrollbackSaved`). The server drops a client's copy.
+    SaveScrollback(String),
     Key(KeyEvent),
     Mouse(MouseEvent),
     /// Typed or IME-committed text, written as-is.
@@ -63,6 +66,8 @@ pub enum PaneEvent {
     Agent(AgentSignal),
     /// The process scan found this harness running in the pane (`None`: no agent process any more).
     AgentProcess(Option<String>),
+    /// A `SaveScrollback` finished (written or failed; the server only waits for it).
+    ScrollbackSaved,
 }
 
 /// An agent event, from a hook (`wr hook`) or seen in the terminal. Messages are untrusted text.

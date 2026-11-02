@@ -33,6 +33,26 @@ const SAVE_DELAY: Duration = Duration::from_secs(1);
 /// not flood the windows).
 const AGENT_PUSH_GAP: Duration = Duration::from_millis(100);
 
+/// How long a server stop waits for all panes to save their history.
+const SNAPSHOT_BUDGET: Duration = Duration::from_secs(2);
+
+/// `scrollback/` next to the layout file.
+fn snapshot_dir(layout: &Path) -> Option<PathBuf> {
+    Some(layout.parent()?.join("scrollback"))
+}
+
+/// Delete saved histories of panes the layout no longer has.
+fn remove_stale_snapshots(layout: &Path, model: &Model) {
+    let Some(dir) = snapshot_dir(layout) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let live: HashSet<String> = model.snapshot().panes.iter().map(|p| format!("{}.snap", p.id)).collect();
+    for e in entries.flatten() {
+        if !live.contains(&e.file_name().to_string_lossy().to_string()) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 enum Ev {
     Connected(ClientId, Sender<ServerMsg>),
     Msg(ClientId, ClientMsg),
@@ -156,6 +176,9 @@ fn serve(pipe: String, mut listener: PipeListener, layout: Option<PathBuf>) -> i
         })?
     };
     let model = layout.as_deref().map_or_else(Model::new, load_model);
+    if let Some(l) = &layout {
+        remove_stale_snapshots(l, &model);
+    }
     let saved_rev = model.rev();
     let now = Instant::now();
     let mut server = Server {
@@ -237,6 +260,7 @@ impl Server {
                 Ev::Msg(id, ClientMsg::ServerStop) if self.clients.get(&id).is_some_and(|c| c.kind.is_some()) => {
                     tracing::info!("server stop requested by client {id}");
                     self.save();
+                    self.save_scrollback(rx);
                     self.panes.clear();
                     return;
                 }
@@ -461,7 +485,7 @@ impl Server {
                 }
             }
             // Shutdown and Reattach are the server's own lifecycle commands, never a client's.
-            ClientMsg::Cmd { cmd: PaneCmd::Shutdown | PaneCmd::Reattach, .. } => {}
+            ClientMsg::Cmd { cmd: PaneCmd::Shutdown | PaneCmd::Reattach | PaneCmd::SaveScrollback(_), .. } => {}
             ClientMsg::Cmd { pane, cmd } => {
                 if !self.owns_pane(id, pane) {
                     return;
@@ -575,6 +599,7 @@ impl Server {
             palette: spawn.palette,
             image_storage_limit: spawn.image_storage_limit,
             agent_detect: spawn.agent_detect,
+            restore: self.snapshot_path(pane).filter(|p| p.exists()),
         };
         match spawn_pane(opts) {
             Ok(handle) => {
@@ -594,6 +619,37 @@ impl Server {
                 self.model.note_title(pane, format!("could not start: {e}"));
                 self.model.note_exit(pane, 1);
             }
+        }
+    }
+
+    /// Where `pane`'s history is saved across a server stop (none without a layout file).
+    fn snapshot_path(&self, pane: PaneId) -> Option<PathBuf> {
+        snapshot_dir(self.layout.as_deref()?).map(|d| d.join(format!("{pane}.snap")))
+    }
+
+    /// Ask every pane to save its history next to the layout, waiting at most `SNAPSHOT_BUDGET` in all.
+    fn save_scrollback(&mut self, rx: &Receiver<Ev>) {
+        let mut pending: HashSet<PaneId> = HashSet::new();
+        for (&pane, h) in &self.panes {
+            if let Some(path) = self.snapshot_path(pane)
+                && h.send(PaneCmd::SaveScrollback(path.display().to_string())).is_ok()
+            {
+                pending.insert(pane);
+            }
+        }
+        let deadline = Instant::now() + SNAPSHOT_BUDGET;
+        while !pending.is_empty() {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else { break };
+            match rx.recv_timeout(left) {
+                Ok(Ev::Pane(p, PaneEvent::ScrollbackSaved)) => {
+                    pending.remove(&p);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        if !pending.is_empty() {
+            tracing::warn!(panes = ?pending, "history not saved in time; skipped");
         }
     }
 
@@ -656,6 +712,9 @@ impl Server {
     fn pane_event(&mut self, pane: PaneId, ev: PaneEvent) {
         if !self.panes.contains_key(&pane) {
             return; // closed since the event was queued
+        }
+        if ev == PaneEvent::ScrollbackSaved {
+            return; // only awaited during a server stop
         }
         if let PaneEvent::Agent(sig) = ev {
             return self.agent_signal(pane, None, sig, Source::Passive);

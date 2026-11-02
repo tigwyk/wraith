@@ -762,3 +762,94 @@ fn agents_are_not_saved_in_the_layout() {
     drop(c);
     stop_and_join(&pipe, h);
 }
+
+// ---- M5: scrollback persistence across a server restart ----
+
+use wraith_proto::pane::ScrollTo;
+
+fn snap_file(layout: &std::path::Path, pane: PaneId) -> PathBuf {
+    layout.parent().unwrap().join("scrollback").join(format!("{pane}.snap"))
+}
+
+/// A server on `path` with one pane that printed `marker`; stops it and returns the pane.
+fn pane_with_history(path: &std::path::Path, pipe: &str, marker: &str) -> PaneId {
+    let h = spawn_server_thread_at(pipe, Some(path.to_path_buf())).unwrap();
+    let mut c = Client::gui(pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab(&format!("cmd.exe /k echo {marker}"));
+    c.subscribe(&[pane]);
+    assert!(c.pump_until(pane, secs(10), |text, _| text.contains(marker)), "marker printed");
+    drop(c);
+    stop_and_join(pipe, h);
+    pane
+}
+
+#[test]
+fn server_stop_saves_and_restart_restores_history() {
+    let path = layout_path("history");
+    let pipe = unique();
+    let pane = pane_with_history(&path, &pipe, "M5-HISTORY-MARKER");
+    assert!(snap_file(&path, pane).exists(), "server-stop saved the pane's history");
+
+    let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    c.subscribe(&[pane]);
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Scroll(ScrollTo::Top) });
+    let mut last = String::new();
+    let ok = c.pump_until(pane, secs(10), |text, _| {
+        last = text.to_string();
+        // The restored pane re-runs the same command, so the old output must be *above* the marker line.
+        matches!((text.find("M5-HISTORY-MARKER"), text.find("restored")), (Some(old), Some(line)) if old < line)
+    });
+    assert!(ok, "old output and the marker line are in history; screen was:
+{last}");
+    assert!(!snap_file(&path, pane).exists(), "a loaded snapshot is removed");
+    drop(c);
+    stop_and_join(&pipe, h);
+}
+
+#[test]
+fn corrupt_snapshot_gives_fresh_pane() {
+    let path = layout_path("corrupt-snap");
+    let pipe = unique();
+    let pane = pane_with_history(&path, &pipe, "M5-CORRUPT");
+    std::fs::write(snap_file(&path, pane), b"GHOSTSNP\x01\x00 not really a snapshot").unwrap();
+    let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    c.subscribe(&[pane]);
+    assert!(c.pump_until(pane, secs(10), |text, _| text.contains('>')), "a fresh shell prompt");
+    assert!(!snap_file(&path, pane).exists(), "the bad file is removed");
+    drop(c);
+    stop_and_join(&pipe, h);
+}
+
+#[test]
+fn stale_snapshots_are_removed() {
+    let path = layout_path("stale-snap");
+    let dir = path.parent().unwrap().join("scrollback");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("999.snap"), b"x").unwrap();
+    let pipe = unique();
+    let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    assert!(!dir.join("999.snap").exists(), "no pane 999 in the layout");
+    drop(c);
+    stop_and_join(&pipe, h);
+}
+
+#[test]
+fn clients_cannot_send_save_scrollback() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    let target = std::env::temp_dir().join(format!("wraith-evil-{}.snap", std::process::id()));
+    let _ = std::fs::remove_file(&target);
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::SaveScrollback(target.display().to_string()) });
+    c.list();
+    thread::sleep(Duration::from_millis(500));
+    assert!(!target.exists(), "only the server itself may write snapshots");
+}
