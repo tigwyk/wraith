@@ -670,8 +670,9 @@ fn hook_client_may_only_send_agent_events() {
     let mut h = Client::connect(&pipe, ClientKind::Hook);
     h.send(ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: "x".into(), spawn: spawn("cmd.exe /k") }));
     h.send(ClientMsg::Kill { pane });
+    h.send(ClientMsg::ServerStop);
     h.send(ClientMsg::AgentEvent { pane, harness: Some("claude".into()), signal: AgentSignal::Working });
-    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Working, false))), "the agent event counts");
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Working, false))), "the agent event counts (and the server did not stop)");
     assert_eq!(c.snap.workspace(ws).unwrap().tabs.len(), 1, "a hook client cannot create tabs");
     assert!(c.list().iter().any(|p| p.id == pane), "a hook client cannot kill panes");
 }

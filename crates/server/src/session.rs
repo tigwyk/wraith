@@ -264,7 +264,8 @@ impl Server {
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
-                Ev::Msg(id, ClientMsg::ServerStop) if self.clients.get(&id).is_some_and(|c| c.kind.is_some()) => {
+                // A greeted GUI or CLI client; a hook may only send agent events (see `client_msg`).
+                Ev::Msg(id, ClientMsg::ServerStop) if self.clients.get(&id).is_some_and(|c| c.kind.is_some_and(|k| k != ClientKind::Hook)) => {
                     tracing::info!("server stop requested by client {id}");
                     self.save();
                     self.save_scrollback(rx);
