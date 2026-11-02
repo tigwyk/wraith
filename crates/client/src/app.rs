@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
@@ -25,8 +26,9 @@ use wraith_proto::model::{AgentState, Rect, TabId};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
-use crate::chrome::{self, Hit, chrome_colors};
+use crate::chrome::{self, Cursor, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
+use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
@@ -278,6 +280,8 @@ pub(crate) struct App {
     caption_down: Option<Caption>,
     /// Toasts, taskbar flash and badge for agents that need the user (spec §5.4).
     notifier: crate::notify::Notifier,
+    /// Chrome motion: slides, fades and pulses, evaluated at draw time.
+    motion: Motion,
 }
 
 impl App {
@@ -521,6 +525,11 @@ impl App {
             unsafe {
                 let _ = ScreenToClient(self.win.hwnd(), &mut pt);
             }
+            if matches!(self.view.hit(pt.x, pt.y), Hit::PaletteRow(_) | Hit::Palette) {
+                self.view.scroll_palette(-n);
+                self.dirty = true;
+                return;
+            }
             let pane = match self.view.hit(pt.x, pt.y) {
                 Hit::Pane(p) => Some(p),
                 _ => self.view.focused(),
@@ -542,6 +551,8 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     self.view.end_drag();
+                    self.view.release();
+                    self.dirty = true;
                     unsafe {
                         let _ = ReleaseCapture();
                     }
@@ -559,9 +570,24 @@ impl App {
             let before = self.view.floating_sidebar();
             self.view.pointer_moved(x, y, Instant::now());
             self.dirty |= before != self.view.floating_sidebar();
+            self.dirty |= self.view.hover_at(x, y);
         }
         let hit = self.view.hit(x, y);
+        if msg == WM_LBUTTONUP && self.view.pressed().is_some() {
+            self.view.release();
+            self.dirty = true;
+        }
+        if msg == WM_LBUTTONDOWN
+            && let Some(out) = self.view.palette_click(&hit, &self.spawn_ctx)
+        {
+            self.dirty = true;
+            return self.run_out(out);
+        }
         if msg == WM_LBUTTONDOWN {
+            if !matches!(hit, Hit::Pane(_) | Hit::Divider(_) | Hit::Sidebar | Hit::Bar | Hit::None | Hit::PaletteRow(_) | Hit::Palette) {
+                self.view.press(hit.clone());
+                self.dirty = true;
+            }
             match hit {
                 Hit::Workspace(w) => {
                     let msgs = self.view.workspace_click(w);
@@ -769,7 +795,40 @@ impl App {
                     self.dirty = true;
                     return Some(LRESULT(0));
                 }
+                WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
+                    let mut pt = POINT::default();
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                    }
+                    let hit = self.view.hit(pt.x, pt.y);
+                    let tracking = matches!(hit, Hit::Pane(p) if self.view.panes.get(&p).is_some_and(|v| v.mouse_tracking));
+                    let id = match chrome::cursor_for(&hit, &self.view.dividers(), tracking) {
+                        Cursor::Arrow => IDC_ARROW,
+                        Cursor::IBeam => IDC_IBEAM,
+                        Cursor::SizeWE => IDC_SIZEWE,
+                        Cursor::SizeNS => IDC_SIZENS,
+                    };
+                    unsafe {
+                        if let Ok(c) = LoadCursorW(None, id) {
+                            SetCursor(Some(c));
+                        }
+                    }
+                    return Some(LRESULT(1));
+                }
+                WM_SETTINGCHANGE => {
+                    self.motion.on = crate::window::animations_enabled();
+                }
+                WM_CAPTURECHANGED => {
+                    if self.view.pressed().is_some() {
+                        self.view.release();
+                        self.dirty = true;
+                    }
+                }
                 WM_SETFOCUS | WM_KILLFOCUS => {
+                    if msg == WM_KILLFOCUS {
+                        self.view.release();
+                    }
                     self.focused = msg == WM_SETFOCUS;
                     self.link.send(ClientMsg::Foreground(self.focused));
                     if self.focused {
@@ -806,6 +865,7 @@ impl App {
     fn set_caption_hover(&mut self, c: Option<Caption>) {
         if self.caption_hover != c {
             self.caption_hover = c;
+            self.view.restart_tooltip();
             self.dirty = true;
         }
     }
@@ -973,7 +1033,7 @@ impl App {
             self.next_blink = now + Duration::from_millis(600);
             self.dirty = true;
         }
-        if self.view.tick(now) {
+        if self.view.tick(now) || self.motion.active(now) {
             self.dirty = true;
         }
         let spinning = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.state == AgentState::Working));
@@ -990,6 +1050,12 @@ impl App {
         }
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
+        }
+        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable
+        // paces it), with a short timeout in case the compositor does not signal.
+        if self.motion.active(Instant::now()) {
+            self.dirty = true;
+            sleep = sleep.min(16);
         }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
@@ -1026,11 +1092,25 @@ impl App {
         let (bg, fg) = (rgb(c.background), rgb(c.foreground));
         let accent = c.selection_background.map_or((0x61, 0xaf, 0xef), rgb);
         let col = chrome_colors(bg, fg, accent);
+        // Where this window's focus is: accent while it is the active window, dimmed otherwise.
+        let cue = if self.focused { accent } else { col.bar_fg_dim };
         let sel = c.selection_background.map_or((0x3e, 0x44, 0x51), rgb);
         let opacity = c.background_opacity;
         let blink = self.blink_on || !c.cursor_style_blink;
         let pad = self.pad_px();
         let regions = self.view.regions();
+        let now = Instant::now();
+        let g = self.view.geometry();
+        self.motion.begin(Layout { client: g.client, sidebar_w: regions.tabbar.x, cell: g.cell, workspace: self.view.workspace() });
+        self.motion.hover(self.view.hovered(), now);
+        if self.view.workspace().is_some() {
+            // Every attention dot the model lights, drawn or not: a pulse marks only new attention.
+            let snap = self.view.snapshot();
+            let tabs = snap.tabs.iter().filter(|t| self.view.tab_agent(t.id).is_some_and(|a| a.attention)).map(|t| Dot::Tab(t.id));
+            let ws = self.view.sidebar_rows().into_iter().filter(|r| r.attention).map(|r| Dot::Workspace(r.id));
+            let agents = self.view.agent_rows().into_iter().filter(|r| r.agent.attention).map(|r| Dot::Agent(r.pane));
+            self.motion.set_lit(tabs.chain(ws).chain(agents).collect(), now);
+        }
         let focused_pane = self.view.focused();
         let panes = self.view.visible();
         let split = panes.len() > 1;
@@ -1054,10 +1134,25 @@ impl App {
                 Painter { q: &mut q }.rect(rect, bg, dim);
             }
         }
+        // Hover and press washes for clickable chrome.
+        // Hover fades in and out; press is instant. `lit` also brightens dim labels.
+        let (hovered, pressed) = (self.view.hovered().cloned(), self.view.pressed().cloned());
+        let levels = self.motion.hover_levels(now);
+        let level = |h: &Hit| levels.get(h).copied().unwrap_or(0.0);
+        let lit = |h: &Hit| -> f32 { if pressed.as_ref() == Some(h) { 1.0 } else { level(h) } };
+        let wash = |h: &Hit| -> Option<(u8, u8, u8)> {
+            if pressed.as_ref() == Some(h) {
+                Some(chrome::mix(col.bar_bg, col.bar_fg, 0.16))
+            } else {
+                let v = level(h);
+                (v > 0.01).then(|| chrome::mix(col.bar_bg, col.bar_fg, 0.08 * v))
+            }
+        };
         let mut p = Painter { q: &mut q };
         if split {
-            for d in self.view.dividers() {
-                p.rect(d.line, col.divider, 1.0);
+            for (i, d) in self.view.dividers().into_iter().enumerate() {
+                let c = if hovered == Some(Hit::Divider(i)) || self.view.dragging() { accent } else { col.divider };
+                p.rect(d.line, c, 1.0);
             }
             if let Some((_, r)) = panes.iter().find(|(id, _)| Some(*id) == focused_pane) {
                 for edge in [
@@ -1066,7 +1161,7 @@ impl App {
                     Rect { x: r.x, y: r.y, w: 1, h: r.h },
                     Rect { x: r.x + r.w - 1, y: r.y, w: 1, h: r.h },
                 ] {
-                    p.rect(edge, accent, 1.0);
+                    p.rect(edge, cue, 1.0);
                 }
             }
         }
@@ -1078,9 +1173,13 @@ impl App {
         let pad_x = m.w as i32 / 2;
         for (id, r) in &tabs {
             let is_active = Some(*id) == active;
+            // Hovering the close button lights its tab too.
+            let tab_wash = wash(&Hit::Tab(*id)).or_else(|| wash(&Hit::TabClose(*id)));
+            let tab_lit = lit(&Hit::Tab(*id)).max(lit(&Hit::TabClose(*id)));
             if is_active {
                 p.rect(*r, col.tab_active_bg, 1.0);
-                p.rect(Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 }, accent, 1.0);
+            } else if let Some(c) = tab_wash {
+                p.rect(*r, c, 1.0);
             }
             // An agent's icon leads the title; its state badge sits before the close button.
             let agent = self.view.tab_agent(*id).map(|a| (a.icon, a.state, a.attention));
@@ -1093,13 +1192,33 @@ impl App {
             let title = self.view.snapshot().tab_title(*id);
             let title = truncate_cells(&agent.map_or(title.clone(), |(icon, ..)| format!("{icon} {title}")), cells);
             let ty = r.y + (r.h - m.h as i32) / 2;
-            let tc = if is_active { col.bar_fg } else { col.bar_fg_dim };
+            let tc = if is_active { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, tab_lit) };
             p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &title, tc, 1.0);
             let x = chrome::close_rect(*r, m.w as i32);
+            let close_wash = wash(&Hit::TabClose(*id));
+            if let Some(c) = close_wash {
+                p.rect(x, chrome::mix(c, col.bar_fg, 0.1), 1.0);
+            }
             if let Some(b) = badge {
+                if agent.is_some_and(|(_, _, attention)| attention) {
+                    // A dot that just lit up flares once.
+                    let v = self.motion.dot(Dot::Tab(*id), now);
+                    if v > 0.0 {
+                        let halo = (m.w as f32 * (1.0 + v)) as i32;
+                        p.rect(Rect { x: x.x - m.w as i32 / 2 - halo / 2, y: r.y + (r.h - halo) / 2, w: halo, h: halo }, accent, 0.35 * v);
+                    }
+                }
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x - m.w as i32, ty, b, accent, 1.0);
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", col.bar_fg_dim, 1.0);
+            let xc = chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::TabClose(*id)));
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", xc, 1.0);
+        }
+        let under = tabs.iter().find(|(t, _)| Some(*t) == active).map(|(_, r)| Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 });
+        if let Some(u) = self.motion.slide(SlideSlot::Underline, under, None, now) {
+            p.rect(u, cue, 1.0);
+        }
+        if let Some(c) = wash(&Hit::NewTab) {
+            p.rect(plus, c, 1.0);
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
@@ -1134,6 +1253,10 @@ impl App {
             }
         }
         // Sidebar: docked, or floating over the panes while the pointer rests on the left edge.
+        let sidebar_start = p.q.len();
+        let floating = self.view.floating_sidebar();
+        // The floating sidebar slides in from the left edge; the docked one never moves (panes would resize).
+        let slid = self.motion.slide(SlideSlot::Sidebar, floating, floating.map(|f| Rect { x: f.x - f.w, ..f }), now);
         if let Some(s) = self.view.sidebar_rect() {
             p.rect(s, col.bar_bg, 1.0);
             if self.view.floating_sidebar().is_some() {
@@ -1146,18 +1269,24 @@ impl App {
             for ((_, r), row) in rects.iter().zip(&rows) {
                 if row.current {
                     p.rect(*r, col.tab_active_bg, 1.0);
-                    p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                } else if let Some(c) = wash(&Hit::Workspace(row.id)) {
+                    p.rect(*r, c, 1.0);
                 }
                 let c = ((row.color >> 16) as u8, (row.color >> 8) as u8, row.color as u8);
                 p.rect(Rect { x: r.x + pad_x, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, c, 1.0);
                 let tx = r.x + pad_x + chip + pad_x;
                 let cells = ((r.w - (tx - r.x) - pad_x) / m.w as i32).max(0) as usize;
-                let tc = if row.current { col.bar_fg } else { col.bar_fg_dim };
+                let tc = if row.current { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::Workspace(row.id))) };
                 let name = truncate_cells(&row.name, cells);
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, tx, r.y + (r.h - m.h as i32) / 2, &name, tc, if row.elsewhere { 0.6 } else { 1.0 });
                 if row.attention {
-                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                    let v = self.motion.dot(Dot::Workspace(row.id), now);
+                    attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
                 }
+            }
+            let bar = rects.iter().zip(&rows).find(|(_, row)| row.current).map(|((_, r), _)| Rect { x: r.x, y: r.y, w: 2, h: r.h });
+            if let Some(b) = self.motion.slide(SlideSlot::WsBar, bar, None, now) {
+                p.rect(b, cue, 1.0);
             }
             // Each workspace's tabs, indented under it; the tab this window shows is highlighted.
             let shown = self.view.active_tab().map(|t| t.id);
@@ -1167,17 +1296,25 @@ impl App {
                 let current = Some(t) == shown;
                 if current {
                     p.rect(r, col.tab_active_bg, 1.0);
+                } else if let Some(c) = wash(&Hit::SidebarTab(t)) {
+                    p.rect(r, c, 1.0);
                 }
                 let title = snap.tab_title(t);
                 let label = agent.map_or(title.clone(), |(icon, _)| format!("{icon} {title}"));
                 let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
-                let tc = if current { col.bar_fg } else { col.bar_fg_dim };
+                let tc = if current { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::SidebarTab(t))) };
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &truncate_cells(&label, cells), tc, 1.0);
                 if agent.is_some_and(|(_, attention)| attention) {
-                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                    let v = self.motion.dot(Dot::Tab(t), now);
+                    attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
                 }
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", col.bar_fg_dim, 1.0);
+            let new_wash = wash(&Hit::NewWorkspace);
+            if let Some(c) = new_wash {
+                p.rect(new_row, c, 1.0);
+            }
+            let nc = chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::NewWorkspace));
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", nc, 1.0);
             // Agents: waiting first (oldest first), then working, then idle (spec §4.2).
             let agents = self.view.agent_rects();
             if !agents.is_empty() {
@@ -1194,16 +1331,26 @@ impl App {
                     AgentState::Working => ("working", col.bar_fg_dim),
                     AgentState::Idle => ("idle", col.bar_fg_dim),
                 };
+                if let Some(c) = wash(&Hit::Agent(row.pane)) {
+                    p.rect(*r, c, 1.0);
+                }
                 let ws = snap.workspace(row.workspace).map_or("", |w| w.name.as_str());
                 let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
                 let text = truncate_cells(&format!("{} {} · {state} · {ws}", a.icon, a.name), cells);
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &text, color, 1.0);
                 if a.attention {
-                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                    let v = self.motion.dot(Dot::Agent(row.pane), now);
+                    attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
                 }
             }
         }
-        // Find bar: top right of the pane it searches, with the match count.
+        if let (Some(f), Some(v)) = (floating, slid) {
+            let n = p.q.len();
+            crate::paint::shift(&mut p.q[sidebar_start..n], (v.x - f.x) as f32, 0.0, 1.0);
+        }
+        // Find bar: top right of the pane it searches, with the match count. It fades in, rising 8 px.
+        let find_start = p.q.len();
+        let find_a = self.motion.overlay(|m| &mut m.find, self.view.find().is_some(), now);
         if let Some(f) = self.view.find()
             && let Some((_, r)) = panes.iter().find(|(id, _)| *id == f.pane)
         {
@@ -1222,13 +1369,14 @@ impl App {
             p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}▏", f.query), room), col.bar_fg, 1.0);
             p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
-        // Command palette / picker, centered over everything.
-        if let Some(pal) = self.view.palette() {
-            let (cw, row_h) = (m.w as i32, m.h as i32 + 6);
+        let n = p.q.len();
+        crate::paint::shift(&mut p.q[find_start..n], 0.0, (8.0 * (1.0 - find_a)).round(), find_a);
+        // Command palette / picker, centered over everything. It fades in, rising 8 px.
+        let pal_start = p.q.len();
+        let pal_a = self.motion.overlay(|m| &mut m.palette, self.view.palette().is_some(), now);
+        if let (Some(pal), Some(layout)) = (self.view.palette(), self.view.palette_layout()) {
+            let (cw, panel) = (m.w as i32, layout.panel);
             let items = pal.visible();
-            let shown = items.len().min(12);
-            let w = (60 * cw).min(self.size_px.0 as i32 - 2 * cw).max(10 * cw);
-            let panel = Rect { x: (self.size_px.0 as i32 - w) / 2, y: regions.tabbar.h + 12, w, h: (shown as i32 + 1) * row_h + 10 };
             p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, accent, 1.0);
             p.rect(panel, col.bar_bg, 1.0);
             let title = match pal.mode {
@@ -1237,10 +1385,9 @@ impl App {
                 Mode::MoveTab => "Move tab to › ",
             };
             p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}▏", pal.query), col.bar_fg, 1.0);
-            let first = pal.selected.saturating_sub(shown.saturating_sub(1));
-            for (n, item) in items.iter().skip(first).take(shown).enumerate() {
-                let r = Rect { x: panel.x, y: panel.y + 5 + (n as i32 + 1) * row_h, w: panel.w, h: row_h };
-                if first + n == pal.selected {
+            for &(i, r) in &layout.rows {
+                let Some(item) = items.get(i) else { continue };
+                if i == pal.selected {
                     p.rect(r, col.tab_active_bg, 1.0);
                     p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
                 }
@@ -1253,6 +1400,8 @@ impl App {
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - detail_w, ty, &item.detail, col.bar_fg_dim, 1.0);
             }
         }
+        let n = p.q.len();
+        crate::paint::shift(&mut p.q[pal_start..n], 0.0, (8.0 * (1.0 - pal_a)).round(), pal_a);
         // Notices.
         let notice = |p: &mut Painter, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, text: &str, at_bottom: bool, left: bool| {
             let w = crate::paint::text_width(fonts, text);
@@ -1265,18 +1414,63 @@ impl App {
         if self.server_stopped {
             notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, "[server stopped] Enter: reconnect", true, true);
         }
+        let toast_a = self.motion.overlay(|m| &mut m.toast, self.toast.is_some(), now);
         if let Some(t) = &self.toast {
+            let start = p.q.len();
             notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, true, false);
+            let n = p.q.len();
+            crate::paint::shift(&mut p.q[start..n], 0.0, 0.0, toast_a);
         }
         if let Some(t) = &self.stats {
             notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, false, false);
         }
+        // Tooltip for an icon-only button the pointer rests on, below it and inside the window.
+        if self.view.tooltip_due(now) {
+            let caption = self.caption_hover.and_then(|c| self.caption_rects().into_iter().find(|(k, _)| *k == c)).map(|(c, r)| {
+                let name = match c {
+                    Caption::Minimize => "Minimize",
+                    Caption::Maximize if self.win.is_maximized() => "Restore",
+                    Caption::Maximize => "Maximize",
+                    Caption::Close => "Close",
+                };
+                (name.to_string(), r)
+            });
+            let button = self.view.hovered().and_then(|h| {
+                let text = chrome::tooltip_for(h, &self.config.keybinds)?;
+                let r = match h {
+                    Hit::NewTab => plus,
+                    Hit::TabClose(t) => chrome::close_rect(tabs.iter().find(|(id, _)| id == t)?.1, m.w as i32),
+                    Hit::NewWorkspace => self.view.workspace_rects().1,
+                    _ => return None,
+                };
+                Some((text, r))
+            });
+            if let Some((text, r)) = caption.or(button) {
+                let w = crate::paint::text_width(&self.fonts, &text) + 2 * pad_x;
+                let h = m.h as i32 + 6;
+                let x = (r.x + r.w / 2 - w / 2).clamp(0, (self.size_px.0 as i32 - w).max(0));
+                let tip = Rect { x, y: r.y + r.h + 4, w, h };
+                p.rect(Rect { x: tip.x - 1, y: tip.y - 1, w: tip.w + 2, h: tip.h + 2 }, col.divider, 1.0);
+                p.rect(tip, col.bar_bg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, tip.x + pad_x, tip.y + 3, &text, col.bar_fg, 1.0);
+            }
+        }
+        self.motion.end(now);
         batches.push(Batch { quads: q, texture: None });
         self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
     }
+}
+
+/// An attention chip; while `pulse` (0..=1) plays, a soft halo grows around it.
+fn attention_dot(p: &mut Painter, r: Rect, accent: (u8, u8, u8), pulse: f32) {
+    if pulse > 0.0 {
+        let g = (r.w as f32 * 0.6 * pulse).round() as i32;
+        p.rect(Rect { x: r.x - g, y: r.y - g, w: r.w + 2 * g, h: r.h + 2 * g }, accent, 0.35 * pulse);
+    }
+    p.rect(r, accent, 1.0);
 }
 
 /// `s` cut to `cells` terminal cells, ending in `…` when cut.
@@ -1481,6 +1675,7 @@ pub fn run() -> Result<()> {
         caption_hover: None,
         caption_down: None,
         notifier,
+        motion: Motion::new(crate::window::animations_enabled()),
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
     app.borrow().win.show();

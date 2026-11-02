@@ -13,7 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
-use crate::palette::{Choice, Mode, Palette, move_tab_items, palette_items, picker_items};
+use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
 use crate::selection::Selection;
 
 /// Pixel space of the window: its client size, the font's cell, pane padding and chrome heights.
@@ -134,6 +134,13 @@ pub struct Find {
     pub query: String,
 }
 
+/// Where the open palette is drawn: its panel and each shown row (index into `Palette::visible()`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteLayout {
+    pub panel: Rect,
+    pub rows: Vec<(usize, Rect)>,
+}
+
 /// One row of the sidebar's Agents list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
@@ -145,6 +152,8 @@ pub struct AgentRow {
 
 /// How long the hover-revealed sidebar lingers after the pointer leaves it (spec §4.2).
 const HOVER_GRACE: Duration = Duration::from_millis(300);
+/// How long the pointer rests on a button before its tooltip shows.
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 /// Width of the left-edge strip that reveals a hidden sidebar.
 const HOVER_STRIP: i32 = 8;
 
@@ -179,6 +188,14 @@ pub struct WindowView {
     palette: Option<Palette>,
     /// The open find bar (scrollback search), if any.
     find: Option<Find>,
+    /// The pointer's last position in the client area, and what is under it.
+    pointer: Option<(i32, i32)>,
+    hovered: Option<Hit>,
+    /// The chrome target a held left button went down on.
+    pressed: Option<Hit>,
+    /// When the pointer came to rest on its current target, and whether that target's tooltip is up.
+    tip_since: Option<Instant>,
+    tip_shown: bool,
 }
 
 impl WindowView {
@@ -204,6 +221,11 @@ impl WindowView {
             configured_done: false,
             palette: None,
             find: None,
+            pointer: None,
+            hovered: None,
+            pressed: None,
+            tip_since: None,
+            tip_shown: false,
         }
     }
 
@@ -278,11 +300,7 @@ impl WindowView {
             KeyCode::ArrowUp => p.up(),
             KeyCode::ArrowDown => p.down(),
             KeyCode::Backspace => p.backspace(),
-            KeyCode::Enter | KeyCode::NumpadEnter => {
-                let (choice, mode) = (p.accept(), p.mode);
-                self.palette = None;
-                return Some(choice.map_or_else(Out::default, |c| self.run_choice(c, mode, ctx)));
-            }
+            KeyCode::Enter | KeyCode::NumpadEnter => return Some(self.accept_palette(ctx)),
             _ => {
                 if let Some(t) = ev.text.as_deref().filter(|_| !ev.mods.has(Mods::CTRL | Mods::ALT)) {
                     p.type_text(t);
@@ -290,6 +308,50 @@ impl WindowView {
             }
         }
         Some(Out::default())
+    }
+
+    /// Run the selected row and close the palette.
+    fn accept_palette(&mut self, ctx: &SpawnCtx) -> Out {
+        let Some(p) = self.palette.take() else { return Out::default() };
+        p.accept().map_or_else(Out::default, |c| self.run_choice(c, p.mode, ctx))
+    }
+
+    /// The wheel over the open palette: `rows` down (negative: up).
+    pub fn scroll_palette(&mut self, rows: i32) {
+        if let Some(p) = &mut self.palette {
+            p.scroll(rows);
+        }
+    }
+
+    /// Centered under the tab bar, at most `SHOWN` rows: the query line, then the rows.
+    pub fn palette_layout(&self) -> Option<PaletteLayout> {
+        let p = self.palette.as_ref()?;
+        let (cw, row_h) = (self.geom.cell.0 as i32, self.geom.cell.1 as i32 + 6);
+        let client_w = self.geom.client.0;
+        let n = p.visible().len().saturating_sub(p.top).min(SHOWN);
+        let w = (60 * cw).min(client_w - 2 * cw).max(10 * cw);
+        let panel = Rect { x: (client_w - w) / 2, y: self.geom.bar_h + 12, w, h: (n as i32 + 1) * row_h + 10 };
+        let rows = (0..n).map(|k| (p.top + k, Rect { x: panel.x, y: panel.y + 5 + (k as i32 + 1) * row_h, w: panel.w, h: row_h })).collect();
+        Some(PaletteLayout { panel, rows })
+    }
+
+    /// A press while the palette may be open: a row runs, the panel keeps it open, anywhere else
+    /// closes it (and the press goes no further). `None`: not open.
+    pub fn palette_click(&mut self, hit: &Hit, ctx: &SpawnCtx) -> Option<Out> {
+        self.palette.as_ref()?;
+        match hit {
+            Hit::PaletteRow(i) => {
+                if let Some(p) = &mut self.palette {
+                    p.select(*i);
+                }
+                Some(self.accept_palette(ctx))
+            }
+            Hit::Palette => Some(Out::default()),
+            _ => {
+                self.palette = None;
+                Some(Out::default())
+            }
+        }
     }
 
     fn run_choice(&mut self, choice: Choice, mode: Mode, ctx: &SpawnCtx) -> Out {
@@ -361,7 +423,63 @@ impl WindowView {
         }
     }
 
+    /// The pointer is at `(x, y)`: true when that changed the target under it (so it needs a redraw).
+    pub fn hover_at(&mut self, x: i32, y: i32) -> bool {
+        self.pointer = Some((x, y));
+        let changed = self.rehover();
+        // The palette follows a moving pointer, as menus do (never a still one the panel opened under).
+        if changed
+            && let (Some(Hit::PaletteRow(i)), Some(p)) = (&self.hovered, &mut self.palette)
+        {
+            p.select(*i);
+        }
+        changed
+    }
+
+    /// Recompute the hover target after the model or the geometry changed under a still pointer.
+    fn rehover(&mut self) -> bool {
+        let hit = self.pointer.map(|(x, y)| self.hit(x, y));
+        let changed = hit != self.hovered;
+        self.hovered = hit;
+        if changed {
+            self.restart_tooltip();
+        }
+        changed
+    }
+
+    /// The pointer moved to another target (a caption button counts): the tooltip wait starts over.
+    pub fn restart_tooltip(&mut self) {
+        self.tip_since = Some(Instant::now());
+        self.tip_shown = false;
+    }
+
+    /// The pointer has rested long enough for a tooltip.
+    pub fn tooltip_due(&self, now: Instant) -> bool {
+        self.tip_since.is_some_and(|t| now >= t + TOOLTIP_DELAY)
+    }
+
+    pub fn hovered(&self) -> Option<&Hit> {
+        self.hovered.as_ref()
+    }
+
+    pub fn pressed(&self) -> Option<&Hit> {
+        self.pressed.as_ref()
+    }
+
+    pub fn press(&mut self, hit: Hit) {
+        self.pressed = Some(hit);
+    }
+
+    /// The button came up, or capture or focus was lost.
+    pub fn release(&mut self) {
+        self.pressed = None;
+    }
+
     pub fn pointer_left(&mut self, now: Instant) {
+        self.pointer = None;
+        self.hovered = None;
+        // A button released outside the window sends us nothing else.
+        self.pressed = None;
         if self.hover.revealed {
             self.hover.leave_at.get_or_insert(now);
         }
@@ -369,6 +487,10 @@ impl WindowView {
 
     /// Hide the floating sidebar once its grace is over; true when that changed what is drawn.
     pub fn tick(&mut self, now: Instant) -> bool {
+        if !self.tip_shown && self.tooltip_due(now) {
+            self.tip_shown = true;
+            return true;
+        }
         match self.hover.leave_at {
             Some(t) if self.hover.revealed && now >= t + HOVER_GRACE => {
                 self.hover = Hover::default();
@@ -379,7 +501,9 @@ impl WindowView {
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.hover.leave_at.filter(|_| self.hover.revealed).map(|t| t + HOVER_GRACE)
+        let tip = self.tip_since.filter(|_| !self.tip_shown).map(|t| t + TOOLTIP_DELAY);
+        let grace = self.hover.leave_at.filter(|_| self.hover.revealed).map(|t| t + HOVER_GRACE);
+        tip.into_iter().chain(grace).min()
     }
 
     pub fn sidebar_rows(&self) -> Vec<SidebarRow> {
@@ -604,6 +728,7 @@ impl WindowView {
 
     /// Recompute pane rectangles; resize the shells whose cell grid changed.
     fn relayout(&mut self) -> Vec<ClientMsg> {
+        self.rehover();
         let content = self.regions().content;
         if content.w <= 0 || content.h <= 0 {
             return Vec::new(); // minimized: leave every shell at its size
@@ -874,6 +999,11 @@ impl WindowView {
     }
 
     pub fn hit(&self, x: i32, y: i32) -> Hit {
+        if let Some(l) = self.palette_layout()
+            && l.panel.contains(x, y)
+        {
+            return l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(Hit::Palette, |(i, _)| Hit::PaletteRow(*i));
+        }
         let mut regions = self.regions();
         regions.sidebar = self.sidebar_rect();
         let (tabs, new_tab) = self.tab_layout();

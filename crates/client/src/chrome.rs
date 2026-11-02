@@ -42,7 +42,7 @@ pub fn close_rect(tab: Rect, cell_w: i32) -> Rect {
     Rect { x: tab.x + tab.w - w, y: tab.y, w, h: tab.h }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Hit {
     Tab(TabId),
     TabClose(TabId),
@@ -58,6 +58,10 @@ pub enum Hit {
     Pane(PaneId),
     /// Empty sidebar area.
     Sidebar,
+    /// A row of the open command palette: an index into `Palette::visible()`.
+    PaletteRow(usize),
+    /// Inside the open palette, but not on a row.
+    Palette,
     /// Empty tab bar area (drags the window).
     Bar,
     None,
@@ -107,6 +111,43 @@ pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
         }
     }
     Hit::None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    Arrow,
+    IBeam,
+    SizeWE,
+    SizeNS,
+}
+
+/// The pointer shape over `hit`: what a press there would do. `tracking`: the pane's program owns the mouse.
+pub fn cursor_for(hit: &Hit, dividers: &[Divider], tracking: bool) -> Cursor {
+    match hit {
+        Hit::Divider(i) => match dividers.get(*i).map(|d| d.axis) {
+            Some(wraith_proto::model::Axis::Horizontal) => Cursor::SizeWE,
+            Some(wraith_proto::model::Axis::Vertical) => Cursor::SizeNS,
+            None => Cursor::Arrow,
+        },
+        Hit::Pane(_) if !tracking => Cursor::IBeam,
+        _ => Cursor::Arrow,
+    }
+}
+
+/// What an icon-only button does, with its current binding: `New tab  Ctrl+Shift+T`. Rows that show
+/// their own text get none.
+pub fn tooltip_for(hit: &Hit, keybinds: &[wraith_config::Keybind]) -> Option<String> {
+    use wraith_config::Action;
+    let (name, action) = match hit {
+        Hit::NewTab => ("New tab", Action::NewTab),
+        Hit::TabClose(_) => ("Close tab", Action::CloseTab),
+        Hit::NewWorkspace => ("New workspace", Action::NewWorkspace),
+        _ => return None,
+    };
+    Some(match keybinds.iter().find(|k| k.action == action) {
+        Some(k) => format!("{name}  {}", crate::palette::trigger_text(k)),
+        None => name.to_string(),
+    })
 }
 
 type Rgb = (u8, u8, u8);

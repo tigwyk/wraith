@@ -9,6 +9,7 @@ pub mod input;
 pub mod notify;
 pub mod reload;
 pub mod link;
+pub mod motion;
 pub mod paint;
 pub mod palette;
 pub mod selection;

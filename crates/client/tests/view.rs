@@ -730,3 +730,137 @@ fn esc_closes_find_and_clears() {
 fn find_has_a_default_keybinding() {
     assert!(Config::default().keybinds.iter().any(|k| k.action == Action::Find), "ctrl+shift+f");
 }
+
+#[test]
+fn hover_reports_only_target_changes() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(100, 300);
+    assert_eq!(v.hovered(), Some(&Hit::Pane(1)));
+    assert!(!v.hover_at(120, 310), "moving within the same pane changes nothing to draw");
+    assert!(v.hover_at(50, 10), "onto a tab");
+    assert_eq!(v.hovered(), Some(&Hit::Tab(10)));
+    assert!(!v.hover_at(60, 12));
+}
+
+#[test]
+fn hover_drops_target_that_disappears() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(250, 10);
+    assert_eq!(v.hovered(), Some(&Hit::Tab(11)));
+    let mut s = snap(10);
+    s.workspaces[0].tabs = vec![10];
+    s.tabs.retain(|t| t.id == 10);
+    s.panes.retain(|p| p.id != 3);
+    v.on_snapshot(s, &ctx());
+    assert_ne!(v.hovered(), Some(&Hit::Tab(11)), "tab 11 is gone");
+}
+
+#[test]
+fn pointer_left_clears_hover() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(50, 10);
+    v.pointer_left(std::time::Instant::now());
+    assert_eq!(v.hovered(), None);
+}
+
+#[test]
+fn capture_lost_clears_press() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.press(Hit::Tab(10));
+    assert_eq!(v.pressed(), Some(&Hit::Tab(10)));
+    v.release();
+    assert_eq!(v.pressed(), None);
+}
+
+#[test]
+fn palette_hit_takes_precedence_over_panes() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let (_, r) = v.palette_layout().map(|l| l.rows[0]).unwrap_or_default();
+    assert_eq!(r.w, 0, "closed: no layout");
+    v.open_palette(Mode::Palette, &ctx());
+    let l = v.palette_layout().unwrap();
+    let (i, r) = l.rows[1];
+    assert_eq!(v.hit(r.x + 20, r.y + 2), Hit::PaletteRow(i), "over pane 1, but the palette is on top");
+    assert_eq!(v.hit(l.panel.x + 5, l.panel.y + 2), Hit::Palette, "the query line");
+    assert!(matches!(v.hit(5, 300), Hit::Pane(_)), "outside the panel");
+}
+
+#[test]
+fn hover_on_palette_row_selects_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    let (i, r) = v.palette_layout().unwrap().rows[4];
+    v.hover_at(r.x + 20, r.y + 2);
+    assert_eq!(v.palette().unwrap().selected, i);
+}
+
+#[test]
+fn click_on_palette_row_runs_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "new tab");
+    v.palette_key(&key(KeyCode::ArrowDown), &ctx());
+    let (i, r) = v.palette_layout().unwrap().rows[0];
+    let hit = v.hit(r.x + 20, r.y + 2);
+    assert_eq!(hit, Hit::PaletteRow(i));
+    let out = v.palette_click(&hit, &ctx()).unwrap();
+    assert!(v.palette().is_none(), "running a row closes the palette");
+    assert!(matches!(out.msgs.as_slice(), [ClientMsg::Model(ModelCmd::NewTab { .. })]), "the clicked row, not the selected one: {out:?}");
+}
+
+#[test]
+fn click_outside_palette_closes_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert!(v.palette_click(&Hit::Pane(1), &ctx()).is_none(), "closed: the click is not consumed");
+    v.open_palette(Mode::Palette, &ctx());
+    assert_eq!(v.palette_click(&Hit::Palette, &ctx()), Some(Default::default()), "inside the panel: stays open");
+    assert!(v.palette().is_some());
+    assert_eq!(v.palette_click(&Hit::Pane(1), &ctx()), Some(Default::default()), "consumed: the pane gets no click");
+    assert!(v.palette().is_none());
+}
+
+#[test]
+fn tooltip_due_after_rest_and_resets_on_move() {
+    use std::time::Instant;
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(390, 10); // the new-tab button, after tabs 10 and 11
+    assert_eq!(v.hovered(), Some(&Hit::NewTab));
+    assert!(!v.tooltip_due(Instant::now()), "not at once");
+    assert!(v.tooltip_due(Instant::now() + Duration::from_millis(600)), "after resting 500 ms");
+    assert!(v.next_deadline().is_some(), "the loop wakes to show it");
+    assert!(v.tick(Instant::now() + Duration::from_millis(600)), "showing it needs one redraw");
+    assert!(!v.tick(Instant::now() + Duration::from_millis(700)), "only one");
+    v.hover_at(50, 10);
+    assert!(!v.tooltip_due(Instant::now() + Duration::from_millis(100)), "a new target starts the wait again");
+}
+
+#[test]
+fn snapshot_under_still_pointer_keeps_palette_selection() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    let (_, r) = v.palette_layout().unwrap().rows[4];
+    v.palette_key(&key(KeyCode::Escape), &ctx());
+    v.hover_at(r.x + 20, r.y + 2); // resting where the panel will be
+    v.open_palette(Mode::Palette, &ctx());
+    v.on_snapshot(snap(10), &ctx()); // a title change, say
+    assert_eq!(v.palette().unwrap().selected, 0, "only a pointer that moves selects");
+}
+
+#[test]
+fn pointer_leaving_clears_press() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.press(Hit::NewTab);
+    v.pointer_left(std::time::Instant::now());
+    assert_eq!(v.pressed(), None, "released outside the window: no stuck highlight");
+}

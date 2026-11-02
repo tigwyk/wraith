@@ -108,3 +108,50 @@ fn chrome_colors_follow_the_theme() {
     let light = chrome_colors((250, 250, 250), (20, 20, 20), (0, 90, 200));
     assert!(light.bar_bg.0 < 250, "{:?}", light.bar_bg);
 }
+
+#[test]
+fn cursor_for_divider_is_resize() {
+    use wraith_client::chrome::{Cursor, cursor_for};
+    let vline = Divider { path: vec![], axis: Axis::Horizontal, parent: r(0, 26, 1000, 574), line: r(499, 26, 1, 574) };
+    let hline = Divider { path: vec![], axis: Axis::Vertical, parent: r(0, 26, 1000, 574), line: r(0, 300, 1000, 1) };
+    let divs = [vline, hline];
+    assert_eq!(cursor_for(&Hit::Divider(0), &divs, false), Cursor::SizeWE, "side-by-side panes: drag left/right");
+    assert_eq!(cursor_for(&Hit::Divider(1), &divs, false), Cursor::SizeNS, "stacked panes: drag up/down");
+}
+
+#[test]
+fn cursor_over_tracking_pane_is_arrow() {
+    use wraith_client::chrome::{Cursor, cursor_for};
+    assert_eq!(cursor_for(&Hit::Pane(1), &[], false), Cursor::IBeam);
+    assert_eq!(cursor_for(&Hit::Pane(1), &[], true), Cursor::Arrow, "the program owns the mouse");
+    assert_eq!(cursor_for(&Hit::Tab(10), &[], false), Cursor::Arrow);
+    assert_eq!(cursor_for(&Hit::None, &[], false), Cursor::Arrow);
+}
+
+#[test]
+fn tooltip_names_action_and_binding() {
+    use wraith_client::chrome::tooltip_for;
+    let binds = wraith_config::Config::default().keybinds;
+    assert_eq!(tooltip_for(&Hit::NewTab, &binds).as_deref(), Some("New tab  Ctrl+Shift+T"));
+    assert!(tooltip_for(&Hit::TabClose(3), &binds).unwrap().starts_with("Close tab"));
+    assert!(tooltip_for(&Hit::NewWorkspace, &binds).unwrap().starts_with("New workspace"));
+    assert_eq!(tooltip_for(&Hit::NewTab, &[]).as_deref(), Some("New tab"), "unbound: the name alone");
+}
+
+#[test]
+fn tooltip_follows_rebinding() {
+    use wraith_client::chrome::tooltip_for;
+    let mut binds = wraith_config::Config::default().keybinds;
+    binds.retain(|k| k.action != wraith_config::Action::NewTab);
+    binds.push(wraith_config::parse_keybind("ctrl+t=new_tab").unwrap());
+    assert_eq!(tooltip_for(&Hit::NewTab, &binds).as_deref(), Some("New tab  Ctrl+T"));
+}
+
+#[test]
+fn no_tooltip_for_panes_or_rows() {
+    use wraith_client::chrome::tooltip_for;
+    let binds = wraith_config::Config::default().keybinds;
+    for h in [Hit::Pane(1), Hit::Tab(1), Hit::Workspace(1), Hit::Agent(1), Hit::SidebarTab(1), Hit::Divider(0), Hit::Bar, Hit::None] {
+        assert_eq!(tooltip_for(&h, &binds), None, "{h:?}");
+    }
+}

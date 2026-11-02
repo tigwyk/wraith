@@ -55,16 +55,21 @@ pub struct Item {
     pub choice: Choice,
 }
 
+/// Rows the palette shows at once.
+pub const SHOWN: usize = 12;
+
 pub struct Palette {
     pub mode: Mode,
     pub query: String,
     items: Vec<Item>,
     pub selected: usize,
+    /// The first row on screen; it moves only to keep the selection visible, so hovering never scrolls.
+    pub top: usize,
 }
 
 impl Palette {
     pub fn new(mode: Mode, items: Vec<Item>) -> Palette {
-        Palette { mode, query: String::new(), items, selected: 0 }
+        Palette { mode, query: String::new(), items, selected: 0, top: 0 }
     }
 
     /// The rows that match the query, best first (original order for an empty query).
@@ -77,6 +82,23 @@ impl Palette {
 
     fn query_changed(&mut self) {
         self.selected = 0;
+        self.top = 0;
+    }
+
+    fn keep_visible(&mut self) {
+        let n = self.visible().len();
+        self.top = self.top.min(self.selected).max((self.selected + 1).saturating_sub(SHOWN)).min(n.saturating_sub(SHOWN));
+    }
+
+    /// Select row `i` of `visible()` (clamped).
+    pub fn select(&mut self, i: usize) {
+        self.selected = i.min(self.visible().len().saturating_sub(1));
+        self.keep_visible();
+    }
+
+    /// Move the selection `rows` down (negative: up), as the wheel does.
+    pub fn scroll(&mut self, rows: i32) {
+        self.select(self.selected.saturating_add_signed(rows as isize));
     }
 
     pub fn type_text(&mut self, t: &str) {
@@ -90,11 +112,11 @@ impl Palette {
     }
 
     pub fn up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        self.scroll(-1);
     }
 
     pub fn down(&mut self) {
-        self.selected = (self.selected + 1).min(self.visible().len().saturating_sub(1));
+        self.scroll(1);
     }
 
     pub fn accept(&self) -> Option<Choice> {

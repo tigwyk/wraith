@@ -55,3 +55,13 @@ impl Painter<'_> {
         text_width(fonts, s)
     }
 }
+
+/// Move quads already pushed by (`dx`, `dy`) and scale their opacity: how an overlay slides or fades
+/// as one piece without each drawing call knowing about it.
+pub fn shift(q: &mut [Quad], dx: f32, dy: f32, alpha: f32) {
+    for quad in q {
+        quad.pos[0] += dx;
+        quad.pos[1] += dy;
+        quad.color[3] *= alpha;
+    }
+}
