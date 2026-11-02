@@ -172,6 +172,7 @@ The server writes `%LOCALAPPDATA%\wraith\layout.json` (workspaces, tabs, pane tr
   - BEL while an agent is attached → `Ask`
   - Title matching the harness's `ask_title` regex → `Ask`
   - OSC 133;D after an agent command → `Detached`
+- **M4 note:** the vendored Ghostty exposes these signals as callbacks (`on_desktop_notification`, `on_progress_report`, `on_semantic_prompt`), so no sidecar OSC parser is needed. It also provides **OSC 7501 program status** (`state=working|blocked|done|idle|error|clear`), which Wraith maps to Working / Ask / TurnEnd / Idle as a passive signal.
 - Built-in harness table (data in `agent` crate): `claude`, `codex`, `gemini`, `aider`, `opencode`, `copilot`, `cursor-agent`, `amp`, `goose`. Each entry: id, display name, icon, process matchers, `ask_title` regex.
 
 ### 5.3 State engine
@@ -181,7 +182,7 @@ A pure function `fn step(state: AgentState, ev: AgentEvent, ctx: Ctx) -> AgentSt
 - States: `Working`, `Waiting(Ask)`, `Waiting(TurnEnd)`, `Idle`.
 - **Unknown or ambiguous → Idle.** A false alarm costs more than a quiet row.
 - `Waiting(Ask)` latches until the user types in that pane (`Input` with Key/Text/Paste). Focusing or viewing does not clear it.
-- `Waiting(TurnEnd)` raises attention only if the pane was not visible when the turn ended. It clears when the pane becomes visible.
+- `Waiting(TurnEnd)` raises attention only if the pane was not visible when the turn ended. It clears when the pane becomes visible. *M4 ruling:* a pane is visible only when a window in the foreground draws it. A window coming to the foreground counts as viewing its panes.
 - Hook events beat passive signals: when a pane has received a hook event in the last 10 minutes, passive state signals for it are ignored (passive icon detection still runs).
 
 ### 5.4 Attention and notification
@@ -196,6 +197,7 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 | Windows toast | Title = "<Agent> needs input — <workspace>/<tab>", body = message. Button "Open" → activation `wraith.exe --activate pane:<id>` focuses window, workspace, tab, pane. Shown when window not foreground or pane not visible. |
 
 - Config: `agent-notify = toast,flash,badge,sound` (any subset), `agent-notify-when = unfocused|always`, `agent-notify-quiet = 22:00-08:00`.
+- *M4 ruling:* a toast click is handled in the window process (the toast's `Activated` event focuses the pane). `--activate pane:<id>` COM activation is not built: clicking a toast after its window closed just opens Wraith, which reattaches.
 - Toasts need an AppUserModelID. The installer (or first run, for portable mode) creates a Start Menu shortcut with `System.AppUserModel.ID = Wraith.Terminal` and the toast activator CLSID.
 
 ### 5.5 Safety
