@@ -6,6 +6,7 @@ pub mod grid;
 pub mod input;
 pub mod reload;
 pub mod link;
+pub mod paint;
 pub mod selection;
 pub mod sprite;
 pub mod window;

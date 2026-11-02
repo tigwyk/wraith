@@ -1,5 +1,8 @@
 //! Grid renderer: caches shaped rows from `FrameDelta`s, draws with one instanced quad pipeline.
 //! Only dirty rows are re-shaped (spec §6.3); drawing is O(visible cells).
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use unicode_width::UnicodeWidthChar;
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, ID3DBlob};
@@ -10,10 +13,11 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, D3D11_RASTERIZER_DESC, D3D11_RENDER_TARGET_BLEND_DESC,
     D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT, ID3D11BlendState, ID3D11Buffer,
     ID3D11InputLayout, ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11SamplerState,
-    ID3D11VertexShader,
+    ID3D11ShaderResourceView, ID3D11VertexShader,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT};
 use windows::core::{PCSTR, Result, s};
+use wraith_proto::model::Rect;
 use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, SelRange, StyleFlags};
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
@@ -41,14 +45,23 @@ pub struct DrawOpts {
 
 type Rgb = (u8, u8, u8);
 
+/// One instanced rectangle: a solid fill (`kind` 0), a monochrome glyph (1) or a color glyph (2).
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Quad {
-    pos: [f32; 2],
-    size: [f32; 2],
-    uv: [f32; 4],
-    color: [f32; 4],
-    kind: u32,
+pub struct Quad {
+    pub pos: [f32; 2],
+    pub size: [f32; 2],
+    pub uv: [f32; 4],
+    /// Straight RGBA.
+    pub color: [f32; 4],
+    pub kind: u32,
+}
+
+/// Quads drawn together, optionally sampling their own texture (inline images).
+#[derive(Default)]
+pub struct Batch {
+    pub quads: Vec<Quad>,
+    pub texture: Option<ID3D11ShaderResourceView>,
 }
 
 #[derive(Clone, Default)]
@@ -74,14 +87,7 @@ struct CachedGlyph {
 }
 
 pub struct GridRenderer {
-    vs: ID3D11VertexShader,
-    ps: ID3D11PixelShader,
-    layout: ID3D11InputLayout,
-    blend: ID3D11BlendState,
-    raster: ID3D11RasterizerState,
-    sampler: ID3D11SamplerState,
-    cbuf: ID3D11Buffer,
-    inst: Option<(ID3D11Buffer, usize)>,
+    pipe: Rc<Pipeline>,
     rows: Vec<CachedRow>,
     cols: u16,
     fg: Rgb,
@@ -92,6 +98,18 @@ pub struct GridRenderer {
     quads: Vec<Quad>,
     /// (cells wide, shaped row) per `Overlay`.
     overlays: [Option<(u16, CachedRow)>; 3],
+}
+
+/// Shaders and state shared by every grid and the chrome of one window.
+pub struct Pipeline {
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
+    layout: ID3D11InputLayout,
+    blend: ID3D11BlendState,
+    raster: ID3D11RasterizerState,
+    sampler: ID3D11SamplerState,
+    cbuf: ID3D11Buffer,
+    inst: RefCell<Option<(ID3D11Buffer, usize)>>,
 }
 
 fn compile(src: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
@@ -115,8 +133,8 @@ fn f(c: Rgb, a: f32) -> [f32; 4] {
     [f32::from(c.0) / 255.0, f32::from(c.1) / 255.0, f32::from(c.2) / 255.0, a]
 }
 
-impl GridRenderer {
-    pub fn new(gpu: &Gpu) -> Result<GridRenderer> {
+impl Pipeline {
+    pub fn new(gpu: &Gpu) -> Result<Pipeline> {
         let src = include_str!("shaders.hlsl");
         let vsb = compile(src, s!("vs"), s!("vs_5_0"))?;
         let psb = compile(src, s!("ps"), s!("ps_5_0"))?;
@@ -174,7 +192,7 @@ impl GridRenderer {
             };
             d.CreateBuffer(&cd, None, Some(&mut cbuf))?;
         }
-        Ok(GridRenderer {
+        Ok(Pipeline {
             vs: vs.unwrap(),
             ps: ps.unwrap(),
             layout: layout.unwrap(),
@@ -182,7 +200,86 @@ impl GridRenderer {
             raster: raster.unwrap(),
             sampler: sampler.unwrap(),
             cbuf: cbuf.unwrap(),
-            inst: None,
+            inst: RefCell::new(None),
+        })
+    }
+
+    /// Clear `target` to `clear` (premultiplied), then draw every batch in order in one pass.
+    pub fn submit(&self, gpu: &Gpu, target: &ID3D11RenderTargetView, size: (u32, u32), atlas: &GlyphAtlas, batches: &[Batch], clear: [f32; 4]) {
+        let ctx = &gpu.ctx;
+        gpu.clear(target, clear);
+        let total: usize = batches.iter().map(|b| b.quads.len()).sum();
+        if total == 0 {
+            return;
+        }
+        unsafe {
+            let mut inst = self.inst.borrow_mut();
+            if inst.as_ref().is_none_or(|(_, cap)| *cap < total) {
+                let cap = total.next_power_of_two().max(1024);
+                let desc = D3D11_BUFFER_DESC {
+                    ByteWidth: (cap * size_of::<Quad>()) as u32,
+                    Usage: D3D11_USAGE_DYNAMIC,
+                    BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                    ..Default::default()
+                };
+                let mut b = None;
+                if gpu.device.CreateBuffer(&desc, None, Some(&mut b)).is_err() {
+                    return;
+                }
+                *inst = Some((b.unwrap(), cap));
+            }
+            let (buf, _) = inst.as_ref().unwrap();
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            if ctx.Map(buf, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m)).is_err() {
+                return;
+            }
+            let mut at = 0;
+            for b in batches {
+                std::ptr::copy_nonoverlapping(b.quads.as_ptr(), (m.pData as *mut Quad).add(at), b.quads.len());
+                at += b.quads.len();
+            }
+            ctx.Unmap(buf, 0);
+            let mut cm = D3D11_MAPPED_SUBRESOURCE::default();
+            if ctx.Map(&self.cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut cm)).is_ok() {
+                *(cm.pData as *mut [f32; 4]) = [size.0 as f32, size.1 as f32, 0.0, 0.0];
+                ctx.Unmap(&self.cbuf, 0);
+            }
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
+            ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: size.0 as f32, Height: size.1 as f32, MinDepth: 0.0, MaxDepth: 1.0 }]));
+            ctx.RSSetState(&self.raster);
+            ctx.OMSetBlendState(&self.blend, None, 0xffff_ffff);
+            ctx.IASetInputLayout(&self.layout);
+            ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            let stride = size_of::<Quad>() as u32;
+            let offset = 0u32;
+            ctx.IASetVertexBuffers(0, 1, Some(&Some(buf.clone())), Some(&stride), Some(&offset));
+            ctx.VSSetShader(&self.vs, None);
+            ctx.VSSetConstantBuffers(0, Some(&[Some(self.cbuf.clone())]));
+            ctx.PSSetShader(&self.ps, None);
+            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+            let mut first = 0u32;
+            for b in batches {
+                if b.quads.is_empty() {
+                    continue;
+                }
+                ctx.PSSetShaderResources(0, Some(&[Some(atlas.srv().clone()), b.texture.clone()]));
+                ctx.DrawInstanced(4, b.quads.len() as u32, 0, first);
+                first += b.quads.len() as u32;
+            }
+        }
+    }
+}
+
+impl GridRenderer {
+    pub fn new(gpu: &Gpu) -> Result<GridRenderer> {
+        Ok(GridRenderer::with_pipeline(Rc::new(Pipeline::new(gpu)?)))
+    }
+
+    /// A grid drawing through a pipeline shared with other grids and the window chrome.
+    pub fn with_pipeline(pipe: Rc<Pipeline>) -> GridRenderer {
+        GridRenderer {
+            pipe,
             rows: Vec::new(),
             cols: 0,
             fg: (255, 255, 255),
@@ -192,7 +289,16 @@ impl GridRenderer {
             cursor: None,
             quads: Vec::new(),
             overlays: [None, None, None],
-        })
+        }
+    }
+
+    pub fn pipeline(&self) -> &Rc<Pipeline> {
+        &self.pipe
+    }
+
+    /// The pane's default background.
+    pub fn background(&self) -> (u8, u8, u8) {
+        self.bg
     }
 
     pub fn cursor_pos(&self) -> Option<(u16, u16)> {
@@ -275,6 +381,7 @@ impl GridRenderer {
         }
     }
 
+    /// Clear `target` to the grid's background and draw just this grid.
     #[allow(clippy::too_many_arguments, reason = "one draw call's full input; grouping adds a type nobody else uses")]
     pub fn draw(
         &mut self,
@@ -287,29 +394,53 @@ impl GridRenderer {
         m: &CellMetrics,
         opts: &DrawOpts,
     ) {
-        let (cw, ch) = (m.w as f32, m.h as f32);
-        let cell_xy = |x: u16, y: usize| (origin.0 + f32::from(x) * cw, origin.1 + y as f32 * ch);
         let mut q = std::mem::take(&mut self.quads);
         q.clear();
+        self.push_quads(&mut q, gpu, atlas, fonts, origin, m, opts, None);
+        let bg = f(self.bg, opts.opacity);
+        let clear = [bg[0] * opts.opacity, bg[1] * opts.opacity, bg[2] * opts.opacity, opts.opacity];
+        self.pipe.submit(gpu, target, target_size, atlas, &[Batch { quads: std::mem::take(&mut q), texture: None }], clear);
+        self.quads = Vec::new();
+    }
+
+    /// Append this grid's quads (background, text, cursor, overlays) to `q`. With `fill`, the pane's
+    /// whole rectangle is first painted in its background color.
+    #[allow(clippy::too_many_arguments, reason = "one draw call's full input; grouping adds a type nobody else uses")]
+    pub fn push_quads(
+        &mut self,
+        q: &mut Vec<Quad>,
+        gpu: &Gpu,
+        atlas: &mut GlyphAtlas,
+        fonts: &FontStack,
+        origin: (f32, f32),
+        m: &CellMetrics,
+        opts: &DrawOpts,
+        fill: Option<Rect>,
+    ) {
+        let (cw, ch) = (m.w as f32, m.h as f32);
+        let cell_xy = |x: u16, y: usize| (origin.0 + f32::from(x) * cw, origin.1 + y as f32 * ch);
         let solid = |q: &mut Vec<Quad>, x: f32, y: f32, w: f32, h: f32, c: Rgb| {
             q.push(Quad { pos: [x, y], size: [w, h], uv: [0.0; 4], color: f(c, 1.0), kind: 0 });
         };
+        if let Some(r) = fill {
+            solid(q, r.x as f32, r.y as f32, r.w as f32, r.h as f32, self.bg);
+        }
         for (y, row) in self.rows.iter().enumerate() {
             for &(x, n, c) in &row.bgs {
                 let (px, py) = cell_xy(x, y);
-                solid(&mut q, px, py, cw * f32::from(n), ch, c);
+                solid(q, px, py, cw * f32::from(n), ch, c);
             }
         }
         for (y, row) in self.rows.iter().enumerate() {
             for &(x, n) in &row.sels {
                 let (px, py) = cell_xy(x, y);
-                solid(&mut q, px, py, cw * f32::from(n), ch, opts.selection_color);
+                solid(q, px, py, cw * f32::from(n), ch, opts.selection_color);
             }
         }
         if let Some(sel) = opts.selection {
             for (y, x0, x1) in selection_spans(sel, self.cols) {
                 let (px, py) = cell_xy(x0, y as usize);
-                solid(&mut q, px, py, cw * f32::from(x1 - x0 + 1), ch, opts.selection_color);
+                solid(q, px, py, cw * f32::from(x1 - x0 + 1), ch, opts.selection_color);
             }
         }
         let cursor = self.cursor.filter(|c| c.visible && opts.cursor_blink_on);
@@ -317,7 +448,7 @@ impl GridRenderer {
         let block_at = cursor.filter(|c| opts.focused && c.style == CursorShape::Block).map(|c| (c.x, c.y));
         if let Some((x, y)) = block_at {
             let (px, py) = cell_xy(x, y as usize);
-            solid(&mut q, px, py, cw, ch, cursor_rgb);
+            solid(q, px, py, cw, ch, cursor_rgb);
         }
         for (y, row) in self.rows.iter().enumerate() {
             for g in &row.glyphs {
@@ -354,14 +485,14 @@ impl GridRenderer {
                 let t = m.underline_thickness as f32;
                 if flags & (StyleFlags::UNDERLINE | StyleFlags::CURLY_UNDERLINE) != 0 {
                     // shortcut: curly underline drawn straight; a wave needs a dedicated shader kind.
-                    solid(&mut q, px, py + m.underline_pos as f32, w, t, c);
+                    solid(q, px, py + m.underline_pos as f32, w, t, c);
                 }
                 if flags & StyleFlags::DOUBLE_UNDERLINE != 0 {
-                    solid(&mut q, px, py + m.underline_pos as f32 - t, w, t, c);
-                    solid(&mut q, px, py + m.underline_pos as f32 + t, w, t, c);
+                    solid(q, px, py + m.underline_pos as f32 - t, w, t, c);
+                    solid(q, px, py + m.underline_pos as f32 + t, w, t, c);
                 }
                 if flags & StyleFlags::STRIKE != 0 {
-                    solid(&mut q, px, py + (m.baseline as f32 * 0.65).round(), w, t, c);
+                    solid(q, px, py + (m.baseline as f32 * 0.65).round(), w, t, c);
                 }
             }
         }
@@ -369,13 +500,13 @@ impl GridRenderer {
             let (px, py) = cell_xy(c.x, c.y as usize);
             let t = (m.w as f32 / 8.0).round().max(1.0);
             match (opts.focused, c.style) {
-                (true, CursorShape::Bar) => solid(&mut q, px, py, t * 2.0, ch, cursor_rgb),
-                (true, CursorShape::Underline) => solid(&mut q, px, py + ch - t * 2.0, cw, t * 2.0, cursor_rgb),
+                (true, CursorShape::Bar) => solid(q, px, py, t * 2.0, ch, cursor_rgb),
+                (true, CursorShape::Underline) => solid(q, px, py + ch - t * 2.0, cw, t * 2.0, cursor_rgb),
                 _ => {
-                    solid(&mut q, px, py, cw, t, cursor_rgb);
-                    solid(&mut q, px, py + ch - t, cw, t, cursor_rgb);
-                    solid(&mut q, px, py, t, ch, cursor_rgb);
-                    solid(&mut q, px + cw - t, py, t, ch, cursor_rgb);
+                    solid(q, px, py, cw, t, cursor_rgb);
+                    solid(q, px, py + ch - t, cw, t, cursor_rgb);
+                    solid(q, px, py, t, ch, cursor_rgb);
+                    solid(q, px + cw - t, py, t, ch, cursor_rgb);
                 }
             }
         }
@@ -385,7 +516,7 @@ impl GridRenderer {
             let x = if i == Overlay::Exit as usize { 0 } else { self.cols.saturating_sub(*width) };
             let y = if i == Overlay::Stats as usize { 0 } else { rows.saturating_sub(1) };
             let (px, py) = cell_xy(x, y as usize);
-            solid(&mut q, px, py, cw * f32::from(*width), ch, self.fg);
+            solid(q, px, py, cw * f32::from(*width), ch, self.fg);
             for g in &row.glyphs {
                 let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
                 if e.w == 0 {
@@ -400,61 +531,6 @@ impl GridRenderer {
                     kind: if e.color { 2 } else { 1 },
                 });
             }
-        }
-        self.submit(gpu, target, target_size, atlas, &q, opts.opacity);
-        self.quads = q;
-    }
-
-    fn submit(&mut self, gpu: &Gpu, target: &ID3D11RenderTargetView, size: (u32, u32), atlas: &GlyphAtlas, q: &[Quad], opacity: f32) {
-        let ctx = &gpu.ctx;
-        let bg = f(self.bg, opacity);
-        gpu.clear(target, [bg[0] * opacity, bg[1] * opacity, bg[2] * opacity, opacity]);
-        if q.is_empty() {
-            return;
-        }
-        unsafe {
-            if self.inst.as_ref().is_none_or(|(_, cap)| *cap < q.len()) {
-                let cap = q.len().next_power_of_two().max(1024);
-                let desc = D3D11_BUFFER_DESC {
-                    ByteWidth: (cap * size_of::<Quad>()) as u32,
-                    Usage: D3D11_USAGE_DYNAMIC,
-                    BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
-                    CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
-                    ..Default::default()
-                };
-                let mut b = None;
-                if gpu.device.CreateBuffer(&desc, None, Some(&mut b)).is_err() {
-                    return;
-                }
-                self.inst = Some((b.unwrap(), cap));
-            }
-            let (buf, _) = self.inst.as_ref().unwrap();
-            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
-            if ctx.Map(buf, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m)).is_err() {
-                return;
-            }
-            std::ptr::copy_nonoverlapping(q.as_ptr(), m.pData.cast(), q.len());
-            ctx.Unmap(buf, 0);
-            let mut cm = D3D11_MAPPED_SUBRESOURCE::default();
-            if ctx.Map(&self.cbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut cm)).is_ok() {
-                *(cm.pData as *mut [f32; 4]) = [size.0 as f32, size.1 as f32, 0.0, 0.0];
-                ctx.Unmap(&self.cbuf, 0);
-            }
-            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
-            ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: size.0 as f32, Height: size.1 as f32, MinDepth: 0.0, MaxDepth: 1.0 }]));
-            ctx.RSSetState(&self.raster);
-            ctx.OMSetBlendState(&self.blend, None, 0xffff_ffff);
-            ctx.IASetInputLayout(&self.layout);
-            ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-            let stride = size_of::<Quad>() as u32;
-            let offset = 0u32;
-            ctx.IASetVertexBuffers(0, 1, Some(&Some(buf.clone())), Some(&stride), Some(&offset));
-            ctx.VSSetShader(&self.vs, None);
-            ctx.VSSetConstantBuffers(0, Some(&[Some(self.cbuf.clone())]));
-            ctx.PSSetShader(&self.ps, None);
-            ctx.PSSetShaderResources(0, Some(&[Some(atlas.srv().clone())]));
-            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
-            ctx.DrawInstanced(4, q.len() as u32, 0, 0);
         }
     }
 }
