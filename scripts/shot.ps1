@@ -9,11 +9,12 @@ public static class Win {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 }
 '@
 $p = Get-Process -Id $ProcessId
 $h = $p.MainWindowHandle
-[Win]::ShowWindow($h, 9) | Out-Null
+if ([Win]::IsIconic($h)) { [Win]::ShowWindow($h, 9) | Out-Null } # restore only a minimized window, never un-maximize
 [Win]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 400
 $r = New-Object RECT

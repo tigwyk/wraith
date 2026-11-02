@@ -8,11 +8,13 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetClientRect, IDC_IBEAM, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
+    GetClientRect, IDC_IBEAM, IsZoomed, LoadCursorW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PeekMessageW,
+    SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    WM_NCCALCSIZE,
     PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN,
     WM_DESTROY, WM_DPICHANGED, WM_QUIT, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
     WS_OVERLAPPEDWINDOW, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
@@ -77,6 +79,7 @@ impl Window {
                 let backdrop = DWMSBT_MAINWINDOW;
                 let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&raw const backdrop).cast(), 4);
             }
+            let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
             Ok(Window { hwnd })
         }
     }
@@ -89,6 +92,10 @@ impl Window {
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
         }
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        unsafe { IsZoomed(self.hwnd) }.as_bool()
     }
 
     pub fn dpi(&self) -> u32 {
@@ -161,6 +168,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 dpi: (wparam.0 & 0xffff) as u32,
                 suggested: *(lparam.0 as *const RECT),
             }),
+            // Custom title bar: keep Windows' left/right/bottom frame (resize edges, shadow), drop the
+            // caption so the tab bar is drawn there. Handled here because it arrives during CreateWindowExW.
+            WM_NCCALCSIZE if wparam.0 != 0 => {
+                let p = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
+                let top = p.rgrc[0].top;
+                let r = DefWindowProcW(hwnd, msg, wparam, lparam);
+                p.rgrc[0].top = top;
+                if IsZoomed(hwnd).as_bool() {
+                    // A maximized window hangs its frame off the monitor; keep the bar on screen.
+                    let dpi = GetDpiForWindow(hwnd);
+                    p.rgrc[0].top += GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                }
+                return r;
+            }
             WM_CLOSE => Some(WinMsg::Close),
             WM_DESTROY => {
                 PostQuitMessage(0);

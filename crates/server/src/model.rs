@@ -408,7 +408,9 @@ impl Model {
                 pane: p.id,
                 spawn: SpawnOpts {
                     cmdline: p.cmdline.clone(),
-                    cwd: p.cwd.clone(),
+                    // The last cwd may be a WSL path (its cmdline has its own --cd) or since deleted:
+                    // CreateProcess fails on either, so such a pane starts in the server's directory.
+                    cwd: p.cwd.clone().filter(|c| std::path::Path::new(c).is_absolute() && std::path::Path::new(c).is_dir()),
                     env: vec![],
                     cols: 80,
                     rows: 24,

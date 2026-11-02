@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
+    DefWindowProcW, DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+    WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
@@ -27,6 +28,7 @@ use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 use crate::chrome::{self, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
 use crate::paint::Painter;
+use crate::titlebar::{self, Caption, NcGeom};
 use crate::palette::Mode;
 use crate::view::{Geometry, Out, SpawnCtx, Ui, WindowView};
 
@@ -216,6 +218,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_NCMOUSELEAVE: u32 = 0x02A2;
 
 pub(crate) struct App {
     pub(crate) win: Window,
@@ -260,6 +263,9 @@ pub(crate) struct App {
     pub(crate) toast: Option<String>,
     pub(crate) stats: Option<String>,
     pub(crate) quit: bool,
+    /// The caption button under the pointer, and the one a press started on.
+    caption_hover: Option<Caption>,
+    caption_down: Option<Caption>,
 }
 
 impl App {
@@ -277,6 +283,36 @@ impl App {
             bar_h: m.h as i32 + 10,
             sidebar_cols: self.view.geometry().sidebar_cols,
         }
+    }
+
+    fn caption_rects(&self) -> [(Caption, Rect); 3] {
+        titlebar::caption_rects(self.size_px.0 as i32, self.geometry().bar_h, self.win.dpi())
+    }
+
+    /// The caption button for a `WM_NCHITTEST` code.
+    fn caption_of(ht: usize) -> Option<Caption> {
+        match ht as isize {
+            titlebar::HTMINBUTTON => Some(Caption::Minimize),
+            titlebar::HTMAXBUTTON => Some(Caption::Maximize),
+            titlebar::HTCLOSE => Some(Caption::Close),
+            _ => None,
+        }
+    }
+
+    fn nc_hit_test(&self, lparam: LPARAM) -> isize {
+        let mut pt = POINT { x: i32::from(lparam.0 as i16), y: i32::from((lparam.0 >> 16) as i16) };
+        unsafe {
+            let _ = ScreenToClient(self.win.hwnd(), &mut pt);
+        }
+        let g = NcGeom {
+            client: (self.size_px.0 as i32, self.size_px.1 as i32),
+            border: (8 * self.win.dpi() / 96) as i32,
+            caption_h: self.geometry().bar_h,
+            maximized: self.win.is_maximized(),
+            caps: self.caption_rects(),
+        };
+        let interactive = !matches!(self.view.hit(pt.x, pt.y), Hit::Bar | Hit::Sidebar | Hit::None);
+        titlebar::nc_hit(&g, pt.x, pt.y, interactive)
     }
 
     fn send_all(&self, msgs: Vec<ClientMsg>) {
@@ -314,6 +350,7 @@ impl App {
         self.size_px = (w, h);
         let msgs = self.view.set_geometry(self.geometry());
         self.send_all(msgs);
+        self.view.set_caption_width(self.caption_rects()[0].1.w * 3);
         let _ = self.sc.resize(w, h);
         self.dirty = true;
     }
@@ -622,6 +659,11 @@ impl App {
                     if msg == WM_SYSKEYDOWN && vk == VK_F4.0 {
                         return None; // Alt+F4 closes the window as usual.
                     }
+                    if msg == WM_SYSKEYDOWN && vk == VK_SPACE.0 {
+                        // Alt+Space: the window menu. Keys skip TranslateMessage, so no WM_SYSCHAR would open it.
+                        unsafe { DefWindowProcW(hwnd, WM_SYSCOMMAND, WPARAM(SC_KEYMENU as usize), LPARAM(i32::from(b' ') as isize)) };
+                        return Some(LRESULT(0));
+                    }
                     let sc = ((lparam.0 >> 16) & 0xff) as u16;
                     let ext = (lparam.0 >> 24) & 1 == 1;
                     let repeat = (lparam.0 >> 30) & 1 == 1;
@@ -665,11 +707,46 @@ impl App {
                 WM_MOUSELEAVE => {
                     self.view.pointer_left(Instant::now());
                 }
+                WM_NCHITTEST => return Some(LRESULT(self.nc_hit_test(lparam))),
+                WM_NCMOUSEMOVE => {
+                    let mut track = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+                    unsafe {
+                        let _ = TrackMouseEvent(&mut track);
+                    }
+                    self.set_caption_hover(Self::caption_of(wparam.0));
+                }
+                WM_NCMOUSELEAVE => {
+                    self.set_caption_hover(None);
+                    self.caption_down = None;
+                }
+                WM_NCLBUTTONDOWN if Self::caption_of(wparam.0).is_some() => {
+                    // Our buttons, not DefWindowProc's (it would draw classic ones over the bar).
+                    self.caption_down = Self::caption_of(wparam.0);
+                    self.dirty = true;
+                    return Some(LRESULT(0));
+                }
+                WM_NCLBUTTONUP if Self::caption_of(wparam.0).is_some() => {
+                    let cap = Self::caption_of(wparam.0);
+                    if self.caption_down.take() == cap {
+                        let sc = match cap {
+                            Some(Caption::Minimize) => SC_MINIMIZE,
+                            Some(Caption::Maximize) if self.win.is_maximized() => SC_RESTORE,
+                            Some(Caption::Maximize) => SC_MAXIMIZE,
+                            _ => SC_CLOSE,
+                        };
+                        unsafe {
+                            let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(sc as usize), LPARAM(0));
+                        }
+                    }
+                    self.dirty = true;
+                    return Some(LRESULT(0));
+                }
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     self.focused = msg == WM_SETFOCUS;
                     self.dirty = true;
                 }
                 WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => {
+                    self.set_caption_hover(None);
                     self.mouse(msg, wparam, lparam);
                     return Some(LRESULT(0));
                 }
@@ -682,6 +759,13 @@ impl App {
             },
         }
         None
+    }
+
+    fn set_caption_hover(&mut self, c: Option<Caption>) {
+        if self.caption_hover != c {
+            self.caption_hover = c;
+            self.dirty = true;
+        }
     }
 
     fn set_title(&mut self) {
@@ -912,7 +996,7 @@ impl App {
         }
         // Tab bar.
         p.rect(regions.tabbar, col.bar_bg, 1.0);
-        let (tabs, plus) = self.view.tab_layout(0);
+        let (tabs, plus) = self.view.tab_layout();
         let active = self.view.active_tab().map(|t| t.id);
         let pad_x = m.w as i32 / 2;
         for (id, r) in &tabs {
@@ -931,6 +1015,36 @@ impl App {
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        // Caption buttons, drawn like Windows 11's: a light wash on hover, red behind close.
+        let glyph = (10 * self.win.dpi() / 96) as i32;
+        let maximized = self.win.is_maximized();
+        for (cap, r) in self.caption_rects() {
+            let lit = self.caption_hover == Some(cap) || self.caption_down == Some(cap);
+            if lit {
+                let wash = if cap == Caption::Close { (0xc4, 0x2b, 0x1c) } else { chrome::mix(col.bar_bg, col.bar_fg, 0.12) };
+                p.rect(r, wash, 1.0);
+            }
+            let fg = if lit && cap == Caption::Close { (255, 255, 255) } else { col.bar_fg };
+            let (gx, gy) = (r.x + (r.w - glyph) / 2, r.y + (r.h - glyph) / 2);
+            let outline = |p: &mut Painter, x: i32, y: i32| {
+                for e in [Rect { x, y, w: glyph, h: 1 }, Rect { x, y: y + glyph - 1, w: glyph, h: 1 }, Rect { x, y, w: 1, h: glyph }, Rect { x: x + glyph - 1, y, w: 1, h: glyph }] {
+                    p.rect(e, fg, 1.0);
+                }
+            };
+            match cap {
+                Caption::Minimize => p.rect(Rect { x: gx, y: gy + glyph / 2, w: glyph, h: 1 }, fg, 1.0),
+                Caption::Maximize if maximized => {
+                    let o = (2 * self.win.dpi() / 96) as i32;
+                    p.rect(Rect { x: gx + o, y: gy - o, w: glyph, h: 1 }, fg, 1.0);
+                    p.rect(Rect { x: gx + o + glyph - 1, y: gy - o, w: 1, h: glyph }, fg, 1.0);
+                    outline(&mut p, gx, gy);
+                }
+                Caption::Maximize => outline(&mut p, gx, gy),
+                Caption::Close => {
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + (r.w - m.w as i32) / 2, r.y + (r.h - m.h as i32) / 2, "✕", fg, 1.0);
+                }
+            }
+        }
         // Sidebar: docked, or floating over the panes while the pointer rests on the left edge.
         if let Some(s) = self.view.sidebar_rect() {
             p.rect(s, col.bar_bg, 1.0);
@@ -1203,6 +1317,8 @@ pub fn run() -> Result<()> {
         toast: None,
         stats: None,
         quit: false,
+        caption_hover: None,
+        caption_down: None,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
     app.borrow().win.show();

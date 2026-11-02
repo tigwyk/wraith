@@ -282,6 +282,17 @@ fn clicking_and_dragging() {
 }
 
 #[test]
+fn tabs_leave_room_for_caption_buttons() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.set_caption_width(138);
+    let (tabs, plus) = v.tab_layout();
+    assert!(plus.x + plus.w <= 1000 - 138, "{plus:?}");
+    assert!(tabs.iter().all(|(_, r)| r.x + r.w <= 1000 - 138));
+    assert_ne!(v.hit(1000 - 10, 5), Hit::NewTab, "the caption area is not a tab target");
+}
+
+#[test]
 fn palette_and_window_actions_are_ui_requests() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());

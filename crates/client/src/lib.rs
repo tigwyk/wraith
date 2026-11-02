@@ -11,5 +11,6 @@ pub mod paint;
 pub mod palette;
 pub mod selection;
 pub mod sprite;
+pub mod titlebar;
 pub mod view;
 pub mod window;

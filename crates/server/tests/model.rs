@@ -264,7 +264,8 @@ fn json_roundtrip_restores_tree_and_spawns_fresh_shells() {
     let (t, p1) = new_tab(&mut m, ws);
     let p2 = split(&mut m, p1, Axis::Horizontal);
     m.apply(ModelCmd::RenameTab(t, Some("build".into()))).unwrap();
-    m.note_cwd(p2, "C:/work".into());
+    let work = std::env::temp_dir().display().to_string();
+    m.note_cwd(p2, work.clone());
     m.note_title(p2, "vim".into());
     m.note_exit(p1, 1);
     m.set_attached(ws, true);
@@ -285,8 +286,24 @@ fn json_roundtrip_restores_tree_and_spawns_fresh_shells() {
             })
             .unwrap()
     };
-    assert_eq!(spawn_of(p2).cwd.as_deref(), Some("C:/work"));
+    assert_eq!(spawn_of(p2).cwd.as_deref(), Some(work.as_str()));
     assert_eq!(spawn_of(p1).cmdline, "pwsh.exe");
+}
+
+#[test]
+fn restore_never_hands_createprocess_a_directory_it_cannot_enter() {
+    let mut m = Model::new();
+    let (_, p1) = new_tab0(&mut m);
+    let p2 = split(&mut m, p1, Axis::Horizontal);
+    let p3 = split(&mut m, p2, Axis::Vertical);
+    m.note_cwd(p1, "/mnt/c/Users/x".into()); // a WSL shell's OSC 7 cwd; its cmdline carries --cd
+    m.note_cwd(p2, r"C:\definitely\not\here\wraith".into()); // deleted since
+    m.note_cwd(p3, r"\\?\".into());
+    let fx = Model::from_json(&m.to_json()).unwrap().restore_effects();
+    for e in &fx {
+        let Effect::Spawn { pane, spawn } = e else { continue };
+        assert_eq!(spawn.cwd, None, "pane {pane}: {:?}", spawn.cwd);
+    }
 }
 
 #[test]
