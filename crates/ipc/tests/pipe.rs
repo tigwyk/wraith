@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wraith_ipc::security::{current_user_sid, pipe_sddl, process_owner_sid};
+use wraith_ipc::security::{current_user_sid, is_elevated, pipe_sddl, process_owner_sid};
 use wraith_ipc::{PipeListener, connect, pipe_name};
 use wraith_proto::wire::{read_frame, write_frame};
 
@@ -17,7 +17,9 @@ fn unique() -> String {
 fn default_name_is_per_user() {
     // SAFETY-free: only reads the variable we may have set; tests that need the override pass names directly.
     if std::env::var_os("WRAITH_PIPE_NAME").is_none() {
-        assert_eq!(pipe_name(), format!(r"\\.\pipe\wraith-{}", current_user_sid()));
+        // CI runners are elevated, and elevated servers get their own "-admin" pipe.
+        let suffix = if is_elevated() { "-admin" } else { "" };
+        assert_eq!(pipe_name(), format!(r"\\.\pipe\wraith-{}{suffix}", current_user_sid()));
     }
 }
 
