@@ -2,7 +2,9 @@
 //!   wr ctl list | send-text <id> <text> | kill <id> | server-stop
 //!   wr hook claude|codex|generic ...            (called by agents; always exits 0, silently)
 //!   wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
-//! Exit codes: 0 ok, 1 usage error / server error / unknown pane, 2 no server running (never starts one).
+//!   wr config check [path]
+//! Exit codes: 0 ok, 1 usage error / server error / unknown pane / config error, 2 no server running (never starts one).
+mod check;
 mod hook;
 mod install;
 
@@ -14,7 +16,8 @@ use wraith_proto::pane::PaneCmd;
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo, ServerMsg, read_frame, write_frame};
 
 const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> | server-stop
-       wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]";
+       wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
+       wr config check [path]";
 
 enum Fail {
     Usage(String),
@@ -43,6 +46,7 @@ fn run(args: &[String]) -> Result<(), Fail> {
         ["hook", rest @ ..] => hook::run(rest),
         ["install-hooks", rest @ ..] => return install::run(true, rest).map_err(Fail::Usage),
         ["uninstall-hooks", rest @ ..] => return install::run(false, rest).map_err(Fail::Usage),
+        ["config", "check", rest @ ..] => return check::run(rest).map_err(Fail::Usage),
         _ => {}
     }
     let pane = |s: &str| s.parse::<PaneId>().map_err(|_| Fail::Usage(format!("not a pane id: {s}")));
