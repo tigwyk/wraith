@@ -199,3 +199,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }
+
+/// Windows' "Show animations" setting (Settings › Accessibility › Visual effects).
+pub fn animations_enabled() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+    let mut on = windows::core::BOOL(1);
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&raw mut on).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+    ok.is_err() || on.as_bool()
+}
