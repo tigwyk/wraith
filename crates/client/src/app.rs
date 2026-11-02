@@ -285,6 +285,7 @@ impl App {
             pad: self.pad_px(),
             bar_h: m.h as i32 + 10,
             sidebar_cols: self.view.geometry().sidebar_cols,
+            caption_w: titlebar::caption_width(self.win.dpi()),
         }
     }
 
@@ -353,7 +354,6 @@ impl App {
         self.size_px = (w, h);
         let msgs = self.view.set_geometry(self.geometry());
         self.send_all(msgs);
-        self.view.set_caption_width(self.caption_rects()[0].1.w * 3);
         let _ = self.sc.resize(w, h);
         self.dirty = true;
     }
@@ -1305,6 +1305,7 @@ pub fn run() -> Result<()> {
         pad: ((f32::from(config.window_padding_x) * s).round() as i32, (f32::from(config.window_padding_y) * s).round() as i32),
         bar_h: m.h as i32 + 10,
         sidebar_cols: None,
+        caption_w: titlebar::caption_width(win.dpi()),
     };
     let mut view = WindowView::new(geom, double_click);
     view.set_dim_opacity(config.unfocused_split_opacity);

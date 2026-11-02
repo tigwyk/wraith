@@ -24,6 +24,8 @@ pub struct Geometry {
     pub pad: (i32, i32),
     pub bar_h: i32,
     pub sidebar_cols: Option<u16>,
+    /// Width the caption buttons take at the right end of the tab bar.
+    pub caption_w: i32,
 }
 
 /// What a new pane needs: its profile's command line, colors and environment.
@@ -155,8 +157,6 @@ pub struct WindowView {
     known_ws: HashSet<WorkspaceId>,
     configured_done: bool,
     palette: Option<Palette>,
-    /// Width the caption buttons take at the right end of the tab bar.
-    caption_w: i32,
 }
 
 impl WindowView {
@@ -181,12 +181,7 @@ impl WindowView {
             known_ws: HashSet::new(),
             configured_done: false,
             palette: None,
-            caption_w: 0,
         }
-    }
-
-    pub fn set_caption_width(&mut self, w: i32) {
-        self.caption_w = w;
     }
 
     pub fn palette(&self) -> Option<&Palette> {
@@ -718,7 +713,7 @@ impl WindowView {
 
     pub fn tab_layout(&self) -> (Vec<(TabId, Rect)>, Rect) {
         let tabs: Vec<TabId> = self.workspace.and_then(|w| self.snap.workspace(w)).map(|w| w.tabs.clone()).unwrap_or_default();
-        let (rects, plus) = chrome::tab_rects(tabs.len(), self.regions().tabbar, self.geom.cell.0 as i32, self.caption_w);
+        let (rects, plus) = chrome::tab_rects(tabs.len(), self.regions().tabbar, self.geom.cell.0 as i32, self.geom.caption_w);
         (tabs.into_iter().zip(rects).collect(), plus)
     }
 

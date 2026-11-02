@@ -27,9 +27,14 @@ pub enum Caption {
 /// Width of one caption button at 96 dpi.
 const BUTTON_W: i32 = 46;
 
+/// Width of the three caption buttons together.
+pub fn caption_width(dpi: u32) -> i32 {
+    3 * (BUTTON_W * dpi as i32 / 96)
+}
+
 /// Minimize, maximize and close, flush right along a bar `h` px tall.
 pub fn caption_rects(client_w: i32, h: i32, dpi: u32) -> [(Caption, Rect); 3] {
-    let w = BUTTON_W * dpi as i32 / 96;
+    let w = caption_width(dpi) / 3;
     let at = |i: i32| Rect { x: client_w - (3 - i) * w, y: 0, w, h };
     [(Caption::Minimize, at(0)), (Caption::Maximize, at(1)), (Caption::Close, at(2))]
 }

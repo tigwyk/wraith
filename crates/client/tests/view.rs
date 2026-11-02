@@ -13,7 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
 use wraith_server::profile::{Profile, ShellKind};
 
 fn geom() -> Geometry {
-    Geometry { client: (1000, 600), cell: (8, 16), pad: (2, 2), bar_h: 26, sidebar_cols: None }
+    Geometry { client: (1000, 600), cell: (8, 16), pad: (2, 2), bar_h: 26, sidebar_cols: None, caption_w: 0 }
 }
 
 fn ctx() -> SpawnCtx {
@@ -323,9 +323,10 @@ fn dragging_a_tab_over_another_reorders_once() {
 
 #[test]
 fn tabs_leave_room_for_caption_buttons() {
-    let mut v = view();
+    // The reserve comes with the geometry the window is created with, not a later resize.
+    let mut v = WindowView::new(Geometry { caption_w: 138, ..geom() }, Duration::from_millis(500));
+    v.set_workspace(1);
     v.on_snapshot(snap(10), &ctx());
-    v.set_caption_width(138);
     let (tabs, plus) = v.tab_layout();
     assert!(plus.x + plus.w <= 1000 - 138, "{plus:?}");
     assert!(tabs.iter().all(|(_, r)| r.x + r.w <= 1000 - 138));

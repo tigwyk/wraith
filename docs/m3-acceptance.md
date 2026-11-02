@@ -39,3 +39,35 @@ Rows marked **debug** used the debug build during Tasks 8–13. All other rows u
 
 - `remote_input_round_trip_is_fast` passes in the workspace suite.
 - Not run: the four-pane flood with the `ctrl+shift+f12` overlay reading.
+
+## Re-run on Ghostty 7cd6fa0 (after the libghostty-vt upgrade)
+
+Date: 2026-11-01. Release build of `main` at `24509d4` (Zig 0.17, vendored libghostty-rs), then with the caption fix below. Your own config (default profile: WSL). Private pipe `wraith-acc3`. Screenshots: `docs/screenshots/2026-11-01-m3-r*.png`.
+
+| Check | Result | Evidence / notes |
+|---|---|---|
+| New tab, vertical and horizontal split | Pass | `r01` |
+| Directional focus (`alt+left`) | Pass | Focus border moved to the left pane |
+| Zoom through the palette | Pass | `r02` (palette filtered to "Toggle split zoom"), `r03` |
+| Divider drag | Pass | `r04` |
+| Tab drag to reorder | Pass | `r05` (TAB-B dragged before TAB-A) |
+| Sidebar toggle | Pass | `ctrl+shift+b` hides and shows it |
+| Sidebar hover reveal | Pass, one unexplained miss | `r06`. The first try did not reveal it. Repeating the same sequence did, as did a single move followed by a rest. Another app took the foreground twice during this run, which probably explains the miss. |
+| Command palette, workspace picker | Pass | `r02`, `r07` ("Recent › Lee C:\Users\Lee" from OSC 7) |
+| Title bar hit test | Pass | Probed: tab = client, empty bar = caption (drag area), min/max/close = 8/9/20, top edge = 12 |
+| Close hover | Pass | `r08` |
+| Maximize / restore | Pass | Maximized to (-8,-8)-(3448,1400). Restore returned to exactly (156,156)-(1156,796). |
+| Split inherits pwsh cwd | Pass | `r09` |
+| Inline image (PNG through the new process-global decoder) scrolls with text | Pass | `r09`, `r10` |
+| `server-stop` → relaunch restores the layout and directories | Pass | `r11` (3 tabs, 6 panes, `C:\Windows`), and again in `r15` |
+| Second window (default WSL profile) | Pass | `r12` |
+| Workspace steal | Pass | `r13`; the other window moved to Workspace 2 |
+| WSL cwd tracking (OSC 7) | Pass | `cd /tmp` saved `"cwd": "/tmp"` |
+| Close window → relaunch reattaches | Pass | `r14` (same live WSL shell, still in `/tmp`) |
+| `exit` in the window's last pane closes the window | Pass | The window process ended. Workspace 1's 6 panes were untouched. |
+
+**Bug found and fixed:** on a fresh launch, the tab bar did not leave room for the caption buttons. With 3 tabs, the third tab ran under minimize/maximize/close (`r11`). The reserve was set only on resize, so it was missing until the window was maximized or resized. It is now part of `Geometry`, which is set when the window is created. The test `tabs_leave_room_for_caption_buttons` now builds the view from that geometry. Fixed in `r15`.
+
+**Seen once, not reproduced:** one relaunch after `server-stop` attached a new empty "Workspace 3" instead of the restored Workspace 1. Workspace 1 was restored, just left detached. An exact repeat of the steps restored and attached Workspace 1 normally (`r15`). The layout file from that run had already been overwritten, so the cause is unknown. If it happens again, the restored workspace can be reached from the sidebar.
+
+Not re-run: snap-layout flyout (shell UI); the four-pane flood with the frame overlay; zsh.
