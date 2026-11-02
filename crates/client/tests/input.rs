@@ -132,3 +132,38 @@ fn ime_process_key_is_not_sent_to_the_pane() {
     // VK_PROCESSKEY: the IME owns this keystroke; it must not become a KeyEvent.
     assert!(KeyTranslator::default().on_keydown(0xE5, 0x1E, false, false, &state(&[]), us.hkl).is_none());
 }
+
+#[test]
+fn preedit_is_kept_until_commit() {
+    use wraith_client::input::{Ime, ImeUpdate};
+    let mut ime = Ime::default();
+    assert_eq!(ime.apply(ImeUpdate::Preedit("にほ".into())), ImeUpdate::Preedit("にほ".into()));
+    assert_eq!(ime.preedit(), "にほ");
+    ime.apply(ImeUpdate::Commit("日本".into()));
+    assert_eq!(ime.preedit(), "");
+}
+
+#[test]
+fn ime_end_clears_preedit() {
+    use wraith_client::input::{Ime, ImeUpdate};
+    let mut ime = Ime::default();
+    ime.apply(ImeUpdate::Preedit("か".into()));
+    ime.end();
+    assert_eq!(ime.preedit(), "");
+}
+
+#[test]
+fn preedit_shifts_left_at_the_edge() {
+    assert_eq!(wraith_client::input::preedit_origin(Some((78, 5)), 80, 24, 6), (74, 5));
+    assert_eq!(wraith_client::input::preedit_origin(Some((10, 5)), 80, 24, 6), (10, 5), "room: stays at the cursor");
+}
+
+#[test]
+fn preedit_wider_than_pane_starts_at_0() {
+    assert_eq!(wraith_client::input::preedit_origin(Some((3, 2)), 4, 24, 10), (0, 2));
+}
+
+#[test]
+fn preedit_without_cursor_sits_bottom_left() {
+    assert_eq!(wraith_client::input::preedit_origin(None, 80, 24, 2), (0, 23));
+}

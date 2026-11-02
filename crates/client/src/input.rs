@@ -215,12 +215,48 @@ pub enum ImeUpdate {
     None,
 }
 
+/// IME state: the text being composed, which Wraith draws at the cursor (spec §6.2).
 #[derive(Default)]
-pub struct Ime;
+pub struct Ime {
+    preedit: String,
+}
+
+/// Cell where composition text of `width_cells` starts: the cursor, moved left so the text fits in
+/// `cols`; the bottom-left cell when the cursor is hidden.
+pub fn preedit_origin(cursor: Option<(u16, u16)>, cols: u16, rows: u16, width_cells: u16) -> (u16, u16) {
+    match cursor {
+        Some((x, y)) => (x.min(cols.saturating_sub(width_cells)), y),
+        None => (0, rows.saturating_sub(1)),
+    }
+}
 
 impl Ime {
+    pub fn preedit(&self) -> &str {
+        &self.preedit
+    }
+
+    /// Remember the composition text: kept on `Preedit`, gone on `Commit`.
+    pub fn apply(&mut self, u: ImeUpdate) -> ImeUpdate {
+        match &u {
+            ImeUpdate::Preedit(s) => self.preedit.clone_from(s),
+            ImeUpdate::Commit(_) => self.preedit.clear(),
+            ImeUpdate::None => {}
+        }
+        u
+    }
+
+    /// Composition ended or the window lost focus.
+    pub fn end(&mut self) {
+        self.preedit.clear();
+    }
+
     /// Handle `WM_IME_COMPOSITION`.
     pub fn on_composition(&mut self, hwnd: HWND, lparam: LPARAM) -> ImeUpdate {
+        let u = Self::read_composition(hwnd, lparam);
+        self.apply(u)
+    }
+
+    fn read_composition(hwnd: HWND, lparam: LPARAM) -> ImeUpdate {
         unsafe {
             let ctx = ImmGetContext(hwnd);
             if ctx.is_invalid() {

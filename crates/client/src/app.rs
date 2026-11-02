@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -781,8 +781,22 @@ impl App {
                         Ime::set_candidate_pos(hwnd, v.rect.x + pad.0 + (u32::from(c.0) * m.w) as i32, v.rect.y + pad.1 + (u32::from(c.1) * m.h) as i32, m.h as i32);
                     }
                 }
+                // Wraith draws the composition itself; the IME still shows its candidate list.
+                WM_IME_SETCONTEXT => {
+                    let lp = LPARAM(lparam.0 & !(windows::Win32::UI::Input::Ime::ISC_SHOWUICOMPOSITIONWINDOW as isize));
+                    return Some(unsafe { DefWindowProcW(hwnd, msg, wparam, lp) });
+                }
+                WM_IME_ENDCOMPOSITION => {
+                    self.ime.end();
+                    self.dirty = true;
+                }
                 WM_IME_COMPOSITION => {
-                    if let ImeUpdate::Commit(t) = self.ime.on_composition(hwnd, lparam) {
+                    let u = self.ime.on_composition(hwnd, lparam);
+                    if matches!(u, ImeUpdate::Preedit(_)) {
+                        self.dirty = true;
+                        return Some(LRESULT(0));
+                    }
+                    if let ImeUpdate::Commit(t) = u {
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
@@ -865,6 +879,7 @@ impl App {
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     if msg == WM_KILLFOCUS {
                         self.view.release();
+                        self.ime.end();
                     }
                     self.focused = msg == WM_SETFOCUS;
                     self.link.send(ClientMsg::Foreground(self.focused));
@@ -1171,6 +1186,25 @@ impl App {
                 Painter { q: &mut q }.rect(rect, bg, dim);
             }
         }
+        // IME composition at the focused pane's cursor (the palette and find bar show it in their query).
+        let preedit = self.ime.preedit().to_string();
+        if !preedit.is_empty()
+            && self.view.palette().is_none()
+            && self.view.find().is_none()
+            && let Some(id) = focused_pane
+            && let Some((_, rect)) = panes.iter().find(|(p, _)| *p == id)
+            && let Some(v) = self.view.panes.get(&id)
+        {
+            let width = unicode_width::UnicodeWidthStr::width(preedit.as_str()) as u16;
+            let cursor = self.grids.get(&id).and_then(GridRenderer::cursor_pos);
+            let (cx, cy) = crate::input::preedit_origin(cursor, v.cells.0, v.cells.1, width);
+            let (x, y) = (rect.x + pad.0 + i32::from(cx) * m.w as i32, rect.y + pad.1 + i32::from(cy) * m.h as i32);
+            let w = (i32::from(width) * m.w as i32).min(rect.x + rect.w - x);
+            let mut p = Painter { q: &mut q };
+            p.rect(Rect { x, y, w, h: m.h as i32 }, bg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, x, y, &preedit, fg, 1.0);
+            p.rect(Rect { x, y: y + m.h as i32 - 1, w, h: 1 }, fg, 1.0);
+        }
         // Hover and press washes for clickable chrome.
         // Hover fades in and out; press is instant. `lit` also brightens dim labels.
         let (hovered, pressed) = (self.view.hovered().cloned(), self.view.pressed().cloned());
@@ -1403,7 +1437,7 @@ impl App {
             let ty = bar.y + (bar.h - m.h as i32) / 2;
             let count_w = crate::paint::text_width(&self.fonts, &count);
             let room = ((bar.w - count_w - 3 * pad_x) / cw).max(0) as usize;
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}▏", f.query), room), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}{}▏", f.query, preedit), room), col.bar_fg, 1.0);
             p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
         let n = p.q.len();
@@ -1421,7 +1455,7 @@ impl App {
                 Mode::Picker => "Workspace › ",
                 Mode::MoveTab => "Move tab to › ",
             };
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}▏", pal.query), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}{preedit}▏", pal.query), col.bar_fg, 1.0);
             for &(i, r) in &layout.rows {
                 let Some(item) = items.get(i) else { continue };
                 if i == pal.selected {
@@ -1697,7 +1731,7 @@ pub fn run() -> Result<()> {
         config,
         font_size,
         keys: KeyTranslator::default(),
-        ime: Ime,
+        ime: Ime::default(),
         matcher,
         rs: crate::reload::State::default(),
         // Set by WM_SETFOCUS: a window started minimized or behind others never had the focus.
