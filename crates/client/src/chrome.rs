@@ -62,6 +62,8 @@ pub enum Hit {
     PaletteRow(usize),
     /// Inside the open palette, but not on a row.
     Palette,
+    /// A part of the open settings panel.
+    Settings(crate::settings::SettingsHit),
     /// Empty tab bar area (drags the window).
     Bar,
     None,

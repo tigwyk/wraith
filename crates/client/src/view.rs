@@ -15,6 +15,7 @@ use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 use crate::chrome::{self, Hit, HitCtx, Regions};
 use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
 use crate::selection::Selection;
+use crate::settings::{SettingsLayout, SettingsView};
 
 /// Pixel space of the window: its client size, the font's cell, pane padding and chrome heights.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +188,7 @@ pub struct WindowView {
     known_ws: HashSet<WorkspaceId>,
     configured_done: bool,
     palette: Option<Palette>,
+    settings: Option<SettingsView>,
     /// The open find bar (scrollback search), if any.
     find: Option<Find>,
     /// The pointer's last position in the client area, and what is under it.
@@ -221,6 +223,7 @@ impl WindowView {
             known_ws: HashSet::new(),
             configured_done: false,
             palette: None,
+            settings: None,
             find: None,
             pointer: None,
             hovered: None,
@@ -228,6 +231,28 @@ impl WindowView {
             tip_since: None,
             tip_shown: false,
         }
+    }
+
+    pub fn settings(&self) -> Option<&SettingsView> {
+        self.settings.as_ref()
+    }
+
+    pub fn settings_mut(&mut self) -> Option<&mut SettingsView> {
+        self.settings.as_mut()
+    }
+
+    pub fn open_settings(&mut self, s: SettingsView) {
+        self.settings = Some(s);
+        self.rehover();
+    }
+
+    pub fn close_settings(&mut self) {
+        self.settings = None;
+        self.rehover();
+    }
+
+    pub fn settings_layout(&self) -> Option<SettingsLayout> {
+        self.settings.as_ref().map(|s| s.layout(self.geom.client, (self.geom.cell.0 as i32, self.geom.cell.1 as i32), self.geom.bar_h))
     }
 
     pub fn palette(&self) -> Option<&Palette> {
@@ -1003,10 +1028,14 @@ impl WindowView {
     }
 
     pub fn hit(&self, x: i32, y: i32) -> Hit {
+        // The palette opens over the panel, so it is checked first.
         if let Some(l) = self.palette_layout()
             && l.panel.contains(x, y)
         {
             return l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(Hit::Palette, |(i, _)| Hit::PaletteRow(*i));
+        }
+        if let Some(h) = self.settings_layout().and_then(|l| SettingsView::hit(&l, x, y)) {
+            return Hit::Settings(h);
         }
         let mut regions = self.regions();
         regions.sidebar = self.sidebar_rect();
