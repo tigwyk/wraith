@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use wraith_proto::{FrameDelta, KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
-use wraith_server::pane::{PaneCmd, PaneEvent, PaneHandle, PaneOptions, WheelAction, spawn_pane, wheel_action};
+use wraith_server::pane::{PaneCmd, PaneEvent, PaneHandle, PaneOptions, ScrollTo, WheelAction, spawn_pane, wheel_action};
 
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
@@ -523,4 +523,17 @@ fn search_keeps_input_fast_while_flooding() {
     assert!(all[49] < Duration::from_millis(5), "max wait {:?}", all[49]);
     assert!(all[48] < Duration::from_millis(2), "p99 wait {:?}", all[48]);
     assert!(m.last.as_ref().and_then(|f| f.search.as_ref()).is_some_and(|s| s.total > 0), "matches keep coming");
+}
+
+#[test]
+fn scrollback_keeps_the_configured_lines_not_a_byte_default() {
+    // libghostty defaults to a ~10 KB byte cap; Wraith's limit is in lines (from scrollback-limit).
+    let mut o = opts(&emit("flood 5000"));
+    o.scrollback_lines = 10_000;
+    let h = spawn_pane(o).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(10), |m, _| m.max_line() >= 5000).0);
+    h.send(PaneCmd::Scroll(ScrollTo::Top)).unwrap();
+    let top = pump(&h, &mut m, secs(5), |m, _| m.rows.get(&0).is_some_and(|r| r.starts_with("line-1 "))).0;
+    assert!(top, "line-1 is still the oldest line; top is {:?}", m.rows.get(&0));
 }

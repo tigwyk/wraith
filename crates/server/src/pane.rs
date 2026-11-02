@@ -176,6 +176,9 @@ impl Pane {
             Some(t) => t,
             None => Terminal::new(cols, rows).map_err(io_err)?,
         };
+        // Wraith's scrollback limit is in lines (from `scrollback-limit`); libghostty's default ~10 KB
+        // byte cap would cut history to about a page, so it is removed.
+        term.set_scrollback_max_bytes(None).map_err(io_err)?;
         term.set_scrollback_max_lines(Some(opts.scrollback_lines)).map_err(io_err)?;
         term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
         if was_restored {
