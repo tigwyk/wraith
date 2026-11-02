@@ -118,6 +118,12 @@ impl KeybindMatcher {
         }
     }
 
+    /// Forget a half-typed sequence, so it is never flushed to the terminal.
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.since = None;
+    }
+
     /// Keys to forward once a pending sequence has timed out.
     pub fn tick(&mut self, now: Instant) -> Vec<KeyEvent> {
         match self.since {
@@ -434,8 +440,10 @@ impl App {
     fn settings_key(&mut self, ev: KeyEvent) {
         self.dirty = true;
         if ev.action != wraith_proto::KeyAction::Release && ev.mods.has(Mods::CTRL) {
-            if let Match::Action(a @ (Action::OpenSettings | Action::CommandPalette)) = self.matcher.feed(&ev, Instant::now()) {
-                self.action(a);
+            match self.matcher.feed(&ev, Instant::now()) {
+                Match::Action(a @ (Action::OpenSettings | Action::CommandPalette)) => self.action(a),
+                // A sequence prefix must not time out into the terminal later.
+                _ => self.matcher.reset(),
             }
             return;
         }
@@ -454,6 +462,7 @@ impl App {
         themes.sort();
         let sources = Sources { themes, fonts: crate::font::monospace_families(), profiles: self.spawn_ctx.profiles.iter().map(|p| p.name.clone()).collect() };
         let rows = crate::reload::row_states(crate::reload::path(self), &self.rs.diags);
+        self.matcher.reset();
         self.view.open_settings(SettingsView::new(sources, rows));
         self.dirty = true;
     }

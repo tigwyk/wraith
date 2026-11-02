@@ -120,3 +120,29 @@ fn write_fails_on_read_only_file_and_leaves_it() {
     perm.set_readonly(false);
     std::fs::set_permissions(&p, perm).unwrap();
 }
+
+#[test]
+fn write_refuses_odd_utf16() {
+    let p = temp("odd").join("config");
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend("a = 1\n".encode_utf16().flat_map(u16::to_le_bytes));
+    bytes.push(0x41);
+    std::fs::write(&p, &bytes).unwrap();
+    assert_eq!(write(&p, |s| set(s, "b", "2", Which::Last)).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read(&p).unwrap(), bytes);
+}
+
+#[test]
+fn write_keeps_a_symlinked_config_a_symlink() {
+    let dir = temp("link");
+    let target = dir.join("real");
+    std::fs::write(&target, "a = 1\n").unwrap();
+    let link = dir.join("config");
+    if let Err(e) = std::os::windows::fs::symlink_file(&target, &link) {
+        eprintln!("skipped: cannot create symlinks here ({e})");
+        return;
+    }
+    write(&link, |s| set(s, "b", "2", Which::Last)).unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link survives");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "a = 1\nb = 2\n");
+}

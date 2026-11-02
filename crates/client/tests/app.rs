@@ -150,3 +150,12 @@ fn dash_e_takes_the_rest_of_the_command_line() {
     );
     assert_eq!(command_from_args(&a(&["wraith.exe", "-e"])), None);
 }
+
+#[test]
+fn reset_drops_a_pending_sequence() {
+    let mut k = KeybindMatcher::new(&[parse_keybind("ctrl+a>c=new_tab").unwrap()]);
+    let t = Instant::now();
+    assert_eq!(k.feed(&key(KeyCode::KeyA, Mods::CTRL), t), Match::Pending);
+    k.reset();
+    assert!(k.tick(t + Duration::from_secs(5)).is_empty(), "nothing is flushed to the terminal later");
+}

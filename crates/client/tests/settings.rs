@@ -293,3 +293,23 @@ fn control_text_shows_values() {
     assert_eq!(control_text(s("agent-notify-quiet"), "22:00-07:00", None), "22:00 – 07:00");
     assert_eq!(control_text(s("agent-notify-quiet"), "", None), "○ off");
 }
+
+#[test]
+fn leaving_a_previewed_list_reverts() {
+    let c = Config::default();
+    // Enter with a query that matches nothing.
+    let mut v = view();
+    v.key(&key(KeyCode::Enter), &c);
+    v.key(&key(KeyCode::ArrowDown), &c);
+    v.text("zzz");
+    assert_eq!(v.key(&key(KeyCode::Enter), &c), Some(Edit::Revert));
+    assert!(v.list().is_none());
+    // A click elsewhere: a page tab, or another row.
+    for hit in [SettingsHit::Page(Page::Agents), SettingsHit::Row(idx("font-size"))] {
+        let mut v = view();
+        v.key(&key(KeyCode::Enter), &c);
+        v.key(&key(KeyCode::ArrowDown), &c);
+        assert_eq!(v.click(&hit, &c), Some(Edit::Revert), "{hit:?}");
+        assert!(v.list().is_none());
+    }
+}

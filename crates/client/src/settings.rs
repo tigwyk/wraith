@@ -216,11 +216,7 @@ impl SettingsView {
     fn list_key(&mut self, ev: &KeyEvent) -> Option<Edit> {
         let l = self.list.as_mut()?;
         match ev.code {
-            KeyCode::Escape => {
-                let previewed = l.previewed;
-                self.list = None;
-                previewed.then_some(Edit::Revert)
-            }
+            KeyCode::Escape => self.drop_list(),
             KeyCode::ArrowUp | KeyCode::ArrowDown => {
                 let n = l.items().len();
                 let next = if ev.code == KeyCode::ArrowUp { l.selected.saturating_sub(1) } else { (l.selected + 1).min(n.saturating_sub(1)) };
@@ -248,8 +244,15 @@ impl SettingsView {
     fn commit_list(&mut self) -> Option<Edit> {
         let l = self.list.take()?;
         let s = &all()[l.row];
-        let value = l.items().get(l.selected)?.to_string();
-        Some(Edit::Set { key: s.key, value, which: s.which })
+        match l.items().get(l.selected) {
+            Some(v) => Some(Edit::Set { key: s.key, value: v.to_string(), which: s.which }),
+            None => l.previewed.then_some(Edit::Revert),
+        }
+    }
+
+    /// Close the list without choosing; a preview it showed is taken back.
+    fn drop_list(&mut self) -> Option<Edit> {
+        self.list.take().filter(|l| l.previewed).map(|_| Edit::Revert)
     }
 
     fn time_key(&mut self, ev: &KeyEvent) -> Option<Edit> {
@@ -289,6 +292,12 @@ impl SettingsView {
     }
 
     pub fn click(&mut self, hit: &SettingsHit, cfg: &Config) -> Option<Edit> {
+        // A click away from an open list closes it first; a reverted preview takes the click.
+        if !matches!(hit, SettingsHit::ListItem(_) | SettingsHit::Panel)
+            && let Some(e) = self.drop_list()
+        {
+            return Some(e);
+        }
         if let Some(i) = match *hit {
             SettingsHit::Row(i) | SettingsHit::Dec(i) | SettingsHit::Inc(i) | SettingsHit::Way(i, _) | SettingsHit::Time(i, _) | SettingsHit::Reset(i) => Some(i),
             _ => None,

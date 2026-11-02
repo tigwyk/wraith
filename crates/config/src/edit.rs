@@ -108,6 +108,9 @@ enum Encoding {
 
 fn decode(bytes: &[u8]) -> Result<(String, Encoding)> {
     let utf16 = |be: bool| {
+        if !bytes.len().is_multiple_of(2) {
+            return Err(Error::new(ErrorKind::InvalidData, "the UTF-16 config file has a stray byte at the end"));
+        }
         let units = bytes[2..].as_chunks::<2>().0.iter().map(|&c| if be { u16::from_be_bytes(c) } else { u16::from_le_bytes(c) });
         char::decode_utf16(units).collect::<std::result::Result<String, _>>().map_err(|e| Error::new(ErrorKind::InvalidData, e))
     };
@@ -135,6 +138,9 @@ pub fn read(path: &Path) -> Result<String> {
 
 /// Read the file fresh, apply `edit`, and replace the file atomically in its own encoding.
 pub fn write(path: &Path, edit: impl FnOnce(&str) -> String) -> Result<()> {
+    // Write through a symlinked config (dotfiles) rather than replacing the link with a file.
+    let resolved = std::fs::canonicalize(path).ok();
+    let path = resolved.as_deref().unwrap_or(path);
     // A rename replaces a read-only file on NTFS, so check first.
     if std::fs::metadata(path).is_ok_and(|m| m.permissions().readonly()) {
         return Err(Error::new(ErrorKind::PermissionDenied, "the config file is read-only"));
