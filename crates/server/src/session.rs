@@ -42,6 +42,9 @@ struct Client {
     workspace: Option<WorkspaceId>,
     /// Panes whose frames and images this window wants.
     subs: HashSet<PaneId>,
+    /// Refused (bad Hello): told why, then ignored until it closes its end. The server never closes
+    /// first, because closing a pipe discards a reply the client has not read yet.
+    refused: bool,
 }
 
 /// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json`.
@@ -192,7 +195,7 @@ impl Server {
             };
             match ev {
                 Ev::Connected(id, tx) => {
-                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new() });
+                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false });
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
@@ -348,8 +351,17 @@ impl Server {
         }
     }
 
+    fn refuse(&mut self, id: ClientId) {
+        if let Some(c) = self.clients.get_mut(&id) {
+            c.refused = true;
+        }
+    }
+
     fn client_msg(&mut self, id: ClientId, m: ClientMsg) {
-        let Some(kind) = self.clients.get(&id).map(|c| c.kind) else { return };
+        let Some((kind, refused)) = self.clients.get(&id).map(|c| (c.kind, c.refused)) else { return };
+        if refused {
+            return;
+        }
         let m = match (kind, m) {
             (None, ClientMsg::Hello { proto_version, kind }) => {
                 if proto_version == PROTO_VERSION {
@@ -357,13 +369,13 @@ impl Server {
                     self.send(id, ServerMsg::Welcome { server_version: env!("CARGO_PKG_VERSION").into() });
                 } else {
                     self.send(id, ServerMsg::VersionMismatch { server_version: env!("CARGO_PKG_VERSION").into() });
-                    self.drop_client(id);
+                    self.refuse(id);
                 }
                 return;
             }
             (None, _) => {
                 self.send(id, ServerMsg::Error("expected Hello".into()));
-                self.drop_client(id);
+                self.refuse(id);
                 return;
             }
             (Some(_), m) => m,

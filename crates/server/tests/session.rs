@@ -347,6 +347,18 @@ fn version_mismatch_is_reported() {
 }
 
 #[test]
+fn version_mismatch_is_reported_every_time() {
+    // The reply must reach the client even though the server is done with it (no lost-reply race).
+    let pipe = server();
+    for i in 0..60 {
+        let (mut r, mut w) = connect(&pipe).unwrap().split();
+        write_frame(&mut w, &ClientMsg::Hello { proto_version: 999, kind: ClientKind::Gui }).unwrap();
+        let reply = read_frame::<ServerMsg>(&mut r);
+        assert!(matches!(reply, Ok(ServerMsg::VersionMismatch { .. })), "attempt {i}: {reply:?}");
+    }
+}
+
+#[test]
 fn gui_cannot_touch_other_workspaces_panes() {
     let pipe = server();
     let mut a = Client::gui(&pipe);
