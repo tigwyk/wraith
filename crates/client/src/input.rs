@@ -252,15 +252,28 @@ impl Ime {
 
     /// Handle `WM_IME_COMPOSITION`.
     pub fn on_composition(&mut self, hwnd: HWND, lparam: LPARAM) -> ImeUpdate {
-        let u = Self::read_composition(hwnd, lparam);
-        self.apply(u)
+        let (result, comp) = Self::read_composition(hwnd, lparam);
+        self.compose(result, comp)
     }
 
-    fn read_composition(hwnd: HWND, lparam: LPARAM) -> ImeUpdate {
+    /// One `WM_IME_COMPOSITION`: text committed (`result`) and/or still being composed (`comp`).
+    /// IMEs often send both at once (commit part, keep composing), so the rest stays drawn.
+    pub fn compose(&mut self, result: Option<String>, comp: Option<String>) -> ImeUpdate {
+        match (result, comp) {
+            (Some(r), comp) => {
+                self.preedit = comp.unwrap_or_default();
+                ImeUpdate::Commit(r)
+            }
+            (None, Some(c)) => self.apply(ImeUpdate::Preedit(c)),
+            (None, None) => ImeUpdate::None,
+        }
+    }
+
+    fn read_composition(hwnd: HWND, lparam: LPARAM) -> (Option<String>, Option<String>) {
         unsafe {
             let ctx = ImmGetContext(hwnd);
             if ctx.is_invalid() {
-                return ImeUpdate::None;
+                return (None, None);
             }
             let read = |kind| {
                 let bytes = ImmGetCompositionStringW(ctx, kind, None, 0);
@@ -271,15 +284,11 @@ impl Ime {
                 ImmGetCompositionStringW(ctx, kind, Some(buf.as_mut_ptr().cast()), bytes as u32);
                 String::from_utf16_lossy(&buf)
             };
-            let r = if lparam.0 as u32 & GCS_RESULTSTR.0 != 0 {
-                ImeUpdate::Commit(read(GCS_RESULTSTR))
-            } else if lparam.0 as u32 & GCS_COMPSTR.0 != 0 {
-                ImeUpdate::Preedit(read(GCS_COMPSTR))
-            } else {
-                ImeUpdate::None
-            };
+            let flags = lparam.0 as u32;
+            let result = (flags & GCS_RESULTSTR.0 != 0).then(|| read(GCS_RESULTSTR));
+            let comp = (flags & GCS_COMPSTR.0 != 0).then(|| read(GCS_COMPSTR));
             let _ = ImmReleaseContext(hwnd, ctx);
-            r
+            (result, comp)
         }
     }
 

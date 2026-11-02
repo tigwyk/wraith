@@ -1026,6 +1026,14 @@ impl WindowView {
     }
 
     /// A press inside `pane`: focus it if it is not already.
+    /// Focus `pane` in this view now, ahead of the server's snapshot (the FocusPane is already sent),
+    /// so an action run straight away (the right-click menu) targets it.
+    pub fn focus_local(&mut self, pane: PaneId) {
+        if let Some(t) = self.snap.tabs.iter_mut().find(|t| t.root.contains(pane)) {
+            t.focused = pane;
+        }
+    }
+
     pub fn pane_click(&self, pane: PaneId) -> Vec<ClientMsg> {
         if self.focused() == Some(pane) { Vec::new() } else { vec![ClientMsg::Model(ModelCmd::FocusPane(pane))] }
     }

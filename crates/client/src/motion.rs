@@ -310,6 +310,23 @@ impl Motion {
         }
     }
 
+    /// Draw now? Running motion always; breathing alone once its deadline `next_frame` has come.
+    pub fn due(&self, now: Instant, next_frame: Instant) -> bool {
+        self.active(now) || (self.breathing.is_some() && self.on && now >= next_frame)
+    }
+
+    /// After a frame: whether to mark the window dirty at once (running motion redraws at vsync,
+    /// paced by the swap chain), and how soon to wake for the next frame.
+    pub fn after_frame(&self, now: Instant, next_frame: Instant) -> (bool, Option<Duration>) {
+        if self.active(now) {
+            (true, Some(FRAME))
+        } else if self.breathing.is_some() && self.on {
+            (false, Some(next_frame.saturating_duration_since(now) + Duration::from_millis(1)))
+        } else {
+            (false, None)
+        }
+    }
+
     pub fn active(&self, now: Instant) -> bool {
         self.slides.iter().flatten().any(|s| s.active(now))
             || [self.palette, self.find, self.toast].iter().any(|f| f.active(now))

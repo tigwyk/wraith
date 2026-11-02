@@ -167,3 +167,15 @@ fn preedit_wider_than_pane_starts_at_0() {
 fn preedit_without_cursor_sits_bottom_left() {
     assert_eq!(wraith_client::input::preedit_origin(None, 80, 24, 2), (0, 23));
 }
+
+#[test]
+fn commit_with_ongoing_composition_keeps_the_rest() {
+    use wraith_client::input::{Ime, ImeUpdate};
+    let mut ime = Ime::default();
+    assert_eq!(ime.compose(Some("日本".into()), Some("ご".into())), ImeUpdate::Commit("日本".into()));
+    assert_eq!(ime.preedit(), "ご", "the part still being composed stays drawn");
+    assert_eq!(ime.compose(Some("語".into()), None), ImeUpdate::Commit("語".into()));
+    assert_eq!(ime.preedit(), "");
+    assert_eq!(ime.compose(None, Some("か".into())), ImeUpdate::Preedit("か".into()));
+    assert_eq!(ime.compose(None, None), ImeUpdate::None);
+}

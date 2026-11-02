@@ -18,7 +18,7 @@ Date: 2026-11-02. Branch `m7`.
 | Right-click menu | Pass (logic) | `context_menu_*` (3 tests) and `has_selection_follows_the_frame`. Live: needs the real pointer |
 | Inline IME composition | Pass (logic) | `preedit_*` and `ime_end_clears_preedit` (5 tests). Live: needs a Japanese IME |
 | `agent-tab-pulse` breathes the asking tab | Pass | The background tab with the asking agent read (29,33,38) and (44,66,84) in captures 800 ms apart. The tab with no agent stayed (40,44,52) |
-| `agent-tab-pulse` cost | Pass | 31 ms of client CPU over 3 s while breathing (20 Hz frames). 0 ms with the pulse turned off by hot reload while the agent still asked |
+| `agent-tab-pulse` cost | Pass | Breathing draws a frame about every 62 ms (the 50 ms deadline plus timer rounding; counted from a debug log over 168 frames). Client CPU while breathing: 0–78 ms over 3 s across 6 runs. Windows counts CPU time in 15.6 ms ticks, so these readings are coarse. 0 ms with the pulse turned off by hot reload while the agent still asked |
 | `agent-tab-pulse` with "Show animations" off | Pass (logic) | `breathe_is_steady_when_animations_off`: a steady tint and no frames. Live: needs you to flip the Windows setting |
 | Spec brought up to date | Pass | Status line, §2, §3.3, §3.4, §4.4, §6.1, §6.2, §8, §11 risk 3, and the M7 row in §10 |
 

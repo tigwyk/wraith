@@ -696,6 +696,7 @@ impl App {
     fn context_menu(&mut self, pane: PaneId, x: i32, y: i32) {
         let msgs = self.view.pane_click(pane);
         self.send_all(msgs);
+        self.view.focus_local(pane);
         let has_selection = self.grids.get(&pane).is_some_and(GridRenderer::has_selection);
         let items = chrome::context_menu(has_selection, &self.config.keybinds);
         let hwnd = self.win.hwnd();
@@ -799,6 +800,7 @@ impl App {
                         return Some(LRESULT(0));
                     }
                     if let ImeUpdate::Commit(t) = u {
+                        self.dirty = true; // a partial commit leaves the rest of the composition to draw
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
@@ -1090,10 +1092,8 @@ impl App {
         if self.view.tick(now) {
             self.dirty = true;
         }
-        if let Some(d) = self.motion.frame_interval(now)
-            && now >= self.next_frame
-        {
-            self.next_frame = now + d;
+        if self.motion.due(now, self.next_frame) {
+            self.next_frame = now + self.motion.frame_interval(now).unwrap_or_default();
             self.dirty = true;
         }
         let spinning = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.state == AgentState::Working));
@@ -1111,10 +1111,12 @@ impl App {
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
         }
-        // Still moving after this frame: wake for the next one (every 16 ms while things move, 50 ms
-        // while tabs only breathe); nothing moving costs nothing.
-        if self.motion.frame_interval(Instant::now()).is_some() {
-            sleep = sleep.min(self.next_frame.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
+        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable paces
+        // it). Tabs that only breathe wake at their 50 ms deadline instead; nothing moving costs nothing.
+        let (redraw, wake) = self.motion.after_frame(Instant::now(), self.next_frame);
+        self.dirty |= redraw;
+        if let Some(w) = wake {
+            sleep = sleep.min(w.as_millis() as u32);
         }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
