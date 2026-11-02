@@ -10,3 +10,15 @@ fn notify_title_strips_control_characters_from_titles() {
     let t = notify_title(&a, "ws\u{1b}[31m", "tab\u{7}\u{0}name");
     assert_eq!(t, "Claude Code needs input — ws[31m/tabname");
 }
+
+#[test]
+fn agent_scan_reads_long_command_lines() {
+    // e.g. `node ...claude...` with many arguments: over 4096 characters must still be read.
+    let script = format!("Start-Sleep 20 # {} AGENT_MARKER_END", "x".repeat(7000));
+    let mut p = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", &script]).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let detect = wraith_server::agentscan::compile(&[("marked".into(), "AGENT_MARKER_END".into())]);
+    let found = wraith_server::agentscan::scan(&[p.id()], &detect);
+    let _ = p.kill();
+    assert_eq!(found.as_deref(), Some("marked"));
+}

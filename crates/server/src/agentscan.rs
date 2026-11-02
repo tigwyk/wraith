@@ -47,7 +47,15 @@ unsafe fn command_line(h: HANDLE) -> Option<String> {
     let mut buf = vec![0u8; 8192];
     let mut needed = 0u32;
     unsafe {
-        NtQueryInformationProcess(h, ProcessCommandLineInformation, buf.as_mut_ptr().cast(), buf.len() as u32, &mut needed).ok().ok()?;
+        let query = |buf: &mut Vec<u8>, needed: &mut u32| NtQueryInformationProcess(h, ProcessCommandLineInformation, buf.as_mut_ptr().cast(), buf.len() as u32, needed).ok();
+        // Command lines run to 32K characters: one that does not fit says how much room it needs.
+        if query(&mut buf, &mut needed).is_err() {
+            if needed as usize <= buf.len() {
+                return None;
+            }
+            buf.resize(needed as usize, 0);
+            query(&mut buf, &mut needed).ok()?;
+        }
         let us = &*(buf.as_ptr() as *const UNICODE_STRING);
         let chars = std::slice::from_raw_parts(us.Buffer.0, usize::from(us.Length) / 2);
         Some(String::from_utf16_lossy(chars))
