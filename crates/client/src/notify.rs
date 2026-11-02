@@ -172,7 +172,7 @@ impl Notifier {
         let audio = if sound { "" } else { r#"<audio silent="true"/>"# };
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(format!(
-            r#"<toast activationType="foreground"><visual><binding template="ToastGeneric"><text/><text/></binding></visual>{audio}</toast>"#
+            r#"<toast activationType="foreground"><visual><binding template="ToastGeneric"><text/><text/></binding></visual><actions><action content="Open" arguments="open" activationType="foreground"/></actions>{audio}</toast>"#
         )))?;
         let texts = doc.GetElementsByTagName(&HSTRING::from("text"))?;
         texts.Item(0)?.AppendChild(&doc.CreateTextNode(&HSTRING::from(title))?)?;
