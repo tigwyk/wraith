@@ -89,6 +89,8 @@ pub struct Config {
     pub default_profile: Option<String>,
     pub shell_integration: bool,
     pub sidebar_visible: bool,
+    /// Tabs whose agent needs attention pulse slowly (spec §5.4).
+    pub agent_tab_pulse: bool,
     /// Cells.
     pub sidebar_width: u16,
     pub unfocused_split_opacity: f32,
@@ -138,6 +140,7 @@ impl Default for Config {
             default_profile: None,
             shell_integration: true,
             sidebar_visible: true,
+            agent_tab_pulse: false,
             sidebar_width: 24,
             unfocused_split_opacity: 0.85,
             image_storage_limit: 320 * 1024 * 1024,

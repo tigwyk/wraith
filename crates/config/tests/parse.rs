@@ -260,3 +260,12 @@ fn agent_notify_keys() {
         assert_eq!(parse_str(&format!("{bad}\n"), p(), &themes()).1.len(), 1, "{bad}");
     }
 }
+
+#[test]
+fn agent_tab_pulse_parses() {
+    let (d, _) = parse_str("", p(), &themes());
+    assert!(!d.agent_tab_pulse);
+    let (c, diags) = parse_str("agent-tab-pulse = true\n", p(), &themes());
+    assert!(diags.is_empty(), "{diags:?}");
+    assert!(c.agent_tab_pulse);
+}

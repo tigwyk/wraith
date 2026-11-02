@@ -265,6 +265,8 @@ pub(crate) struct App {
     /// Working-agent spinner: animation clock and next frame.
     started: Instant,
     next_spin: Instant,
+    /// When chrome motion (or `agent-tab-pulse` breathing) next wants a frame.
+    next_frame: Instant,
     /// The pane a selection drag started in.
     mouse_down: Option<PaneId>,
     wheel_acc: i32,
@@ -1085,7 +1087,13 @@ impl App {
             self.next_blink = now + Duration::from_millis(600);
             self.dirty = true;
         }
-        if self.view.tick(now) || self.motion.active(now) {
+        if self.view.tick(now) {
+            self.dirty = true;
+        }
+        if let Some(d) = self.motion.frame_interval(now)
+            && now >= self.next_frame
+        {
+            self.next_frame = now + d;
             self.dirty = true;
         }
         let spinning = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.state == AgentState::Working));
@@ -1103,11 +1111,10 @@ impl App {
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
         }
-        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable
-        // paces it), with a short timeout in case the compositor does not signal.
-        if self.motion.active(Instant::now()) {
-            self.dirty = true;
-            sleep = sleep.min(16);
+        // Still moving after this frame: wake for the next one (every 16 ms while things move, 50 ms
+        // while tabs only breathe); nothing moving costs nothing.
+        if self.motion.frame_interval(Instant::now()).is_some() {
+            sleep = sleep.min(self.next_frame.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
         }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
@@ -1163,6 +1170,10 @@ impl App {
             let agents = self.view.agent_rows().into_iter().filter(|r| r.agent.attention).map(|r| Dot::Agent(r.pane));
             self.motion.set_lit(tabs.chain(ws).chain(agents).collect(), now);
         }
+        // `agent-tab-pulse`: tabs whose agent needs the user breathe until it is answered.
+        let needs_user = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.attention));
+        self.motion.set_breathing(self.config.agent_tab_pulse && needs_user, now);
+        let breath = self.motion.breathe(now);
         let focused_pane = self.view.focused();
         let panes = self.view.visible();
         let split = panes.len() > 1;
@@ -1254,6 +1265,9 @@ impl App {
             }
             // An agent's icon leads the title; its state badge sits before the close button.
             let agent = self.view.tab_agent(*id).map(|a| (a.icon, a.state, a.attention));
+            if breath > 0.0 && agent.is_some_and(|(_, _, attention)| attention) {
+                p.rect(*r, accent, 0.25 * breath);
+            }
             let badge = agent.and_then(|(_, state, attention)| match state {
                 AgentState::Working => Some(SPINNER[(spin_frame % SPINNER.len() as u128) as usize]),
                 AgentState::Asking | AgentState::Done if attention => Some("●"),
@@ -1743,6 +1757,7 @@ pub fn run() -> Result<()> {
         next_blink: Instant::now() + Duration::from_millis(600),
         started: Instant::now(),
         next_spin: Instant::now(),
+        next_frame: Instant::now(),
         mouse_down: None,
         wheel_acc: 0,
         title: String::new(),
