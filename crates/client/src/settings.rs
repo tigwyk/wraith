@@ -408,7 +408,8 @@ impl SettingsView {
         let (cw, ch) = cell;
         let row_h = ch + 10;
         let page_rows = on_page(self.page);
-        let w = 640.min(client.0 - 2 * cw).max(0);
+        // In cells, so the labels keep their room as the font grows.
+        let w = (66 * cw).min(client.0 - 2 * cw).max(0);
         let top = (bar_h + 12).min(client.1);
         let need = 16 + (page_rows.len() as i32 + 1) * row_h;
         let h = need.min(client.1 * 8 / 10).min(client.1 - top - 4).max(0);

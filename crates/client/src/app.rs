@@ -1653,10 +1653,12 @@ impl App {
                     p.rect(r, w, 1.0);
                 }
                 let ty = mid(r);
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, st.label, col.bar_fg, 1.0);
                 let reset_w = (2 * cw).min(r.w);
                 let ctl_w = (24 * cw).min(r.w / 2);
                 let ctl_x = r.x + r.w - reset_w - ctl_w;
+                // Long labels give way to the control (and its warning mark).
+                let label_room = ((ctl_x - r.x - pad_x - 2 * cw) / cw).max(0) as usize;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &truncate_cells(st.label, label_room), col.bar_fg, 1.0);
                 let cur = (st.get)(c);
                 let text = match (&row.origin, s.list().filter(|l| l.row == i)) {
                     (Origin::Included { file, .. }, _) => {
