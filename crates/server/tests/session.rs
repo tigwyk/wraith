@@ -724,10 +724,26 @@ fn viewing_clears_turn_end_attention() {
     let mut c = Client::gui(&pipe);
     c.attach_window(None);
     let (_, pane) = c.new_tab("cmd.exe /k");
+    c.send(ClientMsg::Foreground(true));
     hook(&pipe, pane, AgentSignal::TurnEnd { message: "done".into() });
     assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Done, true))), "hidden: attention");
     c.subscribe(&[pane]);
     assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Idle, false))), "seen: cleared");
+}
+
+#[test]
+fn turn_end_in_a_background_window_counts_as_unseen() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    c.subscribe(&[pane]);
+    c.send(ClientMsg::Foreground(false));
+    hook(&pipe, pane, AgentSignal::TurnEnd { message: "done".into() });
+    assert_eq!(notifies(&mut c, Duration::from_millis(1500)), vec![pane], "drawn, but the window is behind others");
+    assert_eq!(agent_state(&c.snap, pane), Some((AgentState::Done, true)));
+    c.send(ClientMsg::Foreground(true));
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Idle, false))), "bringing the window up is seeing it");
 }
 
 #[test]

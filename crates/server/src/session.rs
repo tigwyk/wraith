@@ -50,8 +50,9 @@ struct Client {
     /// Refused (bad Hello): told why, then ignored until it closes its end. The server never closes
     /// first, because closing a pipe discards a reply the client has not read yet.
     refused: bool,
-    /// When this window last came to the foreground.
+    /// When this window last came to the foreground, and whether it is there now.
     focused_at: Option<Instant>,
+    foreground: bool,
 }
 
 /// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json`.
@@ -229,7 +230,7 @@ impl Server {
             };
             match ev {
                 Ev::Connected(id, tx) => {
-                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None });
+                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None, foreground: false });
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
@@ -426,8 +427,13 @@ impl Server {
                 }
             }
             ClientMsg::Foreground(fg) => {
-                if let Some(c) = self.clients.get_mut(&id) {
-                    c.focused_at = fg.then(Instant::now).or(c.focused_at);
+                let Some(c) = self.clients.get_mut(&id) else { return };
+                c.focused_at = fg.then(Instant::now).or(c.focused_at);
+                c.foreground = fg;
+                // Bringing a window up is seeing what it draws.
+                let shown: Vec<PaneId> = if fg { c.subs.iter().copied().collect() } else { Vec::new() };
+                for p in shown {
+                    self.agent_edit(p, became_visible);
                 }
             }
             ClientMsg::AttachWindow { workspace } => self.attach_window(id, workspace),
@@ -443,12 +449,15 @@ impl Server {
                 let Some(c) = self.clients.get_mut(&id) else { return };
                 let added: Vec<PaneId> = wanted.difference(&c.subs).copied().collect();
                 c.subs = wanted;
+                let seen = c.foreground;
                 for p in added {
                     // Fresh view: forget the unacked frame of whoever looked before and resend everything.
                     if let Some(h) = self.panes.get(&p) {
                         let _ = h.send(PaneCmd::Reattach);
                     }
-                    self.agent_edit(p, became_visible);
+                    if seen {
+                        self.agent_edit(p, became_visible);
+                    }
                 }
             }
             // Shutdown and Reattach are the server's own lifecycle commands, never a client's.
@@ -588,9 +597,9 @@ impl Server {
         }
     }
 
-    /// Some window draws `pane` right now.
+    /// The user can see `pane`: a window in the foreground draws it (one behind others does not count).
     fn visible(&self, pane: PaneId) -> bool {
-        self.clients.values().any(|c| c.kind == Some(ClientKind::Gui) && c.subs.contains(&pane))
+        self.clients.values().any(|c| c.kind == Some(ClientKind::Gui) && c.foreground && c.subs.contains(&pane))
     }
 
     /// Feed one agent event through the state engine. A hook event for a pane with no agent yet

@@ -850,6 +850,7 @@ impl App {
                 let visible = self.view.visible().iter().any(|(p, _)| *p == pane);
                 let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
                 let ways = crate::notify::notify_ways(&self.config.agent_notify, self.focused, visible, u32::from(t.wHour) * 60 + u32::from(t.wMinute));
+                tracing::info!(pane, visible, foreground = self.focused, ?ways, "agent notify");
                 self.notifier.show(ways, pane, &title, &body);
             }
             ServerMsg::Welcome { .. } | ServerMsg::VersionMismatch { .. } | ServerMsg::Panes(_) => {}

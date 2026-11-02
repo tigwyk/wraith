@@ -167,6 +167,7 @@ impl Notifier {
             Ok(())
         }))?;
         notifier.Show(&toast)?;
+        tracing::info!(pane, "toast shown");
         self.live.push(toast);
         if self.live.len() > KEEP {
             self.live.remove(0);
