@@ -662,3 +662,30 @@ fn tab_badge_picks_the_most_urgent_agent() {
     assert_eq!(v.tab_agent(10).map(|a| a.state), Some(AgentState::Asking));
     assert_eq!(v.tab_agent(11), None);
 }
+
+// ---- Sidebar: each workspace's tabs as a tree under it ----
+
+#[test]
+fn sidebar_lists_each_workspace_tabs_under_it() {
+    let mut v = with_sidebar();
+    v.on_snapshot(agents_snap([None, None, None, None]), &ctx());
+    let (ws, new_ws) = v.workspace_rects();
+    let tabs = v.sidebar_tab_rects();
+    let y = |id: TabId| tabs.iter().find(|(t, _)| *t == id).unwrap().1.y;
+    assert_eq!(tabs.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![10, 11, 20], "workspace order, then tab order");
+    assert!(ws[0].1.y < y(10) && y(10) < y(11) && y(11) < ws[1].1.y, "workspace 1's tabs sit under it");
+    assert!(ws[1].1.y < y(20) && y(20) < new_ws.y, "workspace 2's tab under workspace 2");
+    assert!(tabs.iter().all(|(_, r)| r.x > ws[0].1.x), "indented");
+    assert!(v.agent_rects().is_empty());
+}
+
+#[test]
+fn clicking_a_sidebar_tab_shows_it() {
+    let mut v = with_sidebar();
+    v.on_snapshot(agents_snap([None, None, None, None]), &ctx());
+    let r = v.sidebar_tab_rects().into_iter().find(|(t, _)| *t == 20).unwrap().1;
+    assert_eq!(v.hit(r.x + 4, r.y + 2), Hit::SidebarTab(20));
+    assert_eq!(v.tab_click(20), vec![ClientMsg::AttachWindow { workspace: Some(2) }, ClientMsg::Model(ModelCmd::SelectTab(20))]);
+    assert_eq!(v.tab_click(11), vec![ClientMsg::Model(ModelCmd::SelectTab(11))]);
+    assert!(v.tab_click(10).is_empty(), "already showing");
+}

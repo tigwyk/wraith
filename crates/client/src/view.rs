@@ -124,6 +124,9 @@ pub struct SidebarRow {
     pub elsewhere: bool,
 }
 
+/// Sidebar rows: workspaces, their tabs, and the trailing "new workspace" row.
+type SidebarLayout = (Vec<(WorkspaceId, Rect)>, Vec<(TabId, Rect)>, Rect);
+
 /// One row of the sidebar's Agents list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
@@ -403,13 +406,45 @@ impl WindowView {
 
     /// Row rectangles of the sidebar and its trailing "new workspace" row.
     pub fn workspace_rects(&self) -> (Vec<(WorkspaceId, Rect)>, Rect) {
-        let Some(s) = self.sidebar_rect() else { return (Vec::new(), Rect::default()) };
-        let cell_h = self.geom.cell.1 as i32;
-        let (row_h, y0) = (cell_h + 8, 6 + cell_h + 6);
-        let rows: Vec<(WorkspaceId, Rect)> =
-            self.snap.workspaces.iter().enumerate().map(|(i, w)| (w.id, Rect { x: s.x, y: y0 + i as i32 * row_h, w: s.w, h: row_h })).collect();
-        let new = Rect { x: s.x, y: y0 + rows.len() as i32 * row_h, w: s.w, h: row_h };
-        (rows, new)
+        let (ws, _, new) = self.sidebar_layout();
+        (ws, new)
+    }
+
+    /// Each workspace's tabs, listed (indented) under its row.
+    pub fn sidebar_tab_rects(&self) -> Vec<(TabId, Rect)> {
+        self.sidebar_layout().1
+    }
+
+    /// The sidebar tree: a workspace row, then a row per tab of it; then "new workspace".
+    fn sidebar_layout(&self) -> SidebarLayout {
+        let Some(s) = self.sidebar_rect() else { return (Vec::new(), Vec::new(), Rect::default()) };
+        let (cell_w, cell_h) = (self.geom.cell.0 as i32, self.geom.cell.1 as i32);
+        let row_h = cell_h + 8;
+        let indent = 2 * cell_w;
+        let (mut y, mut ws, mut tabs) = (6 + cell_h + 6, Vec::new(), Vec::new());
+        for w in &self.snap.workspaces {
+            ws.push((w.id, Rect { x: s.x, y, w: s.w, h: row_h }));
+            y += row_h;
+            for &t in w.tabs.iter().filter(|&&t| self.snap.tab(t).is_some()) {
+                tabs.push((t, Rect { x: s.x + indent, y, w: s.w - indent, h: row_h }));
+                y += row_h;
+            }
+        }
+        (ws, tabs, Rect { x: s.x, y, w: s.w, h: row_h })
+    }
+
+    /// A click on a tab in the sidebar: show it here (its workspace too, if another).
+    pub fn tab_click(&self, tab: TabId) -> Vec<ClientMsg> {
+        let Some(t) = self.snap.tab(tab) else { return Vec::new() };
+        let here = self.workspace == Some(t.workspace);
+        let mut msgs = Vec::new();
+        if !here {
+            msgs.push(ClientMsg::AttachWindow { workspace: Some(t.workspace) });
+        }
+        if !here || self.active_tab().map(|a| a.id) != Some(tab) {
+            msgs.push(ClientMsg::Model(ModelCmd::SelectTab(tab)));
+        }
+        msgs
     }
 
     /// A click on a workspace row: show it here (taking it from another window if needed).
@@ -797,6 +832,7 @@ impl WindowView {
             workspaces: &workspaces,
             new_workspace,
             agents: &self.agent_rects(),
+            sidebar_tabs: &self.sidebar_tab_rects(),
             panes: &panes,
             dividers: &dividers,
             cell_w: self.geom.cell.0 as i32,

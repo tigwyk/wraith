@@ -121,7 +121,7 @@ Rules:
 ```
 
 - **Title bar:** custom-drawn and integrated with the tab bar (WM_NCCALCSIZE extended frame). Mica backdrop and immersive dark mode through `DwmSetWindowAttribute`. Snap layouts preserved through correct WM_NCHITTEST on the maximize button.
-- **Sidebar:** workspace list (name, color chip, attention dot), then the Agents section sorted Waiting (oldest first) → Working → Idle. Clicking an entry focuses its pane. Toggle with `ctrl+shift+b`. When collapsed, it reveals on hovering an 8 px strip at the left edge (300 ms grace). *M3 ships the workspace section only. The Agents section, the attention dots and agent-sorted rows arrive with agent integration (M4).*
+- **Sidebar:** workspace list (name, color chip, attention dot) with each workspace's tabs as a tree under it (a click shows that tab, attaching its workspace if needed), then the Agents section sorted Waiting (oldest first) → Working → Idle. Clicking an entry focuses its pane. Toggle with `ctrl+shift+b`. When collapsed, it reveals on hovering an 8 px strip at the left edge (300 ms grace). *M3 ships the workspace section only. The Agents section, the attention dots and agent-sorted rows arrive with agent integration (M4).*
 - **Tab bar:** per tab, harness icon (if any) + title + state badge (spinner = working, accent dot = waiting). Drag to reorder. A command moves a tab to another workspace.
 - **Panes:** the focused pane gets a 1 px accent border. Optional `unfocused-split-opacity` dim.
 - **Command palette** (`ctrl+shift+p`): fuzzy list of every named action with its current keybinding, grouped by Workspaces / Tabs / Panes / Window / Agents.

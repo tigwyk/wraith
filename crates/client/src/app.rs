@@ -568,6 +568,10 @@ impl App {
                     return self.send_all(msgs);
                 }
                 Hit::NewWorkspace => return self.action(Action::NewWorkspace),
+                Hit::SidebarTab(t) => {
+                    let msgs = self.view.tab_click(t);
+                    return self.send_all(msgs);
+                }
                 Hit::Agent(p) => {
                     let msgs = self.view.focus_pane(p);
                     return self.send_all(msgs);
@@ -1149,6 +1153,24 @@ impl App {
                 let name = truncate_cells(&row.name, cells);
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, tx, r.y + (r.h - m.h as i32) / 2, &name, tc, if row.elsewhere { 0.6 } else { 1.0 });
                 if row.attention {
+                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                }
+            }
+            // Each workspace's tabs, indented under it; the tab this window shows is highlighted.
+            let shown = self.view.active_tab().map(|t| t.id);
+            for (t, r) in self.view.sidebar_tab_rects() {
+                let snap = self.view.snapshot();
+                let agent = self.view.tab_agent(t).map(|a| (a.icon, a.attention));
+                let current = Some(t) == shown;
+                if current {
+                    p.rect(r, col.tab_active_bg, 1.0);
+                }
+                let title = snap.tab_title(t);
+                let label = agent.map_or(title.clone(), |(icon, _)| format!("{icon} {title}"));
+                let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
+                let tc = if current { col.bar_fg } else { col.bar_fg_dim };
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &truncate_cells(&label, cells), tc, 1.0);
+                if agent.is_some_and(|(_, attention)| attention) {
                     p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
                 }
             }
