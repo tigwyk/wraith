@@ -1,0 +1,13 @@
+PackageIdentifier: Wraith.Wraith
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Wraith
+PackageName: Wraith
+License: MIT
+ShortDescription: A native Windows terminal on libghostty-vt, with workspaces, splits and coding-agent awareness.
+Tags:
+  - terminal
+  - console
+  - ghostty
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

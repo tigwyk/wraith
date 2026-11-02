@@ -1,0 +1,8 @@
+Wraith includes or is built from the following third-party software.
+
+libghostty-vt (Ghostty terminal library) — MIT License — https://github.com/ghostty-org/ghostty
+libghostty-rs (Rust bindings, vendored) — MIT OR Apache-2.0 — see LICENSE-libghostty-rs.txt
+OpenConsole.exe / conpty.dll (Windows Terminal ConPTY) — MIT License — https://github.com/microsoft/terminal
+Ghostty theme collection (themes/) — see each theme's source in the iTerm2-Color-Schemes project — https://github.com/mbadolato/iTerm2-Color-Schemes
+
+Rust crate dependencies are listed in Cargo.lock; their licenses are in their sources on crates.io.

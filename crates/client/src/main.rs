@@ -14,6 +14,18 @@ fn main() {
             }
         });
     }
+    // `--register [<shortcut path>]`: (re)create the Start Menu shortcut with the app id, then exit.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--register") {
+        let lnk = args.get(i + 1).map(std::path::PathBuf::from).or_else(wraith_client::notify::default_shortcut);
+        let ok = lnk.is_some_and(|l| {
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            }
+            wraith_client::notify::register_shortcut(&l).inspect_err(|e| { let _ = writeln!(std::io::stderr(), "register: {e}"); }).is_ok()
+        });
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if std::env::args().any(|a| a == "--server") {
         let _log = init_logging("server");
         let pipe = wraith_ipc::pipe_name();

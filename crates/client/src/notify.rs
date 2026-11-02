@@ -57,14 +57,23 @@ pub fn set_app_id() {
     }
 }
 
+/// The Start Menu shortcut toasts are tied to.
+pub fn default_shortcut() -> Option<std::path::PathBuf> {
+    Some(std::path::Path::new(&std::env::var_os("APPDATA")?).join(r"Microsoft\Windows\Start Menu\Programs\Wraith.lnk"))
+}
+
 /// An unpackaged app may only show toasts under an id some Start Menu shortcut carries. Create
 /// `Wraith.lnk` once (first run, spec §5.4); an existing one is left alone.
 fn ensure_shortcut() -> Result<()> {
-    let Some(appdata) = std::env::var_os("APPDATA") else { return Ok(()) };
-    let lnk = std::path::Path::new(&appdata).join(r"Microsoft\Windows\Start Menu\Programs\Wraith.lnk");
-    if lnk.exists() {
-        return Ok(());
+    match default_shortcut() {
+        Some(lnk) if !lnk.exists() => register_shortcut(&lnk),
+        _ => Ok(()),
     }
+}
+
+/// Write (or replace) a shortcut at `lnk` to this executable, carrying the app id. The installer runs
+/// this (`wraith.exe --register`) so the Start Menu entry points at the installed copy.
+pub fn register_shortcut(lnk: &std::path::Path) -> Result<()> {
     let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))?;
     let wide = |s: &std::ffi::OsStr| -> Vec<u16> {
         use std::os::windows::ffi::OsStrExt;
