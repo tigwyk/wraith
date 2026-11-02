@@ -25,8 +25,9 @@ fn config_check_clean_file_exits_0() {
     std::fs::write(&f, "font-size = 13\n").unwrap();
     let o = wr(&d, &["config", "check", f.to_str().unwrap()]);
     assert!(o.status.success(), "{o:?}");
-    assert!(o.stdout.is_empty());
-    assert!(stderr(&o).contains("ok"), "{}", stderr(&o));
+    // Success is not an error: PowerShell shows a program's stderr in red.
+    assert!(String::from_utf8_lossy(&o.stdout).contains("config ok"), "{o:?}");
+    assert!(o.stderr.is_empty(), "{}", stderr(&o));
 }
 
 #[test]

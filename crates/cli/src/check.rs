@@ -12,7 +12,7 @@ pub fn run(args: &[&str]) -> Result<(), String> {
         Err(d) => vec![d],
     };
     if diags.is_empty() {
-        eprintln!("wr: config ok ({})", path.display());
+        println!("wr: config ok ({})", path.display());
         return Ok(());
     }
     for d in &diags {
