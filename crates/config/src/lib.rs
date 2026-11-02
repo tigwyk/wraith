@@ -1,4 +1,6 @@
 //! Wraith config: Ghostty `key = value` syntax and key names (spec §7).
+pub mod edit;
+pub mod settings;
 mod keybind;
 mod keys;
 mod parse;
@@ -245,16 +247,16 @@ pub fn parse_str(src: &str, file: &Path, themes_dir: &Path) -> (Config, Vec<Diag
     (c, diags)
 }
 
-struct Entry {
-    file: PathBuf,
-    line: usize,
-    key: String,
+pub(crate) struct Entry {
+    pub(crate) file: PathBuf,
+    pub(crate) line: usize,
+    pub(crate) key: String,
     value: String,
 }
 
 const MAX_INCLUDE_DEPTH: usize = 8;
 
-fn collect(src: &str, file: &Path, stack: &mut Vec<PathBuf>, out: &mut Vec<Entry>, diags: &mut Vec<Diagnostic>) {
+pub(crate) fn collect(src: &str, file: &Path, stack: &mut Vec<PathBuf>, out: &mut Vec<Entry>, diags: &mut Vec<Diagnostic>) {
     for line in parse::lines(src) {
         let line = match line {
             Ok(l) => l,
@@ -291,7 +293,7 @@ fn collect(src: &str, file: &Path, stack: &mut Vec<PathBuf>, out: &mut Vec<Entry
     }
 }
 
-fn canon(p: &Path) -> PathBuf {
+pub(crate) fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 

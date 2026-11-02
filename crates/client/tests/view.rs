@@ -875,3 +875,21 @@ fn focus_local_targets_actions_before_the_server_answers() {
     assert_eq!(v.focused(), Some(1));
     assert!(v.pane_click(1).is_empty(), "already focused locally");
 }
+
+#[test]
+fn open_settings_asks_for_the_panel() {
+    let mut v = WindowView::new(geom(), Duration::from_millis(500));
+    assert_eq!(v.action(Action::OpenSettings, &ctx()).ui, Some(Ui::Settings));
+}
+
+#[test]
+fn open_settings_panel_takes_hits() {
+    use wraith_client::settings::{RowState, SettingsView, Sources};
+    let mut v = WindowView::new(geom(), Duration::from_millis(500));
+    let rows = wraith_config::settings::all().iter().map(|_| RowState { origin: wraith_config::edit::Origin::Default, warning: None }).collect();
+    v.open_settings(SettingsView::new(Sources { themes: vec![], fonts: vec![], profiles: vec![] }, rows));
+    let l = v.settings_layout().unwrap();
+    assert!(matches!(v.hit(l.panel.x + 1, l.panel.y + 1), Hit::Settings(_)));
+    v.close_settings();
+    assert!(v.settings().is_none() && v.settings_layout().is_none());
+}

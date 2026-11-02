@@ -153,3 +153,11 @@ fn goto_tab_zero_is_rejected() {
     assert!(parse_keybind("ctrl+x=goto_tab:300").is_err());
     assert!(parse_keybind("ctrl+x=new_split:sideways").is_err());
 }
+
+#[test]
+fn ctrl_comma_opens_settings() {
+    let c = wraith_config::Config::default();
+    let kb = c.keybinds.iter().find(|k| k.action == Action::OpenSettings).expect("default binding");
+    assert_eq!(kb.trigger, parse_keybind("ctrl+comma=open_settings").unwrap().trigger);
+    assert!(wraith_config::all_actions().iter().any(|(a, n)| *a == Action::OpenSettings && *n == "open_settings"));
+}

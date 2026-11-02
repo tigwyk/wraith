@@ -79,6 +79,11 @@ Saving the file applies it at once. A bad line keeps its default and shows a
 toast naming the file and line. `wr config check` reports every error and
 exits 1 if there are any.
 
+`Ctrl+,` (or the gear in the tab bar) opens Settings: theme, font, opacity,
+cursor, padding, behaviour and agent notifications. Each change shows at once
+and rewrites only that key's line in the file. Keybinds, workspaces, profiles
+and the other rarer keys stay in the text file, one click away.
+
 ### Keys
 
 | Keys | Action |
@@ -88,6 +93,7 @@ exits 1 if there are any.
 | `Alt+Shift+Plus` / `Alt+Shift+Minus` | Split right / split down |
 | `Alt+Arrow` | Move focus between panes |
 | `Ctrl+Shift+P` | Command palette (every action, with its key) |
+| `Ctrl+,` | Settings |
 | `Ctrl+Shift+O` | Workspace picker |
 | `Ctrl+Shift+F` | Find in scrollback |
 | `Ctrl+Shift+B` | Show or hide the sidebar |
@@ -146,4 +152,5 @@ Wraith is the author's daily driver and is still young.
 |  5  | Scrollback search and persistence, packaging                           |   ✅   |
 |  6  | Hover feedback and motion polish                                       |   ✅   |
 |  7  | `wr events`, `wr config check`, right-click menu, inline IME           |   ✅   |
-|  –  | Drop-down (quake) window, settings GUI, auto-update, ARM64             |   ❌   |
+|  –  | Settings GUI                                                           |   ✅   |
+|  –  | Drop-down (quake) window, auto-update, ARM64                           |   ❌   |

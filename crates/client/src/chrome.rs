@@ -36,6 +36,12 @@ pub fn tab_rects(count: usize, bar: Rect, cell_w: i32, reserved_right: i32) -> (
     (tabs, Rect { x: bar.x + count as i32 * w, y: bar.y, w: button.min(bar.w), h: bar.h })
 }
 
+/// The settings button: 3 cells wide, against the caption buttons' left edge.
+pub fn gear_rect(bar: Rect, caption_w: i32, cell_w: i32) -> Rect {
+    let w = (3 * cell_w).min((bar.w - caption_w).max(0));
+    Rect { x: bar.x + bar.w - caption_w - w, y: bar.y, w, h: bar.h }
+}
+
 /// The close button at the right end of a tab.
 pub fn close_rect(tab: Rect, cell_w: i32) -> Rect {
     let w = (2 * cell_w).min(tab.w);
@@ -47,6 +53,8 @@ pub enum Hit {
     Tab(TabId),
     TabClose(TabId),
     NewTab,
+    /// The settings button left of the caption buttons.
+    Gear,
     Workspace(WorkspaceId),
     NewWorkspace,
     /// A row of the sidebar's Agents list.
@@ -62,6 +70,8 @@ pub enum Hit {
     PaletteRow(usize),
     /// Inside the open palette, but not on a row.
     Palette,
+    /// A part of the open settings panel.
+    Settings(crate::settings::SettingsHit),
     /// Empty tab bar area (drags the window).
     Bar,
     None,
@@ -77,6 +87,7 @@ pub struct HitCtx<'a> {
     pub sidebar_tabs: &'a [(TabId, Rect)],
     pub panes: &'a [(PaneId, Rect)],
     pub dividers: &'a [Divider],
+    pub gear: Rect,
     pub cell_w: i32,
 }
 
@@ -94,6 +105,9 @@ pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
         return if c.new_workspace.contains(x, y) { Hit::NewWorkspace } else { Hit::Sidebar };
     }
     if c.regions.tabbar.contains(x, y) {
+        if c.gear.contains(x, y) {
+            return Hit::Gear;
+        }
         if let Some((id, r)) = c.tabs.iter().find(|(_, r)| r.contains(x, y)) {
             return if close_rect(*r, c.cell_w).contains(x, y) { Hit::TabClose(*id) } else { Hit::Tab(*id) };
         }
@@ -142,6 +156,7 @@ pub fn tooltip_for(hit: &Hit, keybinds: &[wraith_config::Keybind]) -> Option<Str
         Hit::NewTab => ("New tab", Action::NewTab),
         Hit::TabClose(_) => ("Close tab", Action::CloseTab),
         Hit::NewWorkspace => ("New workspace", Action::NewWorkspace),
+        Hit::Gear => ("Settings", Action::OpenSettings),
         _ => return None,
     };
     Some(match keybinds.iter().find(|k| k.action == action) {

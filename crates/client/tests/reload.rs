@@ -53,3 +53,20 @@ fn font_size_actions_clamp() {
     assert_eq!(clamp_font_size(100.0), 72.0);
     assert_eq!(clamp_font_size(12.5), 12.5);
 }
+
+#[test]
+fn row_states_match_diagnostics_by_line() {
+    use wraith_config::edit::Origin;
+    use wraith_config::settings::all;
+    let dir = std::env::temp_dir().join(format!("wraith-rows-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("config");
+    std::fs::write(&p, "font-size = abc\ntheme = \n").unwrap();
+    let d = vec![wraith_config::Diagnostic { file: p.clone(), line: 1, message: "invalid value `abc`".into() }];
+    let rows = wraith_client::reload::row_states(&p, &d);
+    let i = all().iter().position(|s| s.key == "font-size").unwrap();
+    assert_eq!(rows.len(), all().len());
+    assert_eq!(rows[i].origin, Origin::Here { line: 1 });
+    assert_eq!(rows[i].warning.as_deref(), Some("invalid value `abc`"));
+    assert!(rows.iter().enumerate().all(|(j, r)| j == i || r.warning.is_none()));
+}

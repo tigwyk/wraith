@@ -60,6 +60,8 @@ pub(crate) struct State {
     changed_at: Arc<Mutex<Option<Instant>>>,
     path: PathBuf,
     toasts: Toasts,
+    /// Diagnostics of the last load, for the settings panel's warning marks.
+    pub(crate) diags: Vec<Diagnostic>,
     toast_until: Option<Instant>,
     overlay: bool,
     last_input: Option<Instant>,
@@ -93,6 +95,7 @@ pub(crate) fn start(app: &mut App, path: &Path, diags: Vec<Diagnostic>) {
         Err(e) => tracing::warn!("config watcher: {e}"),
     }
     toast(app, "config", format_diagnostics(&diags));
+    app.rs.diags = diags;
 }
 
 fn toast(app: &mut App, kind: &'static str, text: Option<String>) {
@@ -170,12 +173,34 @@ pub(crate) fn presented(app: &mut App) {
     app.stats = Some(text);
 }
 
-fn reload(app: &mut App) {
+pub(crate) fn path(app: &App) -> &Path {
+    &app.rs.path
+}
+
+/// Per settings row: where its value comes from, and the diagnostic on its line in this file.
+pub fn row_states(path: &Path, diags: &[Diagnostic]) -> Vec<crate::settings::RowState> {
+    use wraith_config::settings::all;
+    let keys: Vec<_> = all().iter().map(|s| (s.key, s.which)).collect();
+    wraith_config::edit::origins(path, &keys)
+        .into_iter()
+        .map(|origin| {
+            let warning = match origin {
+                wraith_config::edit::Origin::Here { line } => diags.iter().find(|d| d.file == path && d.line == line).map(|d| d.message.clone()),
+                _ => None,
+            };
+            crate::settings::RowState { origin, warning }
+        })
+        .collect()
+}
+
+pub(crate) fn reload(app: &mut App) {
     match wraith_config::load_checked(&app.rs.path, &themes_dir()) {
         Ok((new, d)) => {
             let (new, msg) = log_and_format(new, &d);
             apply_config(app, new);
             toast(app, "config", msg);
+            app.rs.diags = d;
+            app.settings_reloaded();
         }
         // Unreadable (e.g. caught mid-save): keep running with the current config.
         Err(d) => toast(app, "config", format_diagnostics(&[d])),
@@ -183,7 +208,7 @@ fn reload(app: &mut App) {
 }
 
 /// Apply a freshly loaded config to the running app.
-fn apply_config(app: &mut App, new: Config) {
+pub(crate) fn apply_config(app: &mut App, new: Config) {
     let old = std::mem::replace(&mut app.config, new);
     if app.config.keybinds != old.keybinds {
         app.matcher = KeybindMatcher::new(&app.config.keybinds);

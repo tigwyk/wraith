@@ -1,6 +1,6 @@
 # Wraith settings GUI — design
 
-Status: design approved in brainstorming (2026-11-02); pending written-spec review
+Status: implemented (2026-11-02); see `docs/settings-acceptance.md`
 Parent spec: `docs/superpowers/specs/2026-11-01-wraith-terminal-design.md` (§7 configuration; §10 backlog "settings GUI")
 
 ## 1. Intent

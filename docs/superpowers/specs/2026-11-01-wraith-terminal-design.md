@@ -38,7 +38,7 @@ Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 
 ## 2. Non-goals for v1
 
-Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting processes across a *server* restart (scrollback persistence was added in M5: history is saved on `server-stop` and restored above a fresh shell). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI (backlog).
+Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting processes across a *server* restart (scrollback persistence was added in M5: history is saved on `server-stop` and restored above a fresh shell). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI for every key (the built-in panel covers the common ones; see `2026-11-02-settings-gui-design.md`).
 
 ## 3. Architecture
 
@@ -281,7 +281,8 @@ Each milestone gets its own implementation plan.
 | M5 | Scrollback search (find bar, `ctrl+shift+f`), scrollback persistence across `server-stop`, local packaging (dist zip, per-user install script, winget manifest validated but not submitted). | Done; see `docs/m5-acceptance.md`. |
 | M6 | Hover feedback and polish: every clickable piece of chrome reacts to hover and press, the pointer shape follows the target (resize arrows on dividers), the command palette takes the mouse, tooltips name icon-only buttons and their keys, accents dim in an inactive window, and state changes move briefly (tab underline and workspace bar slide, floating sidebar slides in, palette and find bar fade in, new attention dots flare once). Motion follows Windows' "Show animations" setting and never costs input latency (§6.3). | Done; see `docs/m6-acceptance.md`. |
 | M7 | Spec gaps from the 2026-11-02 review: `wr config check`, `wr events --json`, Retry when the server won't start, the right-click menu (`right-click-action = menu`), inline IME composition, `agent-tab-pulse`, and this spec brought up to date. | Done; see `docs/m7-acceptance.md`. |
-| Backlog | Quake/drop-down window, settings GUI, auto-update, ARM64. | Unscheduled. |
+| Settings | A settings panel drawn in the window (`ctrl+comma`, the gear): the common keys, live, edited in place in the config file. Spec: `2026-11-02-settings-gui-design.md`. | Done; see `docs/settings-acceptance.md`. |
+| Backlog | Quake/drop-down window, auto-update, ARM64. | Unscheduled. |
 
 ## 11. Known risks
 

@@ -13,6 +13,7 @@ pub mod motion;
 pub mod paint;
 pub mod palette;
 pub mod selection;
+pub mod settings;
 pub mod sprite;
 pub mod titlebar;
 pub mod view;

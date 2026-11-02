@@ -1,4 +1,4 @@
-use wraith_client::chrome::{Hit, HitCtx, close_rect, hit, regions, tab_rects};
+use wraith_client::chrome::{Hit, HitCtx, close_rect, gear_rect, hit, regions, tab_rects, tooltip_for};
 use wraith_proto::model::{Axis, Divider, Rect};
 
 const CELL: (i32, i32) = (8, 16);
@@ -53,7 +53,7 @@ fn tab_rects_fit_bar_with_new_tab_button() {
 static WS: [(u64, Rect); 1] = [(7, Rect { x: 0, y: 40, w: 192, h: 20 })];
 
 fn ctx<'a>(g: &'a wraith_client::chrome::Regions, tabs: &'a [(u64, Rect)], panes: &'a [(u64, Rect)], divs: &'a [Divider]) -> HitCtx<'a> {
-    HitCtx { regions: g, tabs, new_tab: r(392, 0, 24, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), agents: &[], sidebar_tabs: &[], panes, dividers: divs, cell_w: 8 }
+    HitCtx { regions: g, tabs, new_tab: r(392, 0, 24, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), agents: &[], sidebar_tabs: &[], panes, dividers: divs, gear: r(950, 0, 24, 26), cell_w: 8 }
 }
 
 #[test]
@@ -198,4 +198,19 @@ fn context_menu_order_and_separators() {
             Some(CloseSurface),
         ]
     );
+}
+
+#[test]
+fn gear_sits_left_of_the_captions_and_is_hit() {
+    let bar = r(200, 0, 1000, 26);
+    assert_eq!(gear_rect(bar, 138, 8), r(200 + 1000 - 138 - 24, 0, 24, 26));
+    let g = regions((1000, 600), CELL, Some(24), 26);
+    let c = ctx(&g, &[], &[], &[]);
+    assert_eq!(hit(&c, 960, 10), Hit::Gear);
+}
+
+#[test]
+fn gear_tooltip_names_the_binding() {
+    let binds = wraith_config::Config::default().keybinds;
+    assert_eq!(tooltip_for(&Hit::Gear, &binds).as_deref(), Some("Settings  Ctrl+,"));
 }

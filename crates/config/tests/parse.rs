@@ -269,3 +269,13 @@ fn agent_tab_pulse_parses() {
     assert!(diags.is_empty(), "{diags:?}");
     assert!(c.agent_tab_pulse);
 }
+
+#[test]
+fn agent_notify_none_turns_all_off() {
+    let (c, d) = parse_str("agent-notify = none\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    let n = c.agent_notify;
+    assert!(!n.toast && !n.flash && !n.badge && !n.sound);
+    let (_, d) = parse_str("agent-notify = none,toast\n", p(), &themes());
+    assert_eq!(d.len(), 1, "none mixes with nothing");
+}
