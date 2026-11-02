@@ -176,6 +176,7 @@ pub struct Motion {
     pub palette: Fade,
     pub find: Fade,
     pub toast: Fade,
+    pub settings: Fade,
     hover: std::collections::HashMap<crate::chrome::Hit, Fade>,
     pulses: std::collections::HashMap<Dot, Pulse>,
     /// Dots lit in the model; `None` until the first model arrives (those dots light without a pulse).

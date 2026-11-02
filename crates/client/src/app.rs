@@ -35,6 +35,7 @@ use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
 use crate::palette::Mode;
 use crate::view::{ExitOut, Geometry, Out, SpawnCtx, Ui, WindowView};
+use crate::settings::{Edit, SettingsHit, SettingsView, Sources};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
@@ -209,6 +210,17 @@ fn named_key(n: &str) -> Option<KeyCode> {
     })
 }
 
+/// The program Windows opens `.txt` files with.
+fn txt_editor() -> Option<String> {
+    use windows::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW};
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    let pw = windows::core::PWSTR(buf.as_mut_ptr());
+    unsafe { AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_EXECUTABLE, windows::core::w!(".txt"), windows::core::w!("open"), Some(pw), &mut len) }.ok().ok()?;
+    let s = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)]);
+    (!s.is_empty()).then_some(s)
+}
+
 /// Bundled themes ship beside the exe; fall back to the repo copy for `cargo run`.
 // shortcut: repo fallback until the installer (M5) lays out themes/ next to wraith.exe.
 pub fn themes_dir() -> PathBuf {
@@ -285,6 +297,8 @@ pub(crate) struct App {
     notifier: crate::notify::Notifier,
     /// Chrome motion: slides, fades and pulses, evaluated at draw time.
     motion: Motion,
+    /// The config from before a settings list started previewing; Esc puts it back.
+    preview_base: Option<Config>,
 }
 
 impl App {
@@ -392,7 +406,15 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) {
-        if let Some(out) = self.view.palette_key(&ev, &self.spawn_ctx).or_else(|| self.view.find_key(&ev)) {
+        if let Some(out) = self.view.palette_key(&ev, &self.spawn_ctx) {
+            self.run_out(out);
+            self.dirty = true;
+            return;
+        }
+        if self.view.settings().is_some() {
+            return self.settings_key(ev);
+        }
+        if let Some(out) = self.view.find_key(&ev) {
             self.run_out(out);
             self.dirty = true;
             return;
@@ -404,6 +426,108 @@ impl App {
             Match::Action(a) => self.action(a),
             Match::Pending => {}
             Match::None(keys) => keys.into_iter().for_each(|k| self.send_key(k)),
+        }
+    }
+
+    /// While the panel is open it takes every key; of the bound actions only the panel's own and the
+    /// palette's still run.
+    fn settings_key(&mut self, ev: KeyEvent) {
+        self.dirty = true;
+        if ev.action != wraith_proto::KeyAction::Release && ev.mods.has(Mods::CTRL) {
+            if let Match::Action(a @ (Action::OpenSettings | Action::CommandPalette)) = self.matcher.feed(&ev, Instant::now()) {
+                self.action(a);
+            }
+            return;
+        }
+        let edit = self.view.settings_mut().and_then(|s| s.key(&ev, &self.config));
+        if let Some(e) = edit {
+            self.apply_edit(e);
+        }
+    }
+
+    fn toggle_settings(&mut self) {
+        if self.view.settings().is_some() {
+            return self.close_settings();
+        }
+        let mut themes: Vec<String> =
+            std::fs::read_dir(themes_dir()).map(|d| d.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect()).unwrap_or_default();
+        themes.sort();
+        let sources = Sources { themes, fonts: crate::font::monospace_families(), profiles: self.spawn_ctx.profiles.iter().map(|p| p.name.clone()).collect() };
+        let rows = crate::reload::row_states(crate::reload::path(self), &self.rs.diags);
+        self.view.open_settings(SettingsView::new(sources, rows));
+        self.dirty = true;
+    }
+
+    fn close_settings(&mut self) {
+        self.revert_preview();
+        self.view.close_settings();
+        self.dirty = true;
+    }
+
+    fn revert_preview(&mut self) {
+        if let Some(c) = self.preview_base.take() {
+            crate::reload::apply_config(self, c);
+        }
+    }
+
+    /// After any reload, the open panel's read-only rows and warning marks follow the file.
+    pub(crate) fn settings_reloaded(&mut self) {
+        if self.view.settings().is_some() {
+            let rows = crate::reload::row_states(crate::reload::path(self), &self.rs.diags);
+            if let Some(s) = self.view.settings_mut() {
+                s.set_rows(rows);
+            }
+        }
+    }
+
+    fn apply_edit(&mut self, e: Edit) {
+        use wraith_config::edit;
+        let path = crate::reload::path(self).to_path_buf();
+        match e {
+            Edit::Set { key, value, which } => self.save(&path, |s| edit::set(s, key, &value, which)),
+            Edit::Unset { key } => self.save(&path, |s| edit::unset(s, key)),
+            Edit::Preview { key, value, which } => match edit::read(&path) {
+                // The parser stays the only thing that interprets values, previews included.
+                Ok(src) => {
+                    let (c, _) = wraith_config::parse_str(&edit::set(&src, key, &value, which), &path, &themes_dir());
+                    if self.preview_base.is_none() {
+                        self.preview_base = Some(self.config.clone());
+                    }
+                    crate::reload::apply_config(self, c);
+                }
+                Err(e) => crate::reload::toast_text(self, "settings", format!("Couldn't read settings: {e}")),
+            },
+            Edit::Revert => self.revert_preview(),
+            Edit::Close => self.close_settings(),
+            Edit::OpenFile(file) => self.open_in_editor(file.unwrap_or(path)),
+        }
+        self.dirty = true;
+    }
+
+    fn save(&mut self, path: &std::path::Path, f: impl FnOnce(&str) -> String) {
+        match wraith_config::edit::write(path, f) {
+            Ok(()) => {
+                self.preview_base = None;
+                // Apply now rather than after the watcher's debounce; its reload then changes nothing.
+                crate::reload::reload(self);
+            }
+            Err(e) => {
+                self.revert_preview();
+                crate::reload::toast_text(self, "settings", format!("Couldn't save settings: {e}"));
+            }
+        }
+    }
+
+    /// Open `file` in the program registered for `.txt` (the config has no extension), else Notepad.
+    fn open_in_editor(&mut self, file: PathBuf) {
+        if !file.exists()
+            && let Err(e) = wraith_config::edit::write(&file, str::to_string)
+        {
+            return crate::reload::toast_text(self, "settings", format!("Couldn't create {}: {e}", file.display()));
+        }
+        let spawned = txt_editor().is_some_and(|exe| std::process::Command::new(exe).arg(&file).spawn().is_ok());
+        if !spawned && let Err(e) = std::process::Command::new("notepad.exe").arg(&file).spawn() {
+            tracing::warn!("open {}: {e}", file.display());
         }
     }
 
@@ -448,7 +572,7 @@ impl App {
             Some(Ui::Palette) => self.view.open_palette(Mode::Palette, &self.spawn_ctx),
             Some(Ui::Picker) => self.view.open_palette(Mode::Picker, &self.spawn_ctx),
             Some(Ui::MoveTab) => self.view.open_palette(Mode::MoveTab, &self.spawn_ctx),
-            Some(Ui::Settings) => {}
+            Some(Ui::Settings) => self.toggle_settings(),
             None => {}
         }
     }
@@ -529,10 +653,20 @@ impl App {
             unsafe {
                 let _ = ScreenToClient(self.win.hwnd(), &mut pt);
             }
-            if matches!(self.view.hit(pt.x, pt.y), Hit::PaletteRow(_) | Hit::Palette) {
-                self.view.scroll_palette(-n);
-                self.dirty = true;
-                return;
+            match self.view.hit(pt.x, pt.y) {
+                Hit::PaletteRow(_) | Hit::Palette => {
+                    self.view.scroll_palette(-n);
+                    self.dirty = true;
+                    return;
+                }
+                Hit::Settings(_) => {
+                    if let Some(s) = self.view.settings_mut() {
+                        s.scroll(-n);
+                    }
+                    self.dirty = true;
+                    return;
+                }
+                _ => {}
             }
             let pane = match self.view.hit(pt.x, pt.y) {
                 Hit::Pane(p) => Some(p),
@@ -587,6 +721,24 @@ impl App {
             self.dirty = true;
             return self.run_out(out);
         }
+        // A press while the settings panel is open: its parts act; anywhere else, the gear included,
+        // closes it (and the press goes no further).
+        if msg == WM_LBUTTONDOWN && self.view.settings().is_some() {
+            self.dirty = true;
+            match hit {
+                Hit::Settings(h) => {
+                    if h != SettingsHit::Panel {
+                        self.view.press(hit.clone());
+                    }
+                    let edit = self.view.settings_mut().and_then(|s| s.click(&h, &self.config));
+                    if let Some(e) = edit {
+                        self.apply_edit(e);
+                    }
+                }
+                _ => self.close_settings(),
+            }
+            return;
+        }
         if msg == WM_LBUTTONDOWN {
             if !matches!(hit, Hit::Pane(_) | Hit::Divider(_) | Hit::Sidebar | Hit::Bar | Hit::None | Hit::PaletteRow(_) | Hit::Palette) {
                 self.view.press(hit.clone());
@@ -598,6 +750,7 @@ impl App {
                     return self.send_all(msgs);
                 }
                 Hit::NewWorkspace => return self.action(Action::NewWorkspace),
+                Hit::Gear => return self.toggle_settings(),
                 Hit::SidebarTab(t) => {
                     let msgs = self.view.tab_click(t);
                     return self.send_all(msgs);
@@ -805,6 +958,8 @@ impl App {
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
+                        } else if let Some(s) = self.view.settings_mut() {
+                            s.text(&t);
                         } else if let Some(out) = self.view.find_text(&t) {
                             self.run_out(out);
                             self.dirty = true;
@@ -1204,6 +1359,7 @@ impl App {
         let preedit = self.ime.preedit().to_string();
         if !preedit.is_empty()
             && self.view.palette().is_none()
+            && self.view.settings().is_none()
             && self.view.find().is_none()
             && let Some(id) = focused_pane
             && let Some((_, rect)) = panes.iter().find(|(p, _)| *p == id)
@@ -1310,6 +1466,12 @@ impl App {
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        let gear = self.view.gear_rect();
+        if let Some(c) = wash(&Hit::Gear) {
+            p.rect(gear, c, 1.0);
+        }
+        let gc = if self.view.settings().is_some() { accent } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::Gear)) };
+        p.text(&self.gpu, &mut self.atlas, &self.fonts, gear.x + (gear.w - m.w as i32) / 2, ty, "⚙", gc, 1.0);
         // Caption buttons, drawn like Windows 11's: a light wash on hover, red behind close.
         let glyph = (10 * self.win.dpi() / 96) as i32;
         let maximized = self.win.is_maximized();
@@ -1459,6 +1621,91 @@ impl App {
         }
         let n = p.q.len();
         crate::paint::shift(&mut p.q[find_start..n], 0.0, (8.0 * (1.0 - find_a)).round(), find_a);
+        // Settings panel, under the palette. It fades in, rising 8 px; closed, it draws nothing.
+        let set_start = p.q.len();
+        let set_a = self.motion.overlay(|m| &mut m.settings, self.view.settings().is_some(), now);
+        if let (Some(s), Some(l)) = (self.view.settings(), self.view.settings_layout()) {
+            use wraith_config::edit::Origin;
+            use wraith_config::settings::{Kind, all};
+            let (cw, panel) = (m.w as i32, l.panel);
+            let defaults = Config::default();
+            let mid = |r: Rect| r.y + (r.h - m.h as i32) / 2;
+            p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, accent, 1.0);
+            p.rect(panel, col.bar_bg, 1.0);
+            for &(pg, r) in &l.pages {
+                let on = pg == s.page;
+                if on {
+                    p.rect(r, col.tab_active_bg, 1.0);
+                    p.rect(Rect { w: 2, ..r }, accent, 1.0);
+                } else if let Some(w) = wash(&Hit::Settings(SettingsHit::Page(pg))) {
+                    p.rect(r, w, 1.0);
+                }
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, mid(r), pg.label(), if on { col.bar_fg } else { col.bar_fg_dim }, 1.0);
+            }
+            for &(i, r) in &l.rows {
+                let st = &all()[i];
+                let row = &s.rows()[i];
+                let ro = s.read_only(i);
+                if i == s.focus {
+                    p.rect(r, chrome::mix(col.bar_bg, col.bar_fg, 0.08), 1.0);
+                    p.rect(Rect { w: 2, ..r }, accent, 1.0);
+                } else if let Some(w) = wash(&Hit::Settings(SettingsHit::Row(i))) {
+                    p.rect(r, w, 1.0);
+                }
+                let ty = mid(r);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, st.label, col.bar_fg, 1.0);
+                let reset_w = (2 * cw).min(r.w);
+                let ctl_w = (24 * cw).min(r.w / 2);
+                let ctl_x = r.x + r.w - reset_w - ctl_w;
+                let cur = (st.get)(c);
+                let text = match (&row.origin, s.list().filter(|l| l.row == i)) {
+                    (Origin::Included { file, .. }, _) => {
+                        format!("Set in {} · Open", file.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()))
+                    }
+                    (_, Some(list)) => format!("{}{preedit}▏", list.query),
+                    _ => crate::settings::control_text(st, &cur, s.time().filter(|t| t.row == i)),
+                };
+                let room = (ctl_w / cw).max(0) as usize;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, ctl_x, ty, &truncate_cells(&text, room), if ro { col.bar_fg_dim } else { col.bar_fg }, 1.0);
+                if let Kind::Slider { min, max, .. } = st.kind
+                    && !ro
+                    && let Ok(v) = cur.parse::<f32>()
+                {
+                    let bar = Rect { x: ctl_x + 2 * cw, y: r.y + r.h - 4, w: (ctl_w - 4 * cw).max(0), h: 2 };
+                    p.rect(bar, col.divider, 1.0);
+                    p.rect(Rect { w: (bar.w as f32 * ((v - min) / (max - min)).clamp(0.0, 1.0)) as i32, ..bar }, accent, 1.0);
+                }
+                if !ro && cur != (st.get)(&defaults) {
+                    let dot = if wash(&Hit::Settings(SettingsHit::Reset(i))).is_some() { col.bar_fg } else { accent };
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - reset_w + (reset_w - cw) / 2, ty, "●", dot, 1.0);
+                }
+                if row.warning.is_some() {
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, ctl_x - 2 * cw, ty, "⚠", (0xe5, 0xc0, 0x7b), 1.0);
+                }
+            }
+            let f = l.open_file;
+            if let Some(w) = wash(&Hit::Settings(SettingsHit::OpenFile)) {
+                p.rect(f, w, 1.0);
+            }
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, f.x + pad_x, mid(f), "Open config file", col.bar_fg_dim, 1.0);
+            if let (Some(list), Some((drop, items))) = (s.list(), &l.list) {
+                let names = list.items();
+                p.rect(Rect { x: drop.x - 1, y: drop.y - 1, w: drop.w + 2, h: drop.h + 2 }, accent, 1.0);
+                p.rect(*drop, col.bar_bg, 1.0);
+                for &(k, r) in items {
+                    if k == list.selected {
+                        p.rect(r, col.tab_active_bg, 1.0);
+                        p.rect(Rect { w: 2, ..r }, accent, 1.0);
+                    } else if let Some(w) = wash(&Hit::Settings(SettingsHit::ListItem(k))) {
+                        p.rect(r, w, 1.0);
+                    }
+                    let name = names.get(k).copied().unwrap_or_default();
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, mid(r), &truncate_cells(name, ((r.w - 2 * pad_x) / cw).max(0) as usize), col.bar_fg, 1.0);
+                }
+            }
+        }
+        let n = p.q.len();
+        crate::paint::shift(&mut p.q[set_start..n], 0.0, (8.0 * (1.0 - set_a)).round(), set_a);
         // Command palette / picker, centered over everything. It fades in, rising 8 px.
         let pal_start = p.q.len();
         let pal_a = self.motion.overlay(|m| &mut m.palette, self.view.palette().is_some(), now);
@@ -1529,10 +1776,19 @@ impl App {
                     Hit::NewTab => plus,
                     Hit::TabClose(t) => chrome::close_rect(tabs.iter().find(|(id, _)| id == t)?.1, m.w as i32),
                     Hit::NewWorkspace => self.view.workspace_rects().1,
+                    Hit::Gear => self.view.gear_rect(),
                     _ => return None,
                 };
                 Some((text, r))
             });
+            // A settings row the parser complained about shows the complaint.
+            let warning = match self.view.hovered() {
+                Some(Hit::Settings(SettingsHit::Row(i))) => self.view.settings().and_then(|s| s.rows()[*i].warning.clone()).zip(
+                    self.view.settings_layout().and_then(|l| l.rows.iter().find(|(j, _)| j == i).map(|(_, r)| *r)),
+                ),
+                _ => None,
+            };
+            let button = button.or(warning);
             if let Some((text, r)) = caption.or(button) {
                 let w = crate::paint::text_width(&self.fonts, &text) + 2 * pad_x;
                 let h = m.h as i32 + 6;
@@ -1772,6 +2028,7 @@ pub fn run() -> Result<()> {
         caption_down: None,
         notifier,
         motion: Motion::new(crate::window::animations_enabled()),
+        preview_base: None,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
     app.borrow().win.show();

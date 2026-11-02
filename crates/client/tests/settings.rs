@@ -280,3 +280,16 @@ fn page_click_switches_and_wheel_moves_focus() {
     v.scroll(-9);
     assert_eq!(v.focus, idx("agent-notify"));
 }
+
+#[test]
+fn control_text_shows_values() {
+    use wraith_client::settings::control_text;
+    let s = |k: &str| &all()[idx(k)];
+    assert_eq!(control_text(s("font-size"), "12", None), "‹ 12 ›");
+    assert_eq!(control_text(s("close-on-exit"), "never", None), "‹ keep open ›");
+    assert_eq!(control_text(s("copy-on-select"), "true", None), "● on");
+    assert_eq!(control_text(s("theme"), "", None), "(default) ▾");
+    assert_eq!(control_text(s("agent-notify"), "toast,sound", None), "■toast□flash□badge■sound");
+    assert_eq!(control_text(s("agent-notify-quiet"), "22:00-07:00", None), "22:00 – 07:00");
+    assert_eq!(control_text(s("agent-notify-quiet"), "", None), "○ off");
+}

@@ -486,3 +486,22 @@ impl SettingsView {
         l.panel.contains(x, y).then_some(SettingsHit::Panel)
     }
 }
+
+/// The control's text for a row showing `cur`: `‹ 12 ›`, `on`, `■toast□flash…`, `22:00–07:00▏`.
+pub fn control_text(s: &Setting, cur: &str, time: Option<&TimeEdit>) -> String {
+    match s.kind {
+        Kind::Toggle => (if cur == "true" { "● on" } else { "○ off" }).into(),
+        Kind::Choice(cs) => format!("‹ {} ›", cs.iter().find(|(v, _)| *v == cur).map_or(cur, |(_, l)| l)),
+        Kind::Stepper { .. } | Kind::Slider { .. } => format!("‹ {cur} ›"),
+        Kind::List(_) => format!("{} ▾", if cur.is_empty() { "(default)" } else { cur }),
+        Kind::NotifySet => NOTIFY_WAYS.iter().map(|w| format!("{}{w}", if cur.split(',').any(|c| c == *w) { '■' } else { '□' })).collect(),
+        Kind::QuietHours => match time {
+            Some(t) => {
+                let caret = |f: u8| if t.field == f { "▏" } else { "" };
+                format!("{}{} – {}{}{}", t.start, caret(0), t.end, caret(1), if t.invalid { " ⚠" } else { "" })
+            }
+            None if cur.is_empty() => "○ off".into(),
+            None => cur.replace('-', " – "),
+        },
+    }
+}
