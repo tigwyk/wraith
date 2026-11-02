@@ -1025,6 +1025,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "serde_json",
+ "wraith-config",
  "wraith-ipc",
  "wraith-proto",
  "wraith-server",

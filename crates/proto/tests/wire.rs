@@ -62,6 +62,7 @@ fn roundtrip_every_message() {
     rt(ClientMsg::Cmd { pane: 7, cmd: PaneCmd::Reattach });
     rt(ClientMsg::Kill { pane: 7 });
     rt(ClientMsg::List);
+    rt(ClientMsg::Watch);
     rt(ClientMsg::ServerStop);
     rt(ServerMsg::Welcome { server_version: "0.1.0".into() });
     rt(ServerMsg::VersionMismatch { server_version: "0.0.9".into() });

@@ -150,6 +150,46 @@ pub fn tooltip_for(hit: &Hit, keybinds: &[wraith_config::Keybind]) -> Option<Str
     })
 }
 
+/// One row of the right-click menu; `action: None` is a separator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuItem {
+    pub action: Option<wraith_config::Action>,
+    pub label: String,
+    pub enabled: bool,
+}
+
+/// The pane's right-click menu (`right-click-action = menu`). A bound action's key follows a tab,
+/// which Win32 menus right-align.
+pub fn context_menu(has_selection: bool, keybinds: &[wraith_config::Keybind]) -> Vec<MenuItem> {
+    use wraith_config::Action::*;
+    use wraith_proto::model::Dir;
+    let rows = [
+        Some((Copy, "Copy")),
+        Some((Paste, "Paste")),
+        None,
+        Some((NewSplit(Dir::Right), "Split right")),
+        Some((NewSplit(Dir::Down), "Split down")),
+        None,
+        Some((NewTab, "New tab")),
+        Some((CommandPalette, "Command palette")),
+        None,
+        Some((CloseSurface, "Close pane")),
+    ];
+    rows.into_iter()
+        .map(|row| match row {
+            None => MenuItem { action: None, label: String::new(), enabled: false },
+            Some((a, name)) => MenuItem {
+                action: Some(a),
+                label: match keybinds.iter().find(|k| k.action == a) {
+                    Some(k) => format!("{name}\t{}", crate::palette::trigger_text(k)),
+                    None => name.to_string(),
+                },
+                enabled: a != Copy || has_selection,
+            },
+        })
+        .collect()
+}
+
 type Rgb = (u8, u8, u8);
 
 /// `a` blended `t` of the way toward `b`.

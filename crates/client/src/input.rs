@@ -215,16 +215,65 @@ pub enum ImeUpdate {
     None,
 }
 
+/// IME state: the text being composed, which Wraith draws at the cursor (spec §6.2).
 #[derive(Default)]
-pub struct Ime;
+pub struct Ime {
+    preedit: String,
+}
+
+/// Cell where composition text of `width_cells` starts: the cursor, moved left so the text fits in
+/// `cols`; the bottom-left cell when the cursor is hidden.
+pub fn preedit_origin(cursor: Option<(u16, u16)>, cols: u16, rows: u16, width_cells: u16) -> (u16, u16) {
+    match cursor {
+        Some((x, y)) => (x.min(cols.saturating_sub(width_cells)), y),
+        None => (0, rows.saturating_sub(1)),
+    }
+}
 
 impl Ime {
+    pub fn preedit(&self) -> &str {
+        &self.preedit
+    }
+
+    /// Remember the composition text: kept on `Preedit`, gone on `Commit`.
+    pub fn apply(&mut self, u: ImeUpdate) -> ImeUpdate {
+        match &u {
+            ImeUpdate::Preedit(s) => self.preedit.clone_from(s),
+            ImeUpdate::Commit(_) => self.preedit.clear(),
+            ImeUpdate::None => {}
+        }
+        u
+    }
+
+    /// Composition ended or the window lost focus.
+    pub fn end(&mut self) {
+        self.preedit.clear();
+    }
+
     /// Handle `WM_IME_COMPOSITION`.
     pub fn on_composition(&mut self, hwnd: HWND, lparam: LPARAM) -> ImeUpdate {
+        let (result, comp) = Self::read_composition(hwnd, lparam);
+        self.compose(result, comp)
+    }
+
+    /// One `WM_IME_COMPOSITION`: text committed (`result`) and/or still being composed (`comp`).
+    /// IMEs often send both at once (commit part, keep composing), so the rest stays drawn.
+    pub fn compose(&mut self, result: Option<String>, comp: Option<String>) -> ImeUpdate {
+        match (result, comp) {
+            (Some(r), comp) => {
+                self.preedit = comp.unwrap_or_default();
+                ImeUpdate::Commit(r)
+            }
+            (None, Some(c)) => self.apply(ImeUpdate::Preedit(c)),
+            (None, None) => ImeUpdate::None,
+        }
+    }
+
+    fn read_composition(hwnd: HWND, lparam: LPARAM) -> (Option<String>, Option<String>) {
         unsafe {
             let ctx = ImmGetContext(hwnd);
             if ctx.is_invalid() {
-                return ImeUpdate::None;
+                return (None, None);
             }
             let read = |kind| {
                 let bytes = ImmGetCompositionStringW(ctx, kind, None, 0);
@@ -235,15 +284,11 @@ impl Ime {
                 ImmGetCompositionStringW(ctx, kind, Some(buf.as_mut_ptr().cast()), bytes as u32);
                 String::from_utf16_lossy(&buf)
             };
-            let r = if lparam.0 as u32 & GCS_RESULTSTR.0 != 0 {
-                ImeUpdate::Commit(read(GCS_RESULTSTR))
-            } else if lparam.0 as u32 & GCS_COMPSTR.0 != 0 {
-                ImeUpdate::Preedit(read(GCS_COMPSTR))
-            } else {
-                ImeUpdate::None
-            };
+            let flags = lparam.0 as u32;
+            let result = (flags & GCS_RESULTSTR.0 != 0).then(|| read(GCS_RESULTSTR));
+            let comp = (flags & GCS_COMPSTR.0 != 0).then(|| read(GCS_COMPSTR));
             let _ = ImmReleaseContext(hwnd, ctx);
-            r
+            (result, comp)
         }
     }
 

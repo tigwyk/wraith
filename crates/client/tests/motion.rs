@@ -197,3 +197,81 @@ fn pulse_only_when_attention_starts() {
     m.set_lit(HashSet::from([Dot::Tab(1), Dot::Agent(5)]), mid);
     assert_eq!(m.dot(Dot::Tab(1), mid), 0.0, "drawn again (sidebar revealed, workspace switched): no pulse");
 }
+
+#[test]
+fn breathe_rises_and_falls_over_period() {
+    use wraith_client::motion::{BREATHE, Motion};
+    let mut m = Motion::new(true);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    assert!(m.breathe(t0) < 0.01);
+    assert!(m.breathe(t0 + BREATHE / 2) > 0.99);
+    assert!(m.breathe(t0 + BREATHE) < 0.01);
+}
+
+#[test]
+fn breathe_is_steady_when_animations_off() {
+    use wraith_client::motion::Motion;
+    let mut m = Motion::new(false);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    assert_eq!(m.breathe(t0), 0.5);
+    assert_eq!(m.breathe(t0 + Duration::from_millis(777)), 0.5);
+    assert_eq!(m.frame_interval(t0 + Duration::from_millis(777)), None);
+}
+
+#[test]
+fn breathing_stops_when_attention_clears() {
+    use wraith_client::motion::Motion;
+    let mut m = Motion::new(true);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    m.set_breathing(false, t0 + Duration::from_millis(400));
+    assert_eq!(m.breathe(t0 + Duration::from_millis(800)), 0.0);
+}
+
+#[test]
+fn frame_interval_slows_for_breathing_only() {
+    use wraith_client::motion::{Motion, SlideSlot};
+    let mut m = Motion::new(true);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    assert_eq!(m.frame_interval(t0), Some(Duration::from_millis(50)));
+    m.slide(SlideSlot::Underline, Some(r(0)), None, t0);
+    m.slide(SlideSlot::Underline, Some(r(200)), None, t0);
+    assert_eq!(m.frame_interval(t0 + Duration::from_millis(10)), Some(Duration::from_millis(16)));
+}
+
+#[test]
+fn frame_interval_none_when_nothing_moves() {
+    use wraith_client::motion::Motion;
+    let m = Motion::new(true);
+    assert_eq!(m.frame_interval(Instant::now()), None);
+}
+
+#[test]
+fn running_motion_draws_every_frame_whatever_the_breath_deadline() {
+    use wraith_client::motion::{Motion, SlideSlot};
+    let mut m = Motion::new(true);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    m.slide(SlideSlot::Underline, Some(r(0)), None, t0);
+    m.slide(SlideSlot::Underline, Some(r(200)), None, t0);
+    let now = t0 + Duration::from_millis(10);
+    let far = now + Duration::from_millis(50);
+    assert!(m.due(now, far), "a slide must not wait for the breathing deadline");
+    assert_eq!(m.after_frame(now, far), (true, Some(Duration::from_millis(16))), "redraw at vsync");
+}
+
+#[test]
+fn breathing_alone_waits_for_its_deadline() {
+    use wraith_client::motion::Motion;
+    let mut m = Motion::new(true);
+    let t0 = Instant::now();
+    m.set_breathing(true, t0);
+    let next = t0 + Duration::from_millis(50);
+    assert!(!m.due(t0 + Duration::from_millis(20), next));
+    assert!(m.due(next, next));
+    assert_eq!(m.after_frame(t0 + Duration::from_millis(20), next), (false, Some(Duration::from_millis(31))));
+    assert_eq!(Motion::new(true).after_frame(t0, next), (false, None), "nothing moving: no wake-up");
+}

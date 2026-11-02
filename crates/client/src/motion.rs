@@ -10,6 +10,11 @@ pub const FADE: Duration = Duration::from_millis(80);
 pub const SLIDE: Duration = Duration::from_millis(120);
 /// The once-only attention pulse.
 pub const PULSE: Duration = Duration::from_millis(600);
+/// One slow breath of `agent-tab-pulse`.
+pub const BREATHE: Duration = Duration::from_millis(1600);
+/// Frame pacing: running motion, and breathing alone (20 Hz is smooth for a 1.6 s wave).
+const FRAME: Duration = Duration::from_millis(16);
+const BREATHE_FRAME: Duration = Duration::from_millis(50);
 
 /// Cubic ease-out over `t` in 0..=1 (clamped).
 pub fn ease_out(t: f32) -> f32 {
@@ -176,6 +181,8 @@ pub struct Motion {
     /// Dots lit in the model; `None` until the first model arrives (those dots light without a pulse).
     lit: Option<std::collections::HashSet<Dot>>,
     layout: Option<Layout>,
+    /// `agent-tab-pulse`: when the breathing started, while some tab needs attention.
+    breathing: Option<Instant>,
 }
 
 impl Motion {
@@ -273,6 +280,51 @@ impl Motion {
     /// A lit dot's pulse, 0..=1: it plays once when its attention starts.
     pub fn dot(&self, d: Dot, now: Instant) -> f32 {
         self.pulses.get(&d).map_or(0.0, |p| p.value(now))
+    }
+
+    /// Tabs needing attention breathe while `on`; the wave starts over when breathing restarts.
+    pub fn set_breathing(&mut self, on: bool, now: Instant) {
+        self.breathing = if on { self.breathing.or(Some(now)) } else { None };
+    }
+
+    /// The breathing level, 0..=1: a slow wave, or a steady half when animations are off.
+    pub fn breathe(&self, now: Instant) -> f32 {
+        match self.breathing {
+            None => 0.0,
+            Some(_) if !self.on => 0.5,
+            Some(start) => {
+                let t = now.saturating_duration_since(start).as_secs_f32() / BREATHE.as_secs_f32();
+                0.5 - 0.5 * (t * std::f32::consts::TAU).cos()
+            }
+        }
+    }
+
+    /// How soon the next frame is wanted: a frame for running motion, a slower one for breathing alone.
+    pub fn frame_interval(&self, now: Instant) -> Option<Duration> {
+        if self.active(now) {
+            Some(FRAME)
+        } else if self.breathing.is_some() && self.on {
+            Some(BREATHE_FRAME)
+        } else {
+            None
+        }
+    }
+
+    /// Draw now? Running motion always; breathing alone once its deadline `next_frame` has come.
+    pub fn due(&self, now: Instant, next_frame: Instant) -> bool {
+        self.active(now) || (self.breathing.is_some() && self.on && now >= next_frame)
+    }
+
+    /// After a frame: whether to mark the window dirty at once (running motion redraws at vsync,
+    /// paced by the swap chain), and how soon to wake for the next frame.
+    pub fn after_frame(&self, now: Instant, next_frame: Instant) -> (bool, Option<Duration>) {
+        if self.active(now) {
+            (true, Some(FRAME))
+        } else if self.breathing.is_some() && self.on {
+            (false, Some(next_frame.saturating_duration_since(now) + Duration::from_millis(1)))
+        } else {
+            (false, None)
+        }
     }
 
     pub fn active(&self, now: Instant) -> bool {

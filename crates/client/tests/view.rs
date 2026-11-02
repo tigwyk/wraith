@@ -864,3 +864,14 @@ fn pointer_leaving_clears_press() {
     v.pointer_left(std::time::Instant::now());
     assert_eq!(v.pressed(), None, "released outside the window: no stuck highlight");
 }
+
+#[test]
+fn focus_local_targets_actions_before_the_server_answers() {
+    // A right-click menu runs its action at once: it must act on the clicked pane, not the old focus.
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert_eq!(v.focused(), Some(2));
+    v.focus_local(1);
+    assert_eq!(v.focused(), Some(1));
+    assert!(v.pane_click(1).is_empty(), "already focused locally");
+}

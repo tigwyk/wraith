@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wraith_client::link::{AttachError, ServerLink, kill_server};
+use wraith_client::link::{AttachError, ServerLink, kill_server, retry_attach};
 use wraith_ipc::connect;
 use wraith_proto::model::ModelCmd;
 use wraith_proto::pane::SpawnOpts;
@@ -232,4 +232,45 @@ fn link_attach_window_and_open_a_tab() {
     thread::sleep(Duration::from_millis(200));
     assert!(!list(&pipe)[0].attached);
     stop(&pipe);
+}
+
+fn no_server() -> AttachError {
+    AttachError::NoServer { log_dir: "logs".into() }
+}
+
+#[test]
+fn retry_attach_tries_again_until_connected() {
+    let (mut connects, mut asks) = (0, 0);
+    let r = retry_attach(
+        || {
+            connects += 1;
+            if connects < 3 { Err(no_server()) } else { Ok(7) }
+        },
+        |_| {
+            asks += 1;
+            true
+        },
+    );
+    assert!(matches!(r, Ok(7)), "{r:?}");
+    assert_eq!((connects, asks), (3, 2));
+}
+
+#[test]
+fn retry_attach_cancel_returns_error() {
+    let mut connects = 0;
+    let r: Result<u8, _> = retry_attach(
+        || {
+            connects += 1;
+            Err(no_server())
+        },
+        |_| false,
+    );
+    assert!(matches!(r, Err(AttachError::NoServer { .. })), "{r:?}");
+    assert_eq!(connects, 1);
+}
+
+#[test]
+fn retry_attach_leaves_version_mismatch_to_the_caller() {
+    let r: Result<u8, _> = retry_attach(|| Err(AttachError::VersionMismatch { server_version: "0.0.1".into() }), |_| panic!("never asked"));
+    assert!(matches!(r, Err(AttachError::VersionMismatch { .. })), "{r:?}");
 }

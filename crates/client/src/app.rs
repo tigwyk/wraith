@@ -9,14 +9,15 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
-    SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+    DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
 use windows::core::{PCWSTR, Result};
@@ -27,7 +28,7 @@ use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
 use crate::chrome::{self, Cursor, Hit, chrome_colors};
-use crate::link::{AttachError, ServerLink, kill_server};
+use crate::link::{AttachError, ServerLink, kill_server, retry_attach};
 use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
@@ -264,6 +265,8 @@ pub(crate) struct App {
     /// Working-agent spinner: animation clock and next frame.
     started: Instant,
     next_spin: Instant,
+    /// When chrome motion (or `agent-tab-pulse` breathing) next wants a frame.
+    next_frame: Instant,
     /// The pane a selection drag started in.
     mouse_down: Option<PaneId>,
     wheel_acc: i32,
@@ -630,6 +633,8 @@ impl App {
         let pane = self.mouse_down.or(if let Hit::Pane(p) = hit { Some(p) } else { None });
         let Some(pane) = pane else { return };
         let (copy_on_select, right_paste) = (self.config.copy_on_select, self.config.right_click_action == RightClick::Paste);
+        let right_menu = self.config.right_click_action == RightClick::Menu;
+        let mut open_menu = false;
         let Some(pv) = self.view.panes.get_mut(&pane) else { return };
         let (ox, oy) = (pv.rect.x + pad.0, pv.rect.y + pad.1);
         if pv.mouse_tracking && !shift {
@@ -675,10 +680,45 @@ impl App {
                     out.push(PaneCmd::Paste(t));
                 }
             }
+            // Only reached without mouse tracking: a program that tracks the mouse got the click above.
+            WM_RBUTTONDOWN if right_menu => open_menu = true,
             _ => {}
         }
         for c in out {
             self.send_pane(pane, c);
+        }
+        if open_menu {
+            self.context_menu(pane, x, y);
+        }
+    }
+
+    /// `right-click-action = menu`: focus the pane, then run the chosen row's action on it.
+    fn context_menu(&mut self, pane: PaneId, x: i32, y: i32) {
+        let msgs = self.view.pane_click(pane);
+        self.send_all(msgs);
+        self.view.focus_local(pane);
+        let has_selection = self.grids.get(&pane).is_some_and(GridRenderer::has_selection);
+        let items = chrome::context_menu(has_selection, &self.config.keybinds);
+        let hwnd = self.win.hwnd();
+        let chosen = unsafe {
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (i, item) in items.iter().enumerate() {
+                let label = wide(&item.label);
+                let flags = match item.action {
+                    None => MF_SEPARATOR,
+                    Some(_) if item.enabled => MF_STRING,
+                    Some(_) => MF_STRING | MF_GRAYED,
+                };
+                let _ = AppendMenuW(menu, flags, i + 1, PCWSTR(label.as_ptr()));
+            }
+            let mut pt = POINT { x, y };
+            let _ = ClientToScreen(hwnd, &mut pt);
+            let id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as usize;
+            let _ = DestroyMenu(menu);
+            id.checked_sub(1).and_then(|i| items.get(i)).and_then(|it| it.action)
+        };
+        if let Some(a) = chosen {
+            self.action(a);
         }
     }
 
@@ -744,8 +784,23 @@ impl App {
                         Ime::set_candidate_pos(hwnd, v.rect.x + pad.0 + (u32::from(c.0) * m.w) as i32, v.rect.y + pad.1 + (u32::from(c.1) * m.h) as i32, m.h as i32);
                     }
                 }
+                // Wraith draws the composition itself; the IME still shows its candidate list.
+                WM_IME_SETCONTEXT => {
+                    let lp = LPARAM(lparam.0 & !(windows::Win32::UI::Input::Ime::ISC_SHOWUICOMPOSITIONWINDOW as isize));
+                    return Some(unsafe { DefWindowProcW(hwnd, msg, wparam, lp) });
+                }
+                WM_IME_ENDCOMPOSITION => {
+                    self.ime.end();
+                    self.dirty = true;
+                }
                 WM_IME_COMPOSITION => {
-                    if let ImeUpdate::Commit(t) = self.ime.on_composition(hwnd, lparam) {
+                    let u = self.ime.on_composition(hwnd, lparam);
+                    if matches!(u, ImeUpdate::Preedit(_)) {
+                        self.dirty = true;
+                        return Some(LRESULT(0));
+                    }
+                    if let ImeUpdate::Commit(t) = u {
+                        self.dirty = true; // a partial commit leaves the rest of the composition to draw
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
@@ -828,6 +883,7 @@ impl App {
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     if msg == WM_KILLFOCUS {
                         self.view.release();
+                        self.ime.end();
                     }
                     self.focused = msg == WM_SETFOCUS;
                     self.link.send(ClientMsg::Foreground(self.focused));
@@ -1033,7 +1089,11 @@ impl App {
             self.next_blink = now + Duration::from_millis(600);
             self.dirty = true;
         }
-        if self.view.tick(now) || self.motion.active(now) {
+        if self.view.tick(now) {
+            self.dirty = true;
+        }
+        if self.motion.due(now, self.next_frame) {
+            self.next_frame = now + self.motion.frame_interval(now).unwrap_or_default();
             self.dirty = true;
         }
         let spinning = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.state == AgentState::Working));
@@ -1051,11 +1111,12 @@ impl App {
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
         }
-        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable
-        // paces it), with a short timeout in case the compositor does not signal.
-        if self.motion.active(Instant::now()) {
-            self.dirty = true;
-            sleep = sleep.min(16);
+        // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable paces
+        // it). Tabs that only breathe wake at their 50 ms deadline instead; nothing moving costs nothing.
+        let (redraw, wake) = self.motion.after_frame(Instant::now(), self.next_frame);
+        self.dirty |= redraw;
+        if let Some(w) = wake {
+            sleep = sleep.min(w.as_millis() as u32);
         }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
@@ -1111,6 +1172,10 @@ impl App {
             let agents = self.view.agent_rows().into_iter().filter(|r| r.agent.attention).map(|r| Dot::Agent(r.pane));
             self.motion.set_lit(tabs.chain(ws).chain(agents).collect(), now);
         }
+        // `agent-tab-pulse`: tabs whose agent needs the user breathe until it is answered.
+        let needs_user = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.attention));
+        self.motion.set_breathing(self.config.agent_tab_pulse && needs_user, now);
+        let breath = self.motion.breathe(now);
         let focused_pane = self.view.focused();
         let panes = self.view.visible();
         let split = panes.len() > 1;
@@ -1133,6 +1198,25 @@ impl App {
             if dim > 0.0 {
                 Painter { q: &mut q }.rect(rect, bg, dim);
             }
+        }
+        // IME composition at the focused pane's cursor (the palette and find bar show it in their query).
+        let preedit = self.ime.preedit().to_string();
+        if !preedit.is_empty()
+            && self.view.palette().is_none()
+            && self.view.find().is_none()
+            && let Some(id) = focused_pane
+            && let Some((_, rect)) = panes.iter().find(|(p, _)| *p == id)
+            && let Some(v) = self.view.panes.get(&id)
+        {
+            let width = unicode_width::UnicodeWidthStr::width(preedit.as_str()) as u16;
+            let cursor = self.grids.get(&id).and_then(GridRenderer::cursor_pos);
+            let (cx, cy) = crate::input::preedit_origin(cursor, v.cells.0, v.cells.1, width);
+            let (x, y) = (rect.x + pad.0 + i32::from(cx) * m.w as i32, rect.y + pad.1 + i32::from(cy) * m.h as i32);
+            let w = (i32::from(width) * m.w as i32).min(rect.x + rect.w - x);
+            let mut p = Painter { q: &mut q };
+            p.rect(Rect { x, y, w, h: m.h as i32 }, bg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, x, y, &preedit, fg, 1.0);
+            p.rect(Rect { x, y: y + m.h as i32 - 1, w, h: 1 }, fg, 1.0);
         }
         // Hover and press washes for clickable chrome.
         // Hover fades in and out; press is instant. `lit` also brightens dim labels.
@@ -1183,6 +1267,9 @@ impl App {
             }
             // An agent's icon leads the title; its state badge sits before the close button.
             let agent = self.view.tab_agent(*id).map(|a| (a.icon, a.state, a.attention));
+            if breath > 0.0 && agent.is_some_and(|(_, _, attention)| attention) {
+                p.rect(*r, accent, 0.25 * breath);
+            }
             let badge = agent.and_then(|(_, state, attention)| match state {
                 AgentState::Working => Some(SPINNER[(spin_frame % SPINNER.len() as u128) as usize]),
                 AgentState::Asking | AgentState::Done if attention => Some("●"),
@@ -1366,7 +1453,7 @@ impl App {
             let ty = bar.y + (bar.h - m.h as i32) / 2;
             let count_w = crate::paint::text_width(&self.fonts, &count);
             let room = ((bar.w - count_w - 3 * pad_x) / cw).max(0) as usize;
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}▏", f.query), room), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}{}▏", f.query, preedit), room), col.bar_fg, 1.0);
             p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
         let n = p.q.len();
@@ -1384,7 +1471,7 @@ impl App {
                 Mode::Picker => "Workspace › ",
                 Mode::MoveTab => "Move tab to › ",
             };
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}▏", pal.query), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}{preedit}▏", pal.query), col.bar_fg, 1.0);
             for &(i, r) in &layout.rows {
                 let Some(item) = items.get(i) else { continue };
                 if i == pal.selected {
@@ -1543,7 +1630,17 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
         let w = wide(text);
         MessageBoxW(Some(hwnd), PCWSTR(w.as_ptr()), windows::core::w!("Wraith"), flags)
     };
-    match ServerLink::connect(pipe, &exe) {
+    // Any other failure offers Retry (spec §8); the error text names the log folder.
+    let connect = || {
+        retry_attach(
+            || ServerLink::connect(pipe, &exe),
+            |e| {
+                tracing::error!("attach: {e}");
+                ask(&format!("{e}\n\nRetry starts the server again."), MB_RETRYCANCEL | MB_ICONERROR) == IDRETRY
+            },
+        )
+    };
+    match connect() {
         Ok(l) => Some(l),
         Err(e @ AttachError::VersionMismatch { .. }) => {
             let q = format!("{e}\n\nRestart the server? Shells running in it will close.");
@@ -1554,19 +1651,16 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
                 ask(&format!("Could not stop the old server: {err}"), MB_OK | MB_ICONERROR);
                 return None;
             }
-            match ServerLink::connect(pipe, &exe) {
+            match connect() {
                 Ok(l) => Some(l),
-                Err(e) => {
+                Err(e @ AttachError::VersionMismatch { .. }) => {
                     ask(&e.to_string(), MB_OK | MB_ICONERROR);
                     None
                 }
+                Err(_) => None,
             }
         }
-        Err(e) => {
-            tracing::error!("attach: {e}");
-            ask(&e.to_string(), MB_OK | MB_ICONERROR);
-            None
-        }
+        Err(_) => None,
     }
 }
 
@@ -1653,7 +1747,7 @@ pub fn run() -> Result<()> {
         config,
         font_size,
         keys: KeyTranslator::default(),
-        ime: Ime,
+        ime: Ime::default(),
         matcher,
         rs: crate::reload::State::default(),
         // Set by WM_SETFOCUS: a window started minimized or behind others never had the focus.
@@ -1665,6 +1759,7 @@ pub fn run() -> Result<()> {
         next_blink: Instant::now() + Duration::from_millis(600),
         started: Instant::now(),
         next_spin: Instant::now(),
+        next_frame: Instant::now(),
         mouse_down: None,
         wheel_acc: 0,
         title: String::new(),

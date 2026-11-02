@@ -147,6 +147,7 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             _ => Err(bad(v)),
         }),
         "sidebar-visible" => set!(sidebar_visible, boolean),
+        "agent-tab-pulse" => set!(agent_tab_pulse, boolean),
         "sidebar-width" => set!(sidebar_width, |v: &str| v.parse::<u16>().map(|n| n.clamp(10, 60)).map_err(|_| bad(v))),
         "unfocused-split-opacity" => set!(unfocused_split_opacity, |v: &str| num(v).map(|n| n.clamp(0.15, 1.0)).ok_or_else(|| bad(v))),
         "image-storage-limit" => set!(image_storage_limit, |v: &str| v.parse::<u64>().map_err(|_| bad(v))),

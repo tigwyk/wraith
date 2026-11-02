@@ -73,6 +73,8 @@ struct Client {
     /// When this window last came to the foreground, and whether it is there now.
     focused_at: Option<Instant>,
     foreground: bool,
+    /// `wr events`: gets every snapshot, like a window.
+    watch: bool,
 }
 
 /// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json` (`wraith\admin\` when elevated).
@@ -260,7 +262,7 @@ impl Server {
             };
             match ev {
                 Ev::Connected(id, tx) => {
-                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None, foreground: false });
+                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None, foreground: false, watch: false });
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
@@ -318,14 +320,12 @@ impl Server {
         }
     }
 
-    fn gui_ids(&self) -> Vec<ClientId> {
-        self.clients.iter().filter(|(_, c)| c.kind == Some(ClientKind::Gui)).map(|(&id, _)| id).collect()
-    }
-
     fn push_snapshot(&mut self) {
         (self.push_due, self.last_push) = (None, Instant::now());
         let snap = self.model.snapshot();
-        for id in self.gui_ids() {
+        let to: Vec<ClientId> =
+            self.clients.iter().filter(|(_, c)| c.kind == Some(ClientKind::Gui) || c.watch).map(|(&id, _)| id).collect();
+        for id in to {
             self.send(id, ServerMsg::Snapshot(snap.clone()));
         }
     }
@@ -525,6 +525,14 @@ impl Server {
             ClientMsg::Kill { pane } => {
                 if self.owns_pane(id, pane) {
                     self.model_cmd(id, ModelCmd::ClosePane(pane));
+                }
+            }
+            ClientMsg::Watch => {
+                if kind == Some(ClientKind::Cli)
+                    && let Some(c) = self.clients.get_mut(&id)
+                {
+                    c.watch = true;
+                    self.send(id, ServerMsg::Snapshot(self.model.snapshot()));
                 }
             }
             ClientMsg::List => {
