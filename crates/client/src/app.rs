@@ -1,5 +1,6 @@
 //! The M1 app: one window, one pane. Window messages are always handled before frame work (spec §6.3).
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, VK_F4, VK_MENU, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, VK_F4, VK_MENU, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
@@ -19,14 +20,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
-use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo, SpawnOpts};
+use wraith_proto::model::{Rect, TabId};
+use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
+use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
-use crate::link::{AttachError, RemotePane, kill_server};
+use crate::chrome::{self, Hit, chrome_colors};
+use crate::link::{AttachError, ServerLink, kill_server};
+use crate::paint::Painter;
+use crate::view::{Geometry, SpawnCtx, Ui, WindowView};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
 use crate::gpu::{Gpu, SwapChain};
-use crate::grid::{DrawOpts, GridRenderer};
+use crate::grid::{Batch, DrawOpts, GridRenderer, Overlay, Pipeline, Quad};
 use crate::input::{Ime, ImeUpdate, KeyTranslator};
 pub use crate::selection::{SelAction, Selection};
 use crate::selection::{get_clipboard, set_clipboard};
@@ -203,17 +209,8 @@ pub fn themes_dir() -> PathBuf {
     beside.filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/themes"))
 }
 
-fn default_shell() -> String {
-    let on_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("pwsh.exe").is_file()));
-    if on_path { "pwsh.exe".into() } else { "powershell.exe".into() }
-}
-
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
-}
-
-fn palette(c: &Config) -> Vec<(u8, u8, u8)> {
-    c.palette.iter().map(|p| (p.0, p.1, p.2)).collect()
 }
 
 pub(crate) struct App {
@@ -222,50 +219,76 @@ pub(crate) struct App {
     pub(crate) sc: SwapChain,
     pub(crate) fonts: FontStack,
     pub(crate) atlas: GlyphAtlas,
-    pub(crate) grid: GridRenderer,
-    pub(crate) pane: RemotePane,
-    /// What to ask the server for when (re)attaching; kept in step with the grid size.
-    spawn: SpawnOpts,
-    pipe: String,
+    pipe: Rc<Pipeline>,
+    /// Row caches of the panes drawn so far; a pane's entry appears with its first frame.
+    grids: HashMap<PaneId, GridRenderer>,
+    link: ServerLink,
+    pub(crate) view: WindowView,
+    spawn_ctx: SpawnCtx,
+    pipe_name: String,
     /// Set by the wake thread when the server's pipe closes (spec §8).
     server_lost: Arc<AtomicBool>,
     server_stopped: bool,
-    pub(crate) events: Receiver<PaneEvent>,
-    forward_tx: crossbeam_channel::Sender<PaneEvent>,
+    pub(crate) events: Receiver<ServerMsg>,
+    forward_tx: crossbeam_channel::Sender<ServerMsg>,
     pub(crate) woken: Arc<AtomicBool>,
     pub(crate) config: Config,
     pub(crate) font_size: f32,
     keys: KeyTranslator,
     ime: Ime,
-    sel: Selection,
     pub(crate) matcher: KeybindMatcher,
     pub(crate) rs: crate::reload::State,
-    mouse_tracking: bool,
     focused: bool,
     dirty: bool,
     /// Newest frame applied (debug timing only).
     last_seq: Option<u64>,
-    exited: Option<u32>,
     size_px: (u32, u32),
-    grid_cells: (u16, u16),
     blink_on: bool,
     next_blink: Instant,
-    mouse_down: bool,
+    /// The pane a selection drag started in.
+    mouse_down: Option<PaneId>,
     wheel_acc: i32,
+    /// The title last given to the window.
+    title: String,
     /// A present acquired from the swap chain's frame-latency object but not yet used.
     present_token: bool,
+    /// Bottom-right notice (config diagnostics and similar) and the top-right frame-time overlay.
+    pub(crate) toast: Option<String>,
+    pub(crate) stats: Option<String>,
     pub(crate) quit: bool,
 }
 
 impl App {
-    fn origin(&self) -> (f32, f32) {
+    fn pad_px(&self) -> (i32, i32) {
         let s = self.win.dpi() as f32 / 96.0;
-        ((f32::from(self.config.window_padding_x) * s).round(), (f32::from(self.config.window_padding_y) * s).round())
+        ((f32::from(self.config.window_padding_x) * s).round() as i32, (f32::from(self.config.window_padding_y) * s).round() as i32)
     }
 
-    fn pad_px(&self) -> (u16, u16) {
-        let o = self.origin();
-        (o.0 as u16, o.1 as u16)
+    fn geometry(&self) -> Geometry {
+        let m = self.fonts.metrics();
+        Geometry {
+            client: (self.size_px.0 as i32, self.size_px.1 as i32),
+            cell: (m.w, m.h),
+            pad: self.pad_px(),
+            bar_h: m.h as i32 + 10,
+            sidebar_cols: None,
+        }
+    }
+
+    fn send_all(&self, msgs: Vec<ClientMsg>) {
+        for m in msgs {
+            self.link.send(m);
+        }
+    }
+
+    fn send_pane(&self, pane: PaneId, cmd: PaneCmd) {
+        self.link.send(ClientMsg::Cmd { pane, cmd });
+    }
+
+    fn send_focused(&self, cmd: PaneCmd) {
+        if let Some(m) = self.view.input(cmd) {
+            self.link.send(m);
+        }
     }
 
     pub(crate) fn rebuild_fonts(&mut self) {
@@ -276,22 +299,19 @@ impl App {
         if let Ok(a) = GlyphAtlas::new(&self.gpu, 2048) {
             self.atlas = a;
         }
-        self.resize(self.size_px.0, self.size_px.1, true);
+        self.resize(self.size_px.0, self.size_px.1);
         // Cached rows hold glyph ids from the old fonts; get every row re-sent even if the cell size is unchanged.
-        let _ = self.pane.send(PaneCmd::Redraw);
+        for (p, _) in self.view.visible() {
+            self.send_pane(p, PaneCmd::Redraw);
+        }
     }
 
-    fn resize(&mut self, w: u32, h: u32, force: bool) {
+    fn resize(&mut self, w: u32, h: u32) {
         self.size_px = (w, h);
-        let m = self.fonts.metrics();
-        let (px, py) = self.pad_px();
-        let Some(cells) = grid_size(w, h, &m, px, py) else { return };
+        let msgs = self.view.set_geometry(self.geometry());
+        self.send_all(msgs);
         let _ = self.sc.resize(w, h);
         self.dirty = true;
-        if cells != self.grid_cells || force {
-            self.grid_cells = cells;
-            let _ = self.pane.send(PaneCmd::Resize { cols: cells.0, rows: cells.1, cell_w_px: m.w, cell_h_px: m.h });
-        }
     }
 
     fn send_key(&mut self, ev: KeyEvent) {
@@ -301,14 +321,14 @@ impl App {
             }
             return;
         }
-        if self.exited.is_some() {
-            if ev.code == KeyCode::Enter && ev.action != wraith_proto::KeyAction::Release {
-                self.exited = None;
-                let _ = self.pane.send(PaneCmd::Restart);
-            }
+        if let Some(m) = self.view.restart_key(&ev) {
+            self.link.send(m);
             return;
         }
-        let _ = self.pane.send(PaneCmd::Key(ev));
+        if self.view.focused().is_some_and(|p| self.view.pane_exit(p).is_some()) {
+            return; // an exited shell takes no input
+        }
+        self.send_focused(PaneCmd::Key(ev));
     }
 
     fn on_key(&mut self, ev: KeyEvent) {
@@ -324,9 +344,7 @@ impl App {
 
     pub(crate) fn action(&mut self, a: Action) {
         match a {
-            Action::Copy => {
-                let _ = self.pane.send(PaneCmd::CopySelection);
-            }
+            Action::Copy => self.send_focused(PaneCmd::CopySelection),
             Action::Paste => self.paste(),
             Action::IncreaseFontSize(d) => self.set_font_size(self.font_size + d),
             Action::DecreaseFontSize(d) => self.set_font_size(self.font_size - d),
@@ -335,13 +353,36 @@ impl App {
             Action::ScrollPageDown => self.scroll(ScrollTo::PageDown),
             Action::ScrollToTop => self.scroll(ScrollTo::Top),
             Action::ScrollToBottom => self.scroll(ScrollTo::Bottom),
-            Action::ClearScreen => {
-                let _ = self.pane.send(PaneCmd::Text("\x0c".into()));
-            }
-            Action::CloseSurface => self.close(),
+            Action::ClearScreen => self.send_focused(PaneCmd::Text("\x0c".into())),
             Action::ReloadConfig | Action::ToggleFrameOverlay | Action::Unbind => crate::reload::action(self, a),
-            // M3 chrome actions are wired in the window view (Task 8).
-            _ => {}
+            _ => {
+                let out = self.view.action(a, &self.spawn_ctx);
+                self.send_all(out.msgs);
+                if let Some(pane) = out.confirm_close
+                    && self.confirm("A process is still running in this terminal. End it?")
+                {
+                    let msgs = self.view.close_pane(pane);
+                    self.send_all(msgs);
+                }
+                if out.ui == Some(Ui::NewWindow) {
+                    self.new_window();
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn confirm(&self, text: &str) -> bool {
+        let text = wide(text);
+        unsafe { MessageBoxW(Some(self.win.hwnd()), PCWSTR(text.as_ptr()), windows::core::w!("Wraith"), MB_YESNO | MB_ICONQUESTION) == IDYES }
+    }
+
+    /// Another window is another client process: it attaches the most recently detached workspace or makes one.
+    fn new_window(&self) {
+        if let Ok(exe) = std::env::current_exe()
+            && let Err(e) = std::process::Command::new(exe).spawn()
+        {
+            tracing::warn!("new window: {e}");
         }
     }
 
@@ -351,37 +392,27 @@ impl App {
     }
 
     fn scroll(&mut self, s: ScrollTo) {
-        let _ = self.pane.send(PaneCmd::Scroll(s));
+        self.send_focused(PaneCmd::Scroll(s));
     }
 
     fn paste(&mut self) {
         if let Some(t) = get_clipboard(self.win.hwnd()) {
-            let _ = self.pane.send(PaneCmd::Paste(t));
+            self.send_focused(PaneCmd::Paste(t));
         }
     }
 
-    /// close_surface: end the shell (asking first if it's still running) and close the window.
-    fn close(&mut self) {
-        if self.exited.is_none() && !self.server_stopped {
-            let text = wide("A process is still running in this terminal. End it?");
-            let r = unsafe { MessageBoxW(Some(self.win.hwnd()), PCWSTR(text.as_ptr()), windows::core::w!("Wraith"), MB_YESNO | MB_ICONQUESTION) };
-            if r != IDYES {
-                return;
-            }
-        }
-        self.pane.kill();
-        unsafe {
-            let _ = DestroyWindow(self.win.hwnd());
+    /// Close one tab, asking first if a shell in it is still running.
+    fn close_tab(&mut self, tab: TabId) {
+        let running = self.view.snapshot().tab(tab).is_some_and(|t| t.root.leaves().iter().any(|p| self.view.pane_exit(*p).is_none()));
+        if !running || self.confirm("A process is still running in this tab. End it?") {
+            self.link.send(ClientMsg::Model(wraith_proto::model::ModelCmd::CloseTab(tab)));
         }
     }
 
-    /// Window X: close the window, keep the shell running in the server for the next launch.
+    /// Window X: close the window, keep the workspace's shells running in the server for the next launch.
     fn detach_and_close(&mut self) {
-        // An exited shell is never worth keeping: end it so the next launch starts fresh.
-        if self.exited.is_some() || self.server_stopped {
-            self.pane.kill();
-        } else {
-            self.pane.detach();
+        if !self.server_stopped {
+            self.link.finish(ClientMsg::DetachWindow);
         }
         unsafe {
             let _ = DestroyWindow(self.win.hwnd());
@@ -389,14 +420,14 @@ impl App {
     }
 
     fn reconnect(&mut self) {
-        self.spawn.cols = self.grid_cells.0;
-        self.spawn.rows = self.grid_cells.1;
-        match attach_with_restart(self.win.hwnd(), &self.pipe, self.spawn.clone()) {
-            Some(pane) => {
-                start_forwarder(&pane, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
-                self.pane = pane;
+        match attach_with_restart(self.win.hwnd(), &self.pipe_name) {
+            Some(link) => {
+                start_forwarder(&link, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
+                link.send(ClientMsg::AttachWindow { workspace: None });
+                self.link = link;
+                self.view.on_reconnect();
+                self.grids.clear();
                 self.server_stopped = false;
-                self.exited = None;
                 self.dirty = true;
             }
             None => self.quit = true,
@@ -404,28 +435,74 @@ impl App {
     }
 
     fn mouse(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) {
-        let x = f32::from((lparam.0 & 0xffff) as i16);
-        let y = f32::from(((lparam.0 >> 16) & 0xffff) as i16);
+        let mut x = i32::from((lparam.0 & 0xffff) as i16);
+        let mut y = i32::from(((lparam.0 >> 16) & 0xffff) as i16);
         let shift = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
         let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
-        let o = self.origin();
+        let pad = self.pad_px();
         let m = self.fonts.metrics();
         if msg == WM_MOUSEWHEEL {
             let n = wheel_notches(&mut self.wheel_acc, ((wparam.0 >> 16) & 0xffff) as i16);
             // Wheel coordinates are screen-relative.
-            let mut pt = POINT { x: x as i32, y: y as i32 };
+            let mut pt = POINT { x, y };
             unsafe {
                 let _ = ScreenToClient(self.win.hwnd(), &mut pt);
             }
+            let pane = match self.view.hit(pt.x, pt.y) {
+                Hit::Pane(p) => Some(p),
+                _ => self.view.focused(),
+            };
+            let Some((pane, rect)) = pane.and_then(|p| self.view.panes.get(&p).map(|v| (p, v.rect))) else { return };
             let button = if n > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
             for _ in 0..n.unsigned_abs() {
-                let (x_px, y_px) = (pt.x as f32 - o.0, pt.y as f32 - o.1);
-                let ev = MouseEvent { x_px, y_px, button: Some(button), action: MouseAction::Press, mods: Mods(0) };
-                let _ = self.pane.send(PaneCmd::Mouse(ev));
+                let ev = MouseEvent { x_px: (pt.x - rect.x - pad.0) as f32, y_px: (pt.y - rect.y - pad.1) as f32, button: Some(button), action: MouseAction::Press, mods: Mods(0) };
+                self.send_pane(pane, PaneCmd::Mouse(ev));
             }
             return;
         }
-        if self.mouse_tracking && !shift {
+        if self.view.dragging() {
+            match msg {
+                WM_MOUSEMOVE => {
+                    let msgs = self.view.drag_divider(x, y);
+                    self.send_all(msgs);
+                    self.dirty = true;
+                }
+                WM_LBUTTONUP => {
+                    self.view.end_drag();
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        let hit = self.view.hit(x, y);
+        if msg == WM_LBUTTONDOWN {
+            match hit {
+                Hit::Divider(i) => {
+                    self.view.start_divider_drag(i);
+                    unsafe {
+                        SetCapture(self.win.hwnd());
+                    }
+                    return;
+                }
+                Hit::Tab(t) => return self.link.send(ClientMsg::Model(wraith_proto::model::ModelCmd::SelectTab(t))).then_some(()).unwrap_or(()),
+                Hit::TabClose(t) => return self.close_tab(t),
+                Hit::NewTab => return self.action(Action::NewTab),
+                Hit::Pane(p) => {
+                    let msgs = self.view.pane_click(p);
+                    self.send_all(msgs);
+                }
+                _ => return,
+            }
+        }
+        let pane = self.mouse_down.or(if let Hit::Pane(p) = hit { Some(p) } else { None });
+        let Some(pane) = pane else { return };
+        let (copy_on_select, right_paste) = (self.config.copy_on_select, self.config.right_click_action == RightClick::Paste);
+        let Some(pv) = self.view.panes.get_mut(&pane) else { return };
+        let (ox, oy) = (pv.rect.x + pad.0, pv.rect.y + pad.1);
+        if pv.mouse_tracking && !shift {
             let (button, action) = match msg {
                 WM_LBUTTONDOWN => (Some(MouseButton::Left), MouseAction::Press),
                 WM_LBUTTONUP => (Some(MouseButton::Left), MouseAction::Release),
@@ -435,42 +512,50 @@ impl App {
                 WM_MBUTTONUP => (Some(MouseButton::Middle), MouseAction::Release),
                 _ => (None, MouseAction::Motion),
             };
-            let ev = MouseEvent { x_px: x - o.0, y_px: y - o.1, button, action, mods: Mods(0) };
-            let _ = self.pane.send(PaneCmd::Mouse(ev));
-            return;
+            let ev = MouseEvent { x_px: (x - ox) as f32, y_px: (y - oy) as f32, button, action, mods: Mods(0) };
+            return self.send_pane(pane, PaneCmd::Mouse(ev));
         }
-        let cell = pixel_to_cell(x, y, o, &m);
-        let cell = (cell.0.min(self.grid_cells.0.saturating_sub(1)), cell.1.min(self.grid_cells.1.saturating_sub(1)));
+        x = x.max(ox);
+        y = y.max(oy);
+        let cell = pixel_to_cell(x as f32, y as f32, (ox as f32, oy as f32), &m);
+        let cell = (cell.0.min(pv.cells.0.saturating_sub(1)), cell.1.min(pv.cells.1.saturating_sub(1)));
+        let mut out = Vec::new();
         match msg {
             WM_LBUTTONDOWN => {
-                self.mouse_down = true;
-                let cmd = match self.sel.press(cell, Instant::now(), alt) {
+                self.mouse_down = Some(pane);
+                out.push(match pv.sel.press(cell, Instant::now(), alt) {
                     SelAction::Start => PaneCmd::SetSelection(None),
                     SelAction::Word { x, y } => PaneCmd::SelectWord { x, y },
                     SelAction::Line { y } => PaneCmd::SelectLine { y },
-                };
-                let _ = self.pane.send(cmd);
+                });
             }
-            WM_MOUSEMOVE if self.mouse_down => {
-                if let Some(r) = self.sel.drag(cell) {
-                    let _ = self.pane.send(PaneCmd::SetSelection(Some(r)));
+            WM_MOUSEMOVE if self.mouse_down.is_some() => {
+                if let Some(r) = pv.sel.drag(cell) {
+                    out.push(PaneCmd::SetSelection(Some(r)));
                 }
             }
             WM_LBUTTONUP => {
-                self.mouse_down = false;
-                if self.sel.release().is_some() && self.config.copy_on_select {
-                    let _ = self.pane.send(PaneCmd::CopySelection);
+                self.mouse_down = None;
+                if pv.sel.release().is_some() && copy_on_select {
+                    out.push(PaneCmd::CopySelection);
                 }
             }
-            WM_RBUTTONDOWN if self.config.right_click_action == RightClick::Paste => self.paste(),
+            WM_RBUTTONDOWN if right_paste => {
+                if let Some(t) = get_clipboard(self.win.hwnd()) {
+                    out.push(PaneCmd::Paste(t));
+                }
+            }
             _ => {}
+        }
+        for c in out {
+            self.send_pane(pane, c);
         }
     }
 
     fn on_msg(&mut self, hwnd: HWND, msg: WinMsg) -> Option<LRESULT> {
         match msg {
             WinMsg::Resize { w, h } => {
-                self.resize(w, h, false);
+                self.resize(w, h);
                 self.render_now(true);
             }
             WinMsg::DpiChanged { suggested: r, .. } => {
@@ -515,15 +600,18 @@ impl App {
                     return Some(LRESULT(0));
                 }
                 WM_IME_STARTCOMPOSITION => {
-                    if let Some(c) = self.grid.cursor_pos() {
+                    if let Some(p) = self.view.focused()
+                        && let Some(c) = self.grids.get(&p).and_then(GridRenderer::cursor_pos)
+                        && let Some(v) = self.view.panes.get(&p)
+                    {
                         let m = self.fonts.metrics();
-                        let o = self.origin();
-                        Ime::set_candidate_pos(hwnd, (o.0 + f32::from(c.0) * m.w as f32) as i32, (o.1 + f32::from(c.1) * m.h as f32) as i32, m.h as i32);
+                        let pad = self.pad_px();
+                        Ime::set_candidate_pos(hwnd, v.rect.x + pad.0 + (u32::from(c.0) * m.w) as i32, v.rect.y + pad.1 + (u32::from(c.1) * m.h) as i32, m.h as i32);
                     }
                 }
                 WM_IME_COMPOSITION => {
                     if let ImeUpdate::Commit(t) = self.ime.on_composition(hwnd, lparam) {
-                        let _ = self.pane.send(PaneCmd::Text(t));
+                        self.send_focused(PaneCmd::Text(t));
                         return Some(LRESULT(0));
                     }
                 }
@@ -536,7 +624,7 @@ impl App {
                     return Some(LRESULT(0));
                 }
                 WM_APP => {
-                    // Pane output arrived; also delivered inside modal size/move loops.
+                    // Server messages arrived; also delivered inside modal size/move loops.
                     self.render_now(false);
                     return Some(LRESULT(0));
                 }
@@ -546,52 +634,93 @@ impl App {
         None
     }
 
-    fn on_pane_event(&mut self, ev: PaneEvent) {
+    fn set_title(&mut self) {
+        let snap = self.view.snapshot();
+        let Some(tab) = self.view.active_tab().map(|t| t.id) else { return };
+        let ws = self.view.workspace().and_then(|w| snap.workspace(w)).map(|w| w.name.clone()).unwrap_or_default();
+        let title = format!("{} - {ws}", snap.tab_title(tab));
+        if title != self.title {
+            let w = wide(&title);
+            unsafe {
+                let _ = SetWindowTextW(self.win.hwnd(), PCWSTR(w.as_ptr()));
+            }
+            self.title = title;
+        }
+    }
+
+    fn on_server_msg(&mut self, m: ServerMsg) {
+        match m {
+            ServerMsg::WindowAttached { workspace } => {
+                self.view.set_workspace(workspace);
+                self.grids.clear();
+            }
+            ServerMsg::Snapshot(s) => {
+                let msgs = self.view.on_snapshot(s, &self.spawn_ctx);
+                self.send_all(msgs);
+                let live: std::collections::HashSet<PaneId> = self.view.snapshot().panes.iter().map(|p| p.id).collect();
+                self.grids.retain(|p, _| live.contains(p));
+                self.set_title();
+                self.dirty = true;
+            }
+            ServerMsg::WorkspaceTaken { .. } => {
+                // Another window took ours: show whatever is free (or a new workspace).
+                self.view.on_reconnect();
+                self.grids.clear();
+                self.link.send(ClientMsg::AttachWindow { workspace: None });
+                self.dirty = true;
+            }
+            ServerMsg::Event { pane, ev } => self.on_pane_event(pane, ev),
+            ServerMsg::Error(e) => {
+                tracing::warn!("server: {e}");
+                crate::reload::toast_text(self, "server", e);
+            }
+            ServerMsg::Welcome { .. } | ServerMsg::VersionMismatch { .. } | ServerMsg::Panes(_) => {}
+        }
+    }
+
+    fn on_pane_event(&mut self, pane: PaneId, ev: PaneEvent) {
         match ev {
             PaneEvent::Frame(f) => {
                 let t = Instant::now();
-                self.grid.apply(&f, &self.fonts);
+                let pipe = self.pipe.clone();
+                self.grids.entry(pane).or_insert_with(|| GridRenderer::with_pipeline(pipe)).apply(&f, &self.fonts);
                 tracing::debug!(seq = f.seq, rows = f.dirty_rows.len(), apply_us = t.elapsed().as_micros() as u64, "frame arrived");
                 // Ack on apply, not on present: the pane can send the newest state while we wait for
                 // vsync, so what we draw is fresh. One frame in flight still bounds the queue.
-                let _ = self.pane.send(PaneCmd::Ready(f.seq));
+                self.send_pane(pane, PaneCmd::Ready(f.seq));
                 self.last_seq = Some(f.seq);
                 self.dirty = true;
             }
-            PaneEvent::Title(t) => unsafe {
-                let w = wide(&t);
-                let _ = SetWindowTextW(self.win.hwnd(), PCWSTR(w.as_ptr()));
-            },
-            PaneEvent::Bell => {}
+            PaneEvent::Title(_) | PaneEvent::Bell | PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) => {}
             PaneEvent::Clipboard(t) | PaneEvent::Copied(t) => set_clipboard(self.win.hwnd(), &t),
             PaneEvent::PasteNeedsConfirm(t) => {
                 let lines = t.lines().count().max(1);
                 let q = wide(&format!("Paste {lines} line(s) into the terminal?\n\n{}", t.chars().take(400).collect::<String>()));
                 let r = unsafe { MessageBoxW(Some(self.win.hwnd()), PCWSTR(q.as_ptr()), windows::core::w!("Wraith: paste"), MB_YESNO | MB_ICONQUESTION) };
                 if r == IDYES {
-                    let _ = self.pane.send(PaneCmd::PasteConfirmed(t));
+                    self.send_pane(pane, PaneCmd::PasteConfirmed(t));
                 }
             }
-            PaneEvent::Exited(code) => {
+            PaneEvent::Exited(_) => {
                 if self.config.close_on_exit {
-                    self.pane.kill();
-                    unsafe {
-                        let _ = DestroyWindow(self.win.hwnd());
-                    }
-                } else {
-                    self.exited = Some(code);
-                    self.dirty = true;
+                    let msgs = self.view.close_pane(pane);
+                    self.send_all(msgs);
+                }
+                self.dirty = true;
+            }
+            PaneEvent::MouseTracking(on) => {
+                if let Some(v) = self.view.panes.get_mut(&pane) {
+                    v.mouse_tracking = on;
                 }
             }
-            PaneEvent::MouseTracking(on) => self.mouse_tracking = on,
-            PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) | PaneEvent::ImageUpload { .. } | PaneEvent::ImageDelete { .. } => {}
+            PaneEvent::ImageUpload { .. } | PaneEvent::ImageDelete { .. } => {}
         }
     }
 
-    fn drain_pane_events(&mut self) {
+    fn drain_server_msgs(&mut self) {
         self.woken.store(false, Ordering::Release);
-        while let Ok(ev) = self.events.try_recv() {
-            self.on_pane_event(ev);
+        while let Ok(m) = self.events.try_recv() {
+            self.on_server_msg(m);
         }
         if self.server_lost.swap(false, Ordering::AcqRel) {
             self.server_stopped = true;
@@ -604,7 +733,7 @@ impl App {
     /// `blocking` waits for the compositor; only resize uses it (the sizing loop never reaches our
     /// idle, so a skipped frame there would not be retried).
     fn render_now(&mut self, blocking: bool) {
-        self.drain_pane_events();
+        self.drain_server_msgs();
         self.try_render(blocking);
     }
 
@@ -628,14 +757,14 @@ impl App {
         }
     }
 
-    /// Drain pane events, render if possible, and say how the loop should wait.
+    /// Drain server messages, render if possible, and say how the loop should wait.
     fn idle(&mut self, signaled: bool) -> Idle {
         if self.quit {
             return Idle { ctl: LoopControl::Exit, sleep_ms: 0, wait_on: None };
         }
         // The loop's wait on the frame-latency object acquired a present for us.
         self.present_token |= signaled;
-        self.drain_pane_events();
+        self.drain_server_msgs();
         for k in self.matcher.tick(Instant::now()) {
             self.send_key(k);
         }
@@ -663,31 +792,134 @@ impl App {
         self.dirty = true;
     }
 
+    pub(crate) fn rebuild_spawn_ctx(&mut self) {
+        self.spawn_ctx = build_spawn_ctx(&self.config);
+        self.view.set_dim_opacity(self.config.unfocused_split_opacity);
+    }
+
+    /// Send the configured colors to every pane in view (after a config reload).
+    pub(crate) fn resend_colors(&mut self) {
+        let c = &self.config;
+        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
+        for (p, _) in self.view.visible() {
+            self.send_pane(p, PaneCmd::SetColors { fg: rgb(c.foreground), bg: rgb(c.background), palette: c.palette.iter().copied().map(rgb).collect() });
+        }
+    }
+
     fn render(&mut self) {
         self.dirty = false;
         crate::reload::render_start(self);
-        let exit_line = if self.server_stopped {
-            Some("[server stopped] Enter: reconnect".to_string())
-        } else {
-            self.exited.map(|c| format!("[process exited {c}] Enter: restart · ctrl+shift+w: close"))
-        };
-        self.grid.set_overlay(crate::grid::Overlay::Exit, exit_line.as_deref(), &self.fonts);
         let t0 = Instant::now();
         let m = self.fonts.metrics();
-        let sel = self.config.selection_background.map_or((0x3e, 0x44, 0x51), |c| (c.0, c.1, c.2));
-        let opts = DrawOpts {
-            selection: None,
-            selection_color: sel,
-            cursor_blink_on: self.blink_on || !self.config.cursor_style_blink,
-            focused: self.focused,
-            opacity: self.config.background_opacity,
+        let c = &self.config;
+        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
+        let (bg, fg) = (rgb(c.background), rgb(c.foreground));
+        let accent = c.selection_background.map_or((0x61, 0xaf, 0xef), rgb);
+        let col = chrome_colors(bg, fg, accent);
+        let sel = c.selection_background.map_or((0x3e, 0x44, 0x51), rgb);
+        let opacity = c.background_opacity;
+        let blink = self.blink_on || !c.cursor_style_blink;
+        let pad = self.pad_px();
+        let regions = self.view.regions();
+        let focused_pane = self.view.focused();
+        let panes = self.view.visible();
+        let split = panes.len() > 1;
+        let mut q: Vec<Quad> = Vec::new();
+        // Pane grids first, then chrome over and around them.
+        for &(id, rect) in &panes {
+            let exit = self.view.pane_exit(id).map(|code| format!("[process exited {code}] Enter: restart · ctrl+shift+w: close"));
+            let opts = DrawOpts { selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
+            match self.grids.get_mut(&id) {
+                Some(g) => {
+                    g.set_overlay(Overlay::Exit, exit.as_deref(), &self.fonts);
+                    g.push_quads(&mut q, &self.gpu, &mut self.atlas, &self.fonts, ((rect.x + pad.0) as f32, (rect.y + pad.1) as f32), &m, &opts, Some(rect));
+                }
+                None => Painter { q: &mut q }.rect(rect, bg, opacity),
+            }
+            let dim = self.view.dim_alpha(id);
+            if dim > 0.0 {
+                Painter { q: &mut q }.rect(rect, bg, dim);
+            }
+        }
+        let mut p = Painter { q: &mut q };
+        if split {
+            for d in self.view.dividers() {
+                p.rect(d.line, col.divider, 1.0);
+            }
+            if let Some((_, r)) = panes.iter().find(|(id, _)| Some(*id) == focused_pane) {
+                for edge in [
+                    Rect { x: r.x, y: r.y, w: r.w, h: 1 },
+                    Rect { x: r.x, y: r.y + r.h - 1, w: r.w, h: 1 },
+                    Rect { x: r.x, y: r.y, w: 1, h: r.h },
+                    Rect { x: r.x + r.w - 1, y: r.y, w: 1, h: r.h },
+                ] {
+                    p.rect(edge, accent, 1.0);
+                }
+            }
+        }
+        // Tab bar.
+        p.rect(regions.tabbar, col.bar_bg, 1.0);
+        let (tabs, plus) = self.view.tab_layout(0);
+        let active = self.view.active_tab().map(|t| t.id);
+        let pad_x = m.w as i32 / 2;
+        for (id, r) in &tabs {
+            let is_active = Some(*id) == active;
+            if is_active {
+                p.rect(*r, col.tab_active_bg, 1.0);
+                p.rect(Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 }, accent, 1.0);
+            }
+            let cells = ((r.w - 2 * pad_x - 2 * m.w as i32) / m.w as i32).max(0) as usize;
+            let title = truncate_cells(&self.view.snapshot().tab_title(*id), cells);
+            let ty = r.y + (r.h - m.h as i32) / 2;
+            let tc = if is_active { col.bar_fg } else { col.bar_fg_dim };
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &title, tc, 1.0);
+            let x = chrome::close_rect(*r, m.w as i32);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", col.bar_fg_dim, 1.0);
+        }
+        let ty = plus.y + (plus.h - m.h as i32) / 2;
+        p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        // Notices.
+        let notice = |p: &mut Painter, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, text: &str, at_bottom: bool, left: bool| {
+            let w = crate::paint::text_width(fonts, text);
+            let c = regions.content;
+            let x = if left { c.x } else { (c.x + c.w - w).max(c.x) };
+            let y = if at_bottom { c.y + c.h - m.h as i32 } else { c.y };
+            p.rect(Rect { x, y, w, h: m.h as i32 }, fg, 1.0);
+            p.text(gpu, atlas, fonts, x, y, text, bg, 1.0);
         };
-        let origin = self.origin();
-        self.grid.draw(&self.gpu, self.sc.rtv(), self.size_px, &mut self.atlas, &self.fonts, origin, &m, &opts);
+        if self.server_stopped {
+            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, "[server stopped] Enter: reconnect", true, true);
+        }
+        if let Some(t) = &self.toast {
+            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, true, false);
+        }
+        if let Some(t) = &self.stats {
+            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, false, false);
+        }
+        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &[Batch { quads: q, texture: None }], [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
     }
+}
+
+/// `s` cut to `cells` terminal cells, ending in `…` when cut.
+fn truncate_cells(s: &str, cells: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if s.width() <= cells {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for ch in s.chars() {
+        if (out.as_str().width() + 1 + unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)) > cells {
+            break;
+        }
+        out.push(ch);
+    }
+    if cells > 0 {
+        out.push('…');
+    }
+    out
 }
 
 pub fn clamp_font_size(pt: f32) -> f32 {
@@ -705,23 +937,23 @@ pub fn command_from_args(args: &[String]) -> Option<String> {
     Some(rest.iter().map(quote).collect::<Vec<_>>().join(" "))
 }
 
-/// Forward a pane's events to the UI thread and wake its message loop (coalesced). When the server's
-/// pipe closes, flag `server_lost` and wake the loop once more.
+/// Forward the server's messages to the UI thread and wake its message loop (coalesced). When the
+/// server's pipe closes, flag `server_lost` and wake the loop once more.
 fn start_forwarder(
-    pane: &RemotePane,
-    tx: crossbeam_channel::Sender<PaneEvent>,
+    link: &ServerLink,
+    tx: crossbeam_channel::Sender<ServerMsg>,
     woken: Arc<AtomicBool>,
     server_lost: Arc<AtomicBool>,
     hwnd: HWND,
 ) {
-    let events = pane.events.clone();
+    let msgs = link.msgs.clone();
     let hwnd = hwnd.0 as usize;
     let wake = move || unsafe {
         let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP, WPARAM(0), LPARAM(0));
     };
     let _ = std::thread::Builder::new().name("wraith-wake".into()).spawn(move || {
-        while let Ok(ev) = events.recv() {
-            if tx.send(ev).is_err() {
+        while let Ok(m) = msgs.recv() {
+            if tx.send(m).is_err() {
                 return;
             }
             if !woken.swap(true, Ordering::AcqRel) {
@@ -733,16 +965,16 @@ fn start_forwarder(
     });
 }
 
-/// Attach to the server, starting it if needed. On a protocol mismatch, offer to restart it.
+/// Connect to the server, starting it if needed. On a protocol mismatch, offer to restart it.
 /// `None` means the user gave up (or was told why it can't work); the app should exit.
-fn attach_with_restart(hwnd: HWND, pipe: &str, spawn: SpawnOpts) -> Option<RemotePane> {
+fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wraith.exe"));
     let ask = |text: &str, flags| unsafe {
         let w = wide(text);
         MessageBoxW(Some(hwnd), PCWSTR(w.as_ptr()), windows::core::w!("Wraith"), flags)
     };
-    match RemotePane::attach(pipe, spawn.clone(), &exe) {
-        Ok(p) => Some(p),
+    match ServerLink::connect(pipe, &exe) {
+        Ok(l) => Some(l),
         Err(e @ AttachError::VersionMismatch { .. }) => {
             let q = format!("{e}\n\nRestart the server? Shells running in it will close.");
             if ask(&q, MB_YESNO | MB_ICONQUESTION) != IDYES {
@@ -752,8 +984,8 @@ fn attach_with_restart(hwnd: HWND, pipe: &str, spawn: SpawnOpts) -> Option<Remot
                 ask(&format!("Could not stop the old server: {err}"), MB_OK | MB_ICONERROR);
                 return None;
             }
-            match RemotePane::attach(pipe, spawn, &exe) {
-                Ok(p) => Some(p),
+            match ServerLink::connect(pipe, &exe) {
+                Ok(l) => Some(l),
                 Err(e) => {
                     ask(&e.to_string(), MB_OK | MB_ICONERROR);
                     None
@@ -768,6 +1000,26 @@ fn attach_with_restart(hwnd: HWND, pipe: &str, spawn: SpawnOpts) -> Option<Remot
     }
 }
 
+/// Detected profiles plus the configured ones; `-e <command>` or `command =` becomes the default.
+fn build_spawn_ctx(config: &Config) -> SpawnCtx {
+    let mut profiles = wraith_server::profile::detect();
+    for (name, cmd) in &config.profiles {
+        profiles.retain(|p| &p.name != name);
+        profiles.push(wraith_server::profile::from_config(name, cmd));
+    }
+    let mut config = config.clone();
+    if let Some(cmd) = command_from_args(&std::env::args().collect::<Vec<_>>()).or_else(|| config.command.clone()) {
+        profiles.retain(|p| p.name != "command");
+        profiles.push(wraith_server::profile::from_config("command", &cmd));
+        config.default_profile = Some("command".into());
+    }
+    let scripts = wraith_server::shell::ensure_scripts().unwrap_or_else(|e| {
+        tracing::warn!("shell integration scripts: {e}");
+        PathBuf::new()
+    });
+    SpawnCtx { config, profiles, scripts, env: spawn_env() }
+}
+
 pub fn run() -> Result<()> {
     let path = wraith_config::default_path();
     let (config, diags) = wraith_config::load(&path, &themes_dir());
@@ -775,51 +1027,45 @@ pub fn run() -> Result<()> {
     let gpu = Gpu::new()?;
     let fonts = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
     let atlas = GlyphAtlas::new(&gpu, 2048)?;
-    let grid = GridRenderer::new(&gpu)?;
+    let pipe = Rc::new(Pipeline::new(&gpu)?);
     let (w, h) = win.client_size();
     let sc = gpu.create_swapchain(win.hwnd(), w, h)?;
-    let m = fonts.metrics();
-    let s = win.dpi() as f32 / 96.0;
-    let pad = ((f32::from(config.window_padding_x) * s) as u16, (f32::from(config.window_padding_y) * s) as u16);
-    let cells = grid_size(w, h, &m, pad.0, pad.1).unwrap_or((80, 24));
-    let fg = config.foreground;
-    let bg = config.background;
-    let spawn = SpawnOpts {
-        cmdline: command_from_args(&std::env::args().collect::<Vec<_>>())
-            .or_else(|| config.command.clone())
-            .unwrap_or_else(default_shell),
-        cwd: std::env::var("USERPROFILE").ok(),
-        env: spawn_env(),
-        cols: cells.0,
-        rows: cells.1,
-        cell_w_px: m.w,
-        cell_h_px: m.h,
-        scrollback_lines: config.scrollback_lines(cells.0),
-        default_fg: (fg.0, fg.1, fg.2),
-        default_bg: (bg.0, bg.1, bg.2),
-        palette: palette(&config),
-        image_storage_limit: 320 * 1024 * 1024,
-    };
-    let pipe = wraith_ipc::pipe_name();
-    let Some(pane) = attach_with_restart(win.hwnd(), &pipe, spawn.clone()) else { return Ok(()) };
+    let pipe_name = wraith_ipc::pipe_name();
+    let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 
     let (tx, rx) = crossbeam_channel::unbounded();
     let woken = Arc::new(AtomicBool::new(false));
     let server_lost = Arc::new(AtomicBool::new(false));
-    start_forwarder(&pane, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
+    start_forwarder(&link, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
+    link.send(ClientMsg::AttachWindow { workspace: None });
 
+    let double_click = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
     let font_size = config.font_size;
     let matcher = KeybindMatcher::new(&config.keybinds);
+    let spawn_ctx = build_spawn_ctx(&config);
+    let m = fonts.metrics();
+    let s = win.dpi() as f32 / 96.0;
+    let geom = Geometry {
+        client: (w as i32, h as i32),
+        cell: (m.w, m.h),
+        pad: ((f32::from(config.window_padding_x) * s).round() as i32, (f32::from(config.window_padding_y) * s).round() as i32),
+        bar_h: m.h as i32 + 10,
+        sidebar_cols: None,
+    };
+    let mut view = WindowView::new(geom, double_click);
+    view.set_dim_opacity(config.unfocused_split_opacity);
     let app = Rc::new(RefCell::new(App {
         win,
         gpu,
         sc,
         fonts,
         atlas,
-        grid,
-        pane,
-        spawn,
         pipe,
+        grids: HashMap::new(),
+        link,
+        view,
+        spawn_ctx,
+        pipe_name,
         server_lost,
         server_stopped: false,
         forward_tx: tx,
@@ -829,21 +1075,20 @@ pub fn run() -> Result<()> {
         font_size,
         keys: KeyTranslator::default(),
         ime: Ime,
-        sel: Selection::new(Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }))),
         matcher,
         rs: crate::reload::State::default(),
-        mouse_tracking: false,
         focused: true,
         dirty: true,
         last_seq: None,
-        exited: None,
         size_px: (w, h),
-        grid_cells: cells,
         blink_on: true,
         next_blink: Instant::now() + Duration::from_millis(600),
-        mouse_down: false,
+        mouse_down: None,
         wheel_acc: 0,
+        title: String::new(),
         present_token: false,
+        toast: None,
+        stats: None,
         quit: false,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);

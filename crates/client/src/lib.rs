@@ -1,5 +1,6 @@
 pub mod app;
 pub mod atlas;
+pub mod chrome;
 pub mod font;
 pub mod gpu;
 pub mod grid;
@@ -9,4 +10,5 @@ pub mod link;
 pub mod paint;
 pub mod selection;
 pub mod sprite;
+pub mod view;
 pub mod window;

@@ -8,10 +8,8 @@ use notify::{RecursiveMode, Watcher};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use wraith_config::{Action, Config, Diagnostic};
-use wraith_server::pane::PaneCmd;
 
 use crate::app::{App, KeybindMatcher, themes_dir};
-use crate::grid::Overlay;
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 const TOAST_FOR: Duration = Duration::from_secs(5);
@@ -98,9 +96,15 @@ pub(crate) fn start(app: &mut App, path: &Path, diags: Vec<Diagnostic>) {
 }
 
 fn toast(app: &mut App, kind: &'static str, text: Option<String>) {
-    let Some(text) = text else { return };
+    if let Some(text) = text {
+        toast_text(app, kind, text);
+    }
+}
+
+/// Show `text` bottom-right for a few seconds, at most one toast per kind every 3 s.
+pub(crate) fn toast_text(app: &mut App, kind: &'static str, text: String) {
     if app.rs.toasts.allow(kind, Instant::now()) {
-        app.grid.set_overlay(Overlay::Toast, Some(&text), &app.fonts);
+        app.toast = Some(text);
         app.rs.toast_until = Some(Instant::now() + TOAST_FOR);
         app.request_redraw();
     }
@@ -112,7 +116,7 @@ pub(crate) fn action(app: &mut App, a: Action) {
         Action::ToggleFrameOverlay => {
             app.rs.overlay = !app.rs.overlay;
             if !app.rs.overlay {
-                app.grid.set_overlay(Overlay::Stats, None, &app.fonts);
+                app.stats = None;
             }
             app.request_redraw();
         }
@@ -141,7 +145,7 @@ pub(crate) fn poll(app: &mut App) {
     }
     if app.rs.toast_until.is_some_and(|t| Instant::now() >= t) {
         app.rs.toast_until = None;
-        app.grid.set_overlay(Overlay::Toast, None, &app.fonts);
+        app.toast = None;
         app.request_redraw();
     }
 }
@@ -163,7 +167,7 @@ pub(crate) fn presented(app: &mut App) {
         Some(l) => format!(" input→present {l:.1} ms · frame {frame:.1} ms · atlas {:.0}% ", app.atlas.fill_ratio() * 100.0),
         None => format!(" frame {frame:.1} ms · atlas {:.0}% ", app.atlas.fill_ratio() * 100.0),
     };
-    app.grid.set_overlay(Overlay::Stats, Some(&text), &app.fonts);
+    app.stats = Some(text);
 }
 
 fn reload(app: &mut App) {
@@ -181,18 +185,14 @@ fn reload(app: &mut App) {
 /// Apply a freshly loaded config to the running app.
 fn apply_config(app: &mut App, new: Config) {
     let old = std::mem::replace(&mut app.config, new);
+    if app.config.keybinds != old.keybinds {
+        app.matcher = KeybindMatcher::new(&app.config.keybinds);
+    }
+    if (app.config.foreground, app.config.background, app.config.palette) != (old.foreground, old.background, old.palette) {
+        app.resend_colors();
+    }
+    app.rebuild_spawn_ctx();
     let c = &app.config;
-    if c.keybinds != old.keybinds {
-        app.matcher = KeybindMatcher::new(&c.keybinds);
-    }
-    if (c.foreground, c.background, c.palette) != (old.foreground, old.background, old.palette) {
-        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
-        let _ = app.pane.send(PaneCmd::SetColors {
-            fg: rgb(c.foreground),
-            bg: rgb(c.background),
-            palette: c.palette.iter().copied().map(rgb).collect(),
-        });
-    }
     // shortcut: `command` changes apply on the next app start, not on pane restart (pane keeps its options).
     let fonts_changed = (&c.font_family, &c.font_feature) != (&old.font_family, &old.font_feature)
         || c.font_size != old.font_size
