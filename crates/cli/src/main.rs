@@ -3,6 +3,7 @@
 //!   wr hook claude|codex|generic ...            (called by agents; always exits 0, silently)
 //!   wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
 //!   wr config check [path]
+//!   wr events [--json]                          (JSON lines until the server stops)
 //! Exit codes: 0 ok, 1 usage error / server error / unknown pane / config error, 2 no server running (never starts one).
 mod check;
 mod hook;
@@ -12,12 +13,14 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use wraith_ipc::{PipeReader, PipeWriter, connect, pipe_name};
+use wraith_proto::model::ModelSnapshot;
 use wraith_proto::pane::PaneCmd;
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo, ServerMsg, read_frame, write_frame};
 
 const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> | server-stop
        wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
-       wr config check [path]";
+       wr config check [path]
+       wr events [--json]";
 
 enum Fail {
     Usage(String),
@@ -71,6 +74,24 @@ fn run(args: &[String]) -> Result<(), Fail> {
             send(&mut s.1, ClientMsg::Kill { pane: id })
         }
         ["ctl", "server-stop"] => send(&mut session()?.1, ClientMsg::ServerStop),
+        // JSON lines with or without the flag: the spec names only `--json`.
+        ["events"] | ["events", "--json"] => {
+            let (mut r, mut w) = session()?;
+            send(&mut w, ClientMsg::Watch)?;
+            let mut last = ModelSnapshot::default();
+            let mut out = io::stdout().lock();
+            // A read error is the server going away; a write error is our reader gone: both end quietly.
+            while let Ok(m) = read_frame::<ServerMsg>(&mut r) {
+                let ServerMsg::Snapshot(snap) = m else { continue };
+                for ev in wraith_cli::events::diff(&last, &snap) {
+                    if writeln!(out, "{ev}").and_then(|()| out.flush()).is_err() {
+                        return Ok(());
+                    }
+                }
+                last = snap;
+            }
+            Ok(())
+        }
         _ => Err(Fail::Usage(USAGE.into())),
     }
 }

@@ -10,7 +10,7 @@ use crate::pane::{PaneCmd, PaneEvent};
 pub type PaneId = u64;
 
 /// Bumped on any incompatible change to these types.
-pub const PROTO_VERSION: u32 = 3;
+pub const PROTO_VERSION: u32 = 4;
 
 /// Largest body a peer may announce; anything bigger drops the connection before allocating.
 pub const MAX_FRAME: u32 = 64 << 20;
@@ -41,6 +41,8 @@ pub enum ClientMsg {
     Kill { pane: PaneId },
     List,
     ServerStop,
+    /// `wr events` (CLI only): send me the model now and after every change.
+    Watch,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

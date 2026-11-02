@@ -139,6 +139,75 @@ fn usage_errors_exit_1() {
     assert_eq!(wr(&pipe, &[]).status.code(), Some(1));
 }
 
+/// `wr events --json` running in the background; its stdout lines arrive on the channel.
+fn events(pipe: &str) -> (std::process::Child, crossbeam_channel::Receiver<String>) {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_wr"))
+        .args(["events", "--json"])
+        .env("WRAITH_PIPE_NAME", pipe)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    (child, rx)
+}
+
+fn wait_exit(child: &mut std::process::Child, within: Duration) -> Option<std::process::ExitStatus> {
+    let end = Instant::now() + within;
+    while Instant::now() < end {
+        if let Some(s) = child.try_wait().unwrap() {
+            return Some(s);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    None
+}
+
+#[test]
+fn events_stream_pane_opened_and_exit() {
+    let pipe = server();
+    let (mut child, rx) = events(&pipe);
+    let (_r, _w, pane) = gui(&pipe);
+    let want = format!("\"pane\":{pane}");
+    let end = Instant::now() + Duration::from_secs(5);
+    let mut seen = Vec::new();
+    while Instant::now() < end {
+        if let Ok(line) = rx.recv_timeout(Duration::from_millis(100)) {
+            let found = line.contains("\"event\":\"pane_opened\"") && line.contains(&want);
+            seen.push(line);
+            if found {
+                let _ = child.kill();
+                return;
+            }
+        }
+    }
+    let _ = child.kill();
+    panic!("no pane_opened for {pane}; saw {seen:?}");
+}
+
+#[test]
+fn events_exit_when_server_stops() {
+    let pipe = server();
+    let (mut child, _rx) = events(&pipe);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(wr(&pipe, &["ctl", "server-stop"]).status.success());
+    let status = wait_exit(&mut child, Duration::from_secs(5)).expect("wr events must exit when the server stops");
+    assert!(status.success(), "{status:?}");
+}
+
+#[test]
+fn events_no_server_exits_2() {
+    let o = wr(&unique(), &["events", "--json"]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+}
+
 #[test]
 fn server_stop_stops_it() {
     let pipe = server();
