@@ -59,6 +59,8 @@ pub enum PaneEvent {
     InputWritten { waited: Duration },
     /// Something the terminal saw that says what an agent is doing (spec §5.2).
     Agent(AgentSignal),
+    /// The process scan found this harness running in the pane (`None`: no agent process any more).
+    AgentProcess(Option<String>),
 }
 
 /// An agent event, from a hook (`wr hook`) or seen in the terminal. Messages are untrusted text.
@@ -88,4 +90,6 @@ pub struct SpawnOpts {
     pub default_bg: (u8, u8, u8),
     pub palette: Vec<(u8, u8, u8)>,
     pub image_storage_limit: u64,
+    /// `agent-detect` entries: extra (name, regex) process matchers.
+    pub agent_detect: Vec<(String, String)>,
 }

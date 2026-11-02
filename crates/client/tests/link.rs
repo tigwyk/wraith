@@ -46,6 +46,7 @@ fn spawn() -> SpawnOpts {
         default_bg: (0, 0, 0),
         palette: vec![(0, 0, 0); 256],
         image_storage_limit: 320 * 1024 * 1024,
+        agent_detect: vec![],
     }
 }
 

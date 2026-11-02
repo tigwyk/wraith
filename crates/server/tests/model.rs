@@ -17,6 +17,7 @@ fn sp(cwd: Option<&str>) -> SpawnOpts {
         default_bg: (0, 0, 0),
         palette: vec![],
         image_storage_limit: 1 << 20,
+        agent_detect: vec![],
     }
 }
 

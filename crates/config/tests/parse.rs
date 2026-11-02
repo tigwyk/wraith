@@ -94,6 +94,17 @@ fn close_on_exit_defaults_to_clean_and_keeps_boolean_spellings() {
 }
 
 #[test]
+fn agent_detect_entries_accumulate_and_reset() {
+    let (c, d) = parse_str("agent-detect = mybot:(?i)mybot\\.exe\nagent-detect = other:x:y\n", p(), &themes());
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(c.agent_detect, vec![("mybot".to_string(), "(?i)mybot\\.exe".to_string()), ("other".to_string(), "x:y".to_string())]);
+    let (c, _) = parse_str("agent-detect = a:b\nagent-detect =\n", p(), &themes());
+    assert!(c.agent_detect.is_empty(), "an empty value clears the list");
+    let (_, d) = parse_str("agent-detect = nocolon\n", p(), &themes());
+    assert_eq!(d.len(), 1);
+}
+
+#[test]
 fn include_cycle_is_reported_not_infinite() {
     let dir = std::env::temp_dir().join(format!("wraith-cfg-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

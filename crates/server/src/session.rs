@@ -565,6 +565,7 @@ impl Server {
             default_bg: spawn.default_bg,
             palette: spawn.palette,
             image_storage_limit: spawn.image_storage_limit,
+            agent_detect: spawn.agent_detect,
         };
         match spawn_pane(opts) {
             Ok(handle) => {
@@ -649,6 +650,12 @@ impl Server {
         }
         if let PaneEvent::Agent(sig) = ev {
             return self.agent_signal(pane, None, sig, Source::Passive);
+        }
+        if let PaneEvent::AgentProcess(found) = ev {
+            return match found {
+                Some(h) => self.agent_signal(pane, Some(&h), AgentSignal::Attached, Source::Passive),
+                None => self.agent_signal(pane, None, AgentSignal::Detached, Source::Passive),
+            };
         }
         if let PaneEvent::Title(t) = &ev
             && let Some(a) = self.agents.get(&pane)

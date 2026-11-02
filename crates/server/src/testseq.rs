@@ -9,6 +9,16 @@ pub const SEQS: &[(&str, &[u8], &[u8])] = &[
     ("osc7", b"\x1b]7;file://host/C:/tmp\x1b\\", b"\x1b]7;file://host/C:/tmp"),
 ];
 
+/// Agent signals the terminal must recognise (spec §5.2). "QWxsb3cgQmFzaD8=" is "Allow Bash?".
+pub const AGENT_SEQS: &[(&str, &[u8])] = &[
+    ("osc777-notify", b"\x1b]777;notify;Claude;needs you\x1b\\"),
+    ("osc7501-blocked", b"\x1b]7501;state=blocked:kind=permission:msg=QWxsb3cgQmFzaD8=\x1b\\"),
+    ("osc7501-working", b"\x1b]7501;state=working\x1b\\"),
+    ("osc7501-done", b"\x1b]7501;state=done\x1b\\"),
+    ("progress", b"\x1b]9;4;1;40\x1b\\"),
+    ("bel", b"\x07"),
+];
+
 pub fn get(name: &str) -> Option<&'static [u8]> {
-    SEQS.iter().find(|s| s.0 == name).map(|s| s.1)
+    SEQS.iter().find(|s| s.0 == name).map(|s| s.1).or_else(|| AGENT_SEQS.iter().find(|s| s.0 == name).map(|s| s.1))
 }

@@ -28,6 +28,7 @@ fn opts(cmdline: &str) -> PaneOptions {
         default_bg: (0, 0, 0),
         palette: vec![(1, 2, 3); 256],
         image_storage_limit: 64 << 20,
+        agent_detect: vec![],
     }
 }
 
@@ -378,4 +379,72 @@ fn osc7_sends_cwd_event() {
         }
     }
     assert_eq!(got.as_deref(), Some(r"C:\tmp"));
+}
+
+// ---- Passive agent signals (spec §5.2) ----
+
+use wraith_proto::pane::AgentSignal;
+
+/// Agent events from a pane running `cmdline`, until `want` returns true or 5 s pass.
+fn agent_events(cmdline: &str, mut want: impl FnMut(&[PaneEvent]) -> bool) -> Vec<PaneEvent> {
+    let h = spawn_pane(opts(cmdline)).unwrap();
+    let mut got = Vec::new();
+    let deadline = Instant::now() + secs(5);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match h.events.recv_timeout(left) {
+            Ok(PaneEvent::Frame(f)) => h.send(PaneCmd::Ready(f.seq)).unwrap(),
+            Ok(ev @ (PaneEvent::Agent(_) | PaneEvent::AgentProcess(_))) => {
+                got.push(ev);
+                if want(&got) {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    got
+}
+
+fn has(evs: &[PaneEvent], sig: &AgentSignal) -> bool {
+    evs.iter().any(|e| matches!(e, PaneEvent::Agent(s) if s == sig))
+}
+
+#[test]
+fn osc9_and_osc777_notifications_become_ask() {
+    let want = AgentSignal::Ask { message: "wraith-osc9".into() };
+    assert!(has(&agent_events(&emit("osc9"), |e| has(e, &want)), &want));
+    let want = AgentSignal::Ask { message: "Claude: needs you".into() };
+    let got = agent_events(&emit("osc777-notify"), |e| has(e, &want));
+    assert!(has(&got, &want), "{got:?}");
+}
+
+#[test]
+fn osc7501_states_map() {
+    let want = AgentSignal::Ask { message: "Allow Bash?".into() };
+    let got = agent_events(&emit("osc7501-blocked"), |e| has(e, &want));
+    assert!(has(&got, &want), "{got:?}");
+    assert!(has(&agent_events(&emit("osc7501-working"), |e| has(e, &AgentSignal::Working)), &AgentSignal::Working));
+    let done = AgentSignal::TurnEnd { message: String::new() };
+    assert!(has(&agent_events(&emit("osc7501-done"), |e| has(e, &done)), &done));
+}
+
+#[test]
+fn progress_and_bel_signals() {
+    assert!(has(&agent_events(&emit("progress"), |e| has(e, &AgentSignal::Working)), &AgentSignal::Working));
+    let bell = AgentSignal::Ask { message: String::new() };
+    assert!(has(&agent_events(&emit("bel"), |e| has(e, &bell)), &bell));
+}
+
+#[test]
+fn process_scan_attaches_and_detaches() {
+    // A copy of emit-seq named like a known agent stands in for one.
+    let dir = std::env::temp_dir().join(format!("wraith-scan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fake = dir.join("codex.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_emit-seq"), &fake).unwrap();
+    let cmd = format!("cmd.exe /c \"\"{}\" stream 40 50 & ping -n 3 127.0.0.1 >nul\"", fake.display());
+    let got = agent_events(&cmd, |e| e.iter().any(|x| matches!(x, PaneEvent::AgentProcess(None))));
+    let seen: Vec<Option<String>> = got.iter().filter_map(|e| if let PaneEvent::AgentProcess(p) = e { Some(p.clone()) } else { None }).collect();
+    assert_eq!(seen, vec![Some("codex".to_string()), None], "attached while it runs, detached after");
 }

@@ -58,6 +58,7 @@ impl SpawnCtx {
             default_bg: rgb(c.background),
             palette: c.palette.iter().copied().map(rgb).collect(),
             image_storage_limit: c.image_storage_limit,
+            agent_detect: c.agent_detect.clone(),
         }
     }
 }

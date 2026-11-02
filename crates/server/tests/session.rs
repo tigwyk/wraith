@@ -48,6 +48,7 @@ fn spawn(cmdline: &str) -> SpawnOpts {
         default_bg: (0, 0, 0),
         palette: vec![(1, 2, 3); 256],
         image_storage_limit: 320 * 1024 * 1024,
+        agent_detect: vec![],
     }
 }
 

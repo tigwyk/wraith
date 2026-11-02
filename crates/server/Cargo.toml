@@ -6,7 +6,8 @@ license.workspace = true
 
 [dependencies]
 libghostty-vt.workspace = true
-windows.workspace = true
+windows = { workspace = true, features = ["Wdk_System_Threading"] }
+regex = "1"
 wraith-proto.workspace = true
 wraith-agent.workspace = true
 crossbeam-channel.workspace = true

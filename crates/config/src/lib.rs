@@ -60,6 +60,8 @@ pub struct Config {
     pub right_click_action: RightClick,
     pub command: Option<String>,
     pub close_on_exit: CloseOnExit,
+    /// `agent-detect = name:regex`, extra agent process matchers.
+    pub agent_detect: Vec<(String, String)>,
     pub keybinds: Vec<Keybind>,
     pub workspaces: Vec<WorkspaceDef>,
     /// `(name, command)` from `profile = name:command`.
@@ -108,6 +110,7 @@ impl Default for Config {
             right_click_action: RightClick::Paste,
             command: None,
             close_on_exit: CloseOnExit::Clean,
+            agent_detect: Vec::new(),
             keybinds: keybind::defaults(),
             workspaces: Vec::new(),
             profiles: Vec::new(),

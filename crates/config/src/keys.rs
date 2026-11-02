@@ -80,6 +80,14 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             "false" | "never" => Ok(CloseOnExit::Never),
             _ => Err(bad(v)),
         }),
+        "agent-detect" => {
+            if value.is_empty() {
+                c.agent_detect.clear();
+            } else {
+                let (name, re) = value.split_once(':').filter(|(n, r)| !n.trim().is_empty() && !r.is_empty()).ok_or_else(|| bad(value))?;
+                c.agent_detect.push((name.trim().to_string(), re.to_string()));
+            }
+        }
         "workspace" => {
             if value.is_empty() {
                 c.workspaces.clear();

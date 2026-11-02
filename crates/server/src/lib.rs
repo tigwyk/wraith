@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod agentscan;
 pub mod frame_build;
 pub mod images;
 pub mod model;

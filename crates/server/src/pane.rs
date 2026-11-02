@@ -17,9 +17,9 @@ use libghostty_vt::selection::{FormatOptions, SelectLineOptions, SelectWordOptio
 use libghostty_vt::style::{Palette, RgbColor};
 use libghostty_vt::terminal::{
     ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point, PointCoordinate,
-    PrimaryDeviceAttributes, ScrollViewport, SecondaryDeviceAttributes, Terminal,
+    PrimaryDeviceAttributes, ProgramStatusState, ProgressState, ScrollViewport, SecondaryDeviceAttributes, SemanticPromptKind, Terminal,
 };
-pub use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
+pub use wraith_proto::pane::{AgentSignal, PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, SelRange};
 
 use crate::frame_build::build_frame;
@@ -40,6 +40,8 @@ pub struct PaneOptions {
     pub palette: Vec<(u8, u8, u8)>,
     /// Kitty graphics storage per screen, in bytes (0 turns the protocol off).
     pub image_storage_limit: u64,
+    /// `agent-detect` entries: extra (name, regex) process matchers.
+    pub agent_detect: Vec<(String, String)>,
 }
 
 pub struct PaneHandle {
@@ -116,6 +118,8 @@ struct Outbox {
     title: bool,
     bell: bool,
     clipboard: Option<String>,
+    /// Agent signals seen in the output (spec §5.2).
+    agent: Vec<AgentSignal>,
 }
 
 struct Pane {
@@ -142,6 +146,10 @@ struct Pane {
     /// The last working directory reported to the session (OSC 7).
     pwd: String,
     images: crate::images::ImageSync,
+    /// Process scan: next run, the agent it last reported, and the user's extra matchers.
+    next_scan: Instant,
+    agent_proc: Option<String>,
+    detect: Vec<(String, regex::Regex)>,
 }
 
 fn io_err(e: impl std::fmt::Display) -> io::Error {
@@ -186,7 +194,11 @@ impl Pane {
             mouse_tracking: false,
             pwd: String::new(),
             images: crate::images::ImageSync::default(),
+            next_scan: Instant::now(),
+            agent_proc: None,
+            detect: Vec::new(),
         };
+        pane.detect = crate::agentscan::compile(&pane.opts.agent_detect);
         let (fg, bg, pal) = (pane.opts.default_fg, pane.opts.default_bg, pane.opts.palette.clone());
         pane.set_colors(fg, bg, &pal);
         Ok(pane)
@@ -215,6 +227,7 @@ impl Pane {
             }
             self.flush_outbox();
             self.maybe_send_frame();
+            self.scan_agents();
             if !self.exited
                 && let Some(code) = self.pty.try_wait()
                 && self.chunks.is_empty()
@@ -445,8 +458,26 @@ impl Pane {
         }
     }
 
+    /// Once a second: is a known agent running in this pane's job? Reports changes only.
+    fn scan_agents(&mut self) {
+        const EVERY: Duration = Duration::from_secs(1);
+        let now = Instant::now();
+        if now < self.next_scan {
+            return;
+        }
+        self.next_scan = now + EVERY;
+        let found = crate::agentscan::scan(&self.pty.job_pids(), &self.detect);
+        if found != self.agent_proc {
+            self.agent_proc.clone_from(&found);
+            let _ = self.events.send(PaneEvent::AgentProcess(found));
+        }
+    }
+
     fn flush_outbox(&mut self) {
         let mut ob = self.outbox.borrow_mut();
+        for sig in ob.agent.drain(..) {
+            let _ = self.events.send(PaneEvent::Agent(sig));
+        }
         if !ob.pty.is_empty() {
             let _ = self.pty.write(&ob.pty);
             ob.pty.clear();
@@ -564,7 +595,42 @@ fn install_callbacks(term: &mut Terminal<'static, 'static>, outbox: &Rc<RefCell<
     let ob = outbox.clone();
     term.on_title_changed(move |_t| ob.borrow_mut().title = true)?;
     let ob = outbox.clone();
-    term.on_bell(move |_t| ob.borrow_mut().bell = true)?;
+    term.on_bell(move |_t| {
+        let mut ob = ob.borrow_mut();
+        ob.bell = true;
+        ob.agent.push(AgentSignal::Ask { message: String::new() });
+    })?;
+    // Agent signals (spec §5.2): notifications, progress, program status (OSC 7501), command end.
+    let ob = outbox.clone();
+    term.on_desktop_notification(move |_t, n| {
+        let (title, body) = (String::from_utf8_lossy(n.title()), String::from_utf8_lossy(n.body()));
+        let message = if title.is_empty() { body.into_owned() } else { format!("{title}: {body}") };
+        ob.borrow_mut().agent.push(AgentSignal::Ask { message });
+    })?;
+    let ob = outbox.clone();
+    term.on_progress_report(move |_t, p| {
+        if matches!(p.state(), Ok(ProgressState::Set | ProgressState::Indeterminate)) {
+            ob.borrow_mut().agent.push(AgentSignal::Working);
+        }
+    })?;
+    let ob = outbox.clone();
+    term.on_program_status(move |_t, s| {
+        let message = String::from_utf8_lossy(s.message()).into_owned();
+        let sig = match s.state() {
+            Ok(ProgramStatusState::Working) => AgentSignal::Working,
+            Ok(ProgramStatusState::Blocked) => AgentSignal::Ask { message },
+            Ok(ProgramStatusState::Done) => AgentSignal::TurnEnd { message },
+            _ => AgentSignal::Idle,
+        };
+        ob.borrow_mut().agent.push(sig);
+    })?;
+    let ob = outbox.clone();
+    term.on_semantic_prompt(move |_t, e| {
+        // The shell's command ended (OSC 133;D): an agent run as that command is gone.
+        if matches!(e.kind(), Ok(SemanticPromptKind::CommandEnd)) {
+            ob.borrow_mut().agent.push(AgentSignal::Detached);
+        }
+    })?;
     let ob = outbox.clone();
     term.on_clipboard_write(move |_t, w| {
         if let Some(c) = w.contents().find(|c| c.mime.starts_with(b"text/plain")) {
