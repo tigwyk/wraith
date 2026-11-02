@@ -19,7 +19,7 @@ Date: 2026-11-02. Branch `feat/settings-gui`.
 | Reset dots | Pass | Shown on Theme, Font size and Copy on select (changed); hidden on rows at their default |
 | Writes keep the encoding: BOM, CRLF, UTF-16; refuse invalid UTF-8 | Pass (logic) | `crates/config/tests/edit.rs`: 13 tests |
 | Every control's value round-trips through the parser | Pass (logic) | `crates/config/tests/settings.rs` |
-| Keys, lists, quiet hours, read-only rows, layout | Pass (logic) | `crates/client/tests/settings.rs`: 21 tests |
+| Keys, lists, quiet hours, read-only rows, layout | Pass (logic) | `crates/client/tests/settings.rs`: 20 tests |
 | `agent-notify = none` | Pass (logic) | `agent_notify_none_turns_all_off` |
 
 **Found and fixed during the check:** long labels ran into their controls at 14 pt ("Padding, horizontal‹ 2 ›"). The panel is now 66 cells wide, capped by the window, and labels truncate before the control.
