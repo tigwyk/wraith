@@ -80,6 +80,7 @@ pub fn build_frame(snap: &Snapshot<'_, '_>, seq: u64, force_full: bool) -> Resul
         },
         scrollbar: Scrollbar { total: 0, offset: 0, len: 0 },
         title: None,
+        images: Vec::new(),
     })
 }
 

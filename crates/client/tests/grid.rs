@@ -37,6 +37,7 @@ fn frame(full: bool, rows: Vec<Row>, cursor: Option<(u16, u16)>) -> FrameDelta {
         colors: Colors { fg: (255, 255, 255), bg: (1, 2, 3), cursor: Some((0, 255, 0)), palette: vec![(0, 0, 0); 256] },
         scrollbar: Scrollbar { total: 5, offset: 0, len: 5 },
         title: None,
+        images: vec![],
     }
 }
 

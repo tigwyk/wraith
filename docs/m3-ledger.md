@@ -66,3 +66,9 @@ Task 11: Ruling (found live): restore_effects passed the last OSC 7 cwd to Creat
 Task 11: scripts/shot.ps1 restored (un-maximized) the window before capture; now restores only a minimized one.
 Task 11: verified live: tabs/new-tab = client, empty bar = caption, min/max/close hit codes; close hover red; maximize keeps the bar on screen with the restore glyph; restore returns to 1000x640. Screenshot docs/screenshots/2026-11-01-m3-7-title-bar.png.
 Task 11: complete (tests: cargo test --workspace → exit 0; clippy -D warnings → exit 0)
+Task 12: Ruling: our own png-crate DecodePng instead of libghostty's `png` feature — its RustPngDecoder decodes into a zero-length Vec (always fails) and leaves gray images non-RGBA — cost if wrong: one extra small decoder to maintain.
+Task 12: Ruling: ImageSync keys sent images by (id, libghostty generation), so retransmitting the same id re-uploads (test retransmitted_image_is_uploaded_again) — cost if wrong: none.
+Task 12: Ruling: no separate graphics-generation dirty flag — every storage change comes from vt_write, which already marks the pane changed, and scrolling moves rows too — cost if wrong: a placement change with no output would wait for the next frame.
+Task 12: Ruling: frame_with_only_a_new_placement_is_still_sent became the end-to-end pane test image_upload_precedes_the_frame_that_places_it (emit-seq kitty through ConPTY) — it covers both the "frame still sent" and the ordering rule — cost if wrong: none.
+Task 12: Ruling: virtual (Unicode placeholder) placements and images stored compressed are skipped (compressed ones logged); placements are sent in full every frame, not as deltas — cost if wrong: placeholder-based tools (some TUIs) show no image yet.
+Task 12: complete (tests: cargo test -p wraith-server -p wraith-proto → exit 0, images 9/9; clippy -D warnings → exit 0)

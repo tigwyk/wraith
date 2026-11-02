@@ -27,6 +27,7 @@ fn roundtrip_all_types() {
         colors: Colors { fg: (1, 1, 1), bg: (2, 2, 2), cursor: Some((3, 3, 3)), palette: vec![(4, 4, 4); 256] },
         scrollbar: Scrollbar { total: 10_000, offset: 9_960, len: 40 },
         title: Some("pwsh".into()),
+        images: vec![ImagePlacement { image_id: 7, col: 2, row: -3, cols: 10, rows: 5, x_off: 1, y_off: 2, src: (0, 4, 80, 76), px: (80, 76), z: -1 }],
     });
     rt(SelRange { start: (1, 2), end: (30, 4), rectangle: true });
     rt(KeyEvent {

@@ -506,6 +506,7 @@ impl Server {
             default_fg: spawn.default_fg,
             default_bg: spawn.default_bg,
             palette: spawn.palette,
+            image_storage_limit: spawn.image_storage_limit,
         };
         match spawn_pane(opts) {
             Ok(handle) => {

@@ -21,6 +21,7 @@ fn frame(bg: (u8, u8, u8)) -> FrameDelta {
         colors: Colors { fg: (255, 255, 255), bg, cursor: None, palette: vec![(0, 0, 0); 256] },
         scrollbar: Scrollbar { total: 2, offset: 0, len: 2 },
         title: None,
+        images: vec![],
     }
 }
 

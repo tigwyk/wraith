@@ -39,6 +39,8 @@ pub struct PaneOptions {
     pub default_fg: (u8, u8, u8),
     pub default_bg: (u8, u8, u8),
     pub palette: Vec<(u8, u8, u8)>,
+    /// Kitty graphics storage per screen, in bytes (0 turns the protocol off).
+    pub image_storage_limit: u64,
 }
 
 pub struct PaneHandle {
@@ -140,6 +142,7 @@ struct Pane {
     size: (u16, u16, u32, u32),
     /// The last working directory reported to the session (OSC 7).
     pwd: String,
+    images: crate::images::ImageSync,
 }
 
 fn io_err(e: impl std::fmt::Display) -> io::Error {
@@ -157,6 +160,8 @@ impl Pane {
         let mut term = Terminal::new(TerminalOptions { cols, rows, max_scrollback: opts.scrollback_lines })
             .map_err(io_err)?;
         term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
+        crate::images::install_png_decoder();
+        term.set_kitty_image_storage_limit(opts.image_storage_limit).map_err(io_err)?;
         let outbox = Rc::new(RefCell::new(Outbox::default()));
         install_callbacks(&mut term, &outbox).map_err(io_err)?;
         let mut pane = Pane {
@@ -180,6 +185,7 @@ impl Pane {
             exited: false,
             mouse_tracking: false,
             pwd: String::new(),
+            images: crate::images::ImageSync::default(),
         };
         let (fg, bg, pal) = (pane.opts.default_fg, pane.opts.default_bg, pane.opts.palette.clone());
         pane.set_colors(fg, bg, &pal);
@@ -300,6 +306,7 @@ impl Pane {
                 self.changed = true;
             }
             PaneCmd::Reattach => {
+                self.images.reset();
                 self.outstanding = false;
                 self.force_full = true;
                 self.changed = true;
@@ -485,6 +492,13 @@ impl Pane {
         self.seq += 1;
         self.force_full = false;
         self.outstanding = true;
+        // Pixels go ahead of the frame that places them; 1 MiB of the frame cap is left for the rest.
+        let max_image = (wraith_proto::wire::MAX_FRAME as usize).saturating_sub(1 << 20);
+        let (uploads, images) = self.images.sync(&self.term, max_image);
+        for ev in uploads {
+            let _ = self.events.send(ev);
+        }
+        frame.images = images;
         let held_us = self.output_since.take().map_or(0, |t| t.elapsed().as_micros() as u64);
         tracing::debug!(seq = self.seq, rows = frame.dirty_rows.len(), held_us, "frame sent");
         let _ = self.events.send(PaneEvent::Frame(frame));

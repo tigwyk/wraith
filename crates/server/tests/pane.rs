@@ -27,6 +27,7 @@ fn opts(cmdline: &str) -> PaneOptions {
         default_fg: (255, 255, 255),
         default_bg: (0, 0, 0),
         palette: vec![(1, 2, 3); 256],
+        image_storage_limit: 64 << 20,
     }
 }
 
@@ -109,6 +110,31 @@ fn waits(ev: Vec<PaneEvent>) -> impl Iterator<Item = Duration> {
 fn echo_reaches_frame() {
     let h = spawn_pane(opts(&emit("print pane-ok"))).unwrap();
     assert!(wait_text(&h, "pane-ok", secs(5)));
+}
+
+#[test]
+fn image_upload_precedes_the_frame_that_places_it() {
+    let h = spawn_pane(opts(&emit("kitty"))).unwrap();
+    let deadline = Instant::now() + secs(5);
+    let mut uploaded = false;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match h.events.recv_timeout(left) {
+            Ok(PaneEvent::ImageUpload { width: 1, height: 1, rgba, .. }) => {
+                assert_eq!(rgba, vec![0, 0, 0, 255]);
+                uploaded = true;
+            }
+            Ok(PaneEvent::Frame(f)) => {
+                h.send(PaneCmd::Ready(f.seq)).unwrap();
+                if !f.images.is_empty() {
+                    assert!(uploaded, "the frame placing an image came before its upload");
+                    return;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    panic!("no frame with the image placement");
 }
 
 #[test]

@@ -44,6 +44,7 @@ fn frame() -> FrameDelta {
         colors: Colors { fg: (1, 1, 1), bg: (0, 0, 0), cursor: None, palette: vec![] },
         scrollbar: Scrollbar { total: 50, offset: 10, len: 40 },
         title: None,
+        images: vec![],
     }
 }
 

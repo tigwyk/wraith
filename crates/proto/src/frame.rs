@@ -14,6 +14,27 @@ pub struct FrameDelta {
     pub colors: Colors,
     pub scrollbar: Scrollbar,
     pub title: Option<String>,
+    /// Every Kitty graphics placement on screen now (not a delta); the client draws exactly these.
+    pub images: Vec<ImagePlacement>,
+}
+
+/// One image placement in viewport cells. `row` (and `col`) may be negative for a placement that has
+/// partly scrolled off the top; the client clips.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePlacement {
+    pub image_id: u32,
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
+    /// Pixel offset inside the first cell.
+    pub x_off: u32,
+    pub y_off: u32,
+    /// Source rectangle in image pixels: x, y, w, h.
+    pub src: (u32, u32, u32, u32),
+    /// Rendered size in pixels.
+    pub px: (u32, u32),
+    pub z: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
