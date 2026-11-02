@@ -1418,7 +1418,8 @@ pub fn run() -> Result<()> {
         ime: Ime,
         matcher,
         rs: crate::reload::State::default(),
-        focused: true,
+        // Set by WM_SETFOCUS: a window started minimized or behind others never had the focus.
+        focused: false,
         dirty: true,
         last_seq: None,
         size_px: (w, h),
