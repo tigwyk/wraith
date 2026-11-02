@@ -37,7 +37,11 @@ use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTask
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{ITaskbarList3, IShellLinkW, SetCurrentProcessExplicitAppUserModelID, ShellLink, TaskbarList};
-use windows::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, IDI_INFORMATION, LoadIconW, PostMessageW, WM_APP};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GetSystemMetrics, HICON, IMAGE_ICON, LR_SHARED, LoadImageW, PostMessageW, SM_CXSMICON,
+    SM_CYSMICON, WM_APP,
+};
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, Result};
 
 /// The app's identity for toasts and taskbar grouping (spec §5.4).
@@ -139,7 +143,13 @@ impl Notifier {
         if ways.badge
             && let Some(t) = &self.taskbar
         {
-            let icon = unsafe { LoadIconW(None, IDI_INFORMATION) }.unwrap_or_default();
+            // Resource 2 from build.rs: the orange ghost, at the small-icon size the overlay is drawn at.
+            let icon = unsafe {
+                let size = (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+                GetModuleHandleW(None).and_then(|m| LoadImageW(Some(m.into()), PCWSTR(2 as _), IMAGE_ICON, size.0, size.1, LR_SHARED))
+            }
+            .map(|h| HICON(h.0))
+            .unwrap_or_default();
             self.badged = unsafe { t.SetOverlayIcon(self.hwnd, icon, &HSTRING::from(title)) }.is_ok();
         }
     }

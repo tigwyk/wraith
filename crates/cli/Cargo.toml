@@ -13,6 +13,9 @@ wraith-proto.workspace = true
 wraith-ipc.workspace = true
 serde_json = { version = "1", features = ["preserve_order"] }
 
+[build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 wraith-server.workspace = true
 crossbeam-channel.workspace = true
