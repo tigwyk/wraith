@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/proto", "crates/config", "crates/ipc", "crates/server", "crates/client", "crates/cli"]
+members = ["crates/proto", "crates/config", "crates/ipc", "crates/server", "crates/client", "crates/cli", "crates/agent"]
 # Vendored libghostty-rs keeps its own workspace (see vendor/libghostty-rs/VENDORED.md).
 exclude = ["vendor"]
 
@@ -14,6 +14,7 @@ wraith-proto = { path = "crates/proto" }
 wraith-config = { path = "crates/config" }
 wraith-server = { path = "crates/server" }
 wraith-ipc = { path = "crates/ipc" }
+wraith-agent = { path = "crates/agent" }
 libghostty-vt = { path = "vendor/libghostty-rs/crates/libghostty-vt" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
