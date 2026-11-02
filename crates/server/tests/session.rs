@@ -293,8 +293,17 @@ fn detached_workspace_keeps_shells_and_next_window_reattaches() {
     a.subscribe(&[pane]);
     a.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Text("set WRAITH_X=kept\r".into()) });
     assert!(a.pump_until(pane, secs(5), |t, _| t.contains("WRAITH_X=kept")));
+    // Detach as a closing window does: dropping `a` alone leaves the pipe open in its reader thread
+    // until the server happens to send it something.
+    a.send(ClientMsg::DetachWindow);
     drop(a);
-    thread::sleep(Duration::from_millis(300));
+    // `b` is another connection, so the server may see its attach first: wait until `ws` is free.
+    let mut cli = Client::connect(&pipe, ClientKind::Cli);
+    let deadline = Instant::now() + secs(5);
+    while cli.list().iter().any(|p| p.id == pane && p.attached) {
+        assert!(Instant::now() < deadline, "server never noticed the window left");
+        thread::sleep(Duration::from_millis(10));
+    }
 
     let mut b = Client::gui(&pipe);
     assert_eq!(b.attach_window(None), ws, "most recently detached workspace");
@@ -575,7 +584,15 @@ fn layout_survives_server_restart() {
     stop_and_join(&pipe, h);
     assert!(path.exists(), "ServerStop must leave the layout on disk");
 
-    let h = spawn_server_thread_at(&pipe, Some(path)).unwrap();
+    // The old server's per-client threads close their pipe instances after it returns; until the
+    // last one goes, the first-instance bind fails with AddrInUse.
+    let deadline = Instant::now() + secs(5);
+    let h = loop {
+        match spawn_server_thread_at(&pipe, Some(path.clone())) {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            r => break r.unwrap(),
+        }
+    };
     let mut b = Client::gui(&pipe);
     let got = b.attach_window(Some(ws));
     assert_eq!(got, ws);
