@@ -426,18 +426,19 @@ impl WindowView {
     /// The pointer is at `(x, y)`: true when that changed the target under it (so it needs a redraw).
     pub fn hover_at(&mut self, x: i32, y: i32) -> bool {
         self.pointer = Some((x, y));
-        self.rehover()
+        let changed = self.rehover();
+        // The palette follows a moving pointer, as menus do (never a still one the panel opened under).
+        if changed
+            && let (Some(Hit::PaletteRow(i)), Some(p)) = (&self.hovered, &mut self.palette)
+        {
+            p.select(*i);
+        }
+        changed
     }
 
     /// Recompute the hover target after the model or the geometry changed under a still pointer.
     fn rehover(&mut self) -> bool {
         let hit = self.pointer.map(|(x, y)| self.hit(x, y));
-        // The palette follows the pointer, as menus do.
-        if let (Some(Hit::PaletteRow(i)), Some(p)) = (&hit, &mut self.palette)
-            && hit != self.hovered
-        {
-            p.select(*i);
-        }
         let changed = hit != self.hovered;
         self.hovered = hit;
         if changed {
@@ -477,6 +478,8 @@ impl WindowView {
     pub fn pointer_left(&mut self, now: Instant) {
         self.pointer = None;
         self.hovered = None;
+        // A button released outside the window sends us nothing else.
+        self.pressed = None;
         if self.hover.revealed {
             self.hover.leave_at.get_or_insert(now);
         }

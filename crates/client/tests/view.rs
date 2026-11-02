@@ -842,3 +842,25 @@ fn tooltip_due_after_rest_and_resets_on_move() {
     v.hover_at(50, 10);
     assert!(!v.tooltip_due(Instant::now() + Duration::from_millis(100)), "a new target starts the wait again");
 }
+
+#[test]
+fn snapshot_under_still_pointer_keeps_palette_selection() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    let (_, r) = v.palette_layout().unwrap().rows[4];
+    v.palette_key(&key(KeyCode::Escape), &ctx());
+    v.hover_at(r.x + 20, r.y + 2); // resting where the panel will be
+    v.open_palette(Mode::Palette, &ctx());
+    v.on_snapshot(snap(10), &ctx()); // a title change, say
+    assert_eq!(v.palette().unwrap().selected, 0, "only a pointer that moves selects");
+}
+
+#[test]
+fn pointer_leaving_clears_press() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.press(Hit::NewTab);
+    v.pointer_left(std::time::Instant::now());
+    assert_eq!(v.pressed(), None, "released outside the window: no stuck highlight");
+}

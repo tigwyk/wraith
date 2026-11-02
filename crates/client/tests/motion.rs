@@ -108,32 +108,31 @@ fn reduced_motion_completes_at_once() {
 
 #[test]
 fn motion_snaps_on_layout_change_and_pulses_new_dots_once() {
-    use wraith_client::motion::{Dot, Layout, Motion};
+    use wraith_client::motion::{Dot, Layout, Motion, SlideSlot};
     let t0 = Instant::now();
     let win = Layout { client: (1000, 600), sidebar_w: 0, cell: (8, 16), workspace: Some(1) };
     let mut m = Motion::new(true);
     m.begin(win);
-    assert_eq!(m.slide(|m| &mut m.underline, Some(r(0)), None, t0), Some(r(0)), "first appearance: in place");
+    assert_eq!(m.slide(SlideSlot::Underline, Some(r(0)), None, t0), Some(r(0)), "first appearance: in place");
     m.end(t0);
     m.begin(win);
-    m.slide(|m| &mut m.underline, Some(r(200)), None, t0);
+    m.slide(SlideSlot::Underline, Some(r(200)), None, t0);
     assert!(m.active(t0 + D / 2), "moving to the new tab");
     m.end(t0);
     m.begin(Layout { client: (800, 600), ..win });
-    assert_eq!(m.slide(|m| &mut m.underline, Some(r(160)), None, t0), Some(r(160)), "resized: jumps");
-    let p = m.dot(Dot::Tab(1), t0);
-    assert_eq!(p, 0.0);
+    assert_eq!(m.slide(SlideSlot::Underline, Some(r(160)), None, t0), Some(r(160)), "resized: jumps");
+    m.end(t0);
+    m.set_lit(std::collections::HashSet::new(), t0);
+    m.set_lit(std::collections::HashSet::from([Dot::Tab(1)]), t0);
     assert!(m.dot(Dot::Tab(1), t0 + Duration::from_millis(300)) > 0.9, "pulsing");
-    m.end(t0 + Duration::from_millis(300));
-    m.begin(Layout { client: (800, 600), ..win });
-    m.dot(Dot::Tab(1), t0 + Duration::from_millis(700));
     m.end(t0 + Duration::from_millis(700));
     assert!(!m.active(t0 + Duration::from_millis(700)), "the pulse played once and stays lit without motion");
     let mut off = Motion::new(false);
     off.begin(win);
-    off.slide(|m| &mut m.underline, Some(r(0)), None, t0);
-    off.slide(|m| &mut m.underline, Some(r(300)), None, t0);
-    off.dot(Dot::Agent(3), t0);
+    off.slide(SlideSlot::Underline, Some(r(0)), None, t0);
+    off.slide(SlideSlot::Underline, Some(r(300)), None, t0);
+    off.set_lit(std::collections::HashSet::new(), t0);
+    off.set_lit(std::collections::HashSet::from([Dot::Agent(3)]), t0);
     off.hover(Some(&wraith_client::chrome::Hit::NewTab), t0);
     assert!(!off.active(t0), "reduced motion: nothing to animate");
 }
@@ -146,4 +145,55 @@ fn overlay_shows_on_its_first_frame() {
     assert!(m.overlay(|m| &mut m.palette, true, t0) >= 0.4, "the key press shows something at once");
     assert_eq!(m.overlay(|m| &mut m.palette, true, t0 + D), 1.0);
     assert_eq!(m.overlay(|m| &mut m.palette, false, t0 + D), 0.0, "closing is instant");
+}
+
+#[test]
+fn layout_change_snaps_existing_slides_without_replaying_entrance() {
+    use wraith_client::motion::{Layout, Motion, SlideSlot};
+    let t0 = Instant::now();
+    let a = Layout { client: (1000, 600), sidebar_w: 0, cell: (8, 16), workspace: Some(1) };
+    let mut m = Motion::new(true);
+    let s = Rect { x: 0, y: 0, w: 192, h: 600 };
+    let off = Rect { x: -192, ..s };
+    m.begin(a);
+    assert_eq!(m.slide(SlideSlot::Sidebar, Some(s), Some(off), t0), Some(off), "enters from the left");
+    m.end(t0);
+    let later = t0 + Duration::from_secs(1);
+    m.begin(Layout { client: (900, 600), ..a });
+    let s2 = Rect { h: 600, ..s };
+    assert_eq!(m.slide(SlideSlot::Sidebar, Some(s2), Some(off), later), Some(s2), "resized: stays in place, no second entrance");
+    m.end(later);
+    m.begin(Layout { client: (900, 600), workspace: Some(2), ..a });
+    assert_eq!(m.slide(SlideSlot::Sidebar, Some(s2), Some(off), later), Some(s2), "workspace switch: the sidebar stays put");
+}
+
+#[test]
+fn workspace_switch_lets_the_workspace_bar_slide() {
+    use wraith_client::motion::{Layout, Motion, SlideSlot};
+    let t0 = Instant::now();
+    let a = Layout { client: (1000, 600), sidebar_w: 192, cell: (8, 16), workspace: Some(1) };
+    let mut m = Motion::new(true);
+    m.begin(a);
+    m.slide(SlideSlot::WsBar, Some(r(0)), None, t0);
+    m.slide(SlideSlot::Underline, Some(r(0)), None, t0);
+    m.end(t0);
+    m.begin(Layout { workspace: Some(2), ..a });
+    m.slide(SlideSlot::WsBar, Some(r(40)), None, t0);
+    assert_eq!(m.slide(SlideSlot::Underline, Some(r(300)), None, t0), Some(r(300)), "another workspace's tabs: the underline jumps");
+    assert!(m.active(t0 + D / 2), "the workspace bar slides to the new row");
+}
+
+#[test]
+fn pulse_only_when_attention_starts() {
+    use std::collections::HashSet;
+    use wraith_client::motion::{Dot, Motion};
+    let t0 = Instant::now();
+    let mid = t0 + Duration::from_millis(300);
+    let mut m = Motion::new(true);
+    m.set_lit(HashSet::from([Dot::Tab(1)]), t0);
+    assert_eq!(m.dot(Dot::Tab(1), mid), 0.0, "already lit when the window started: no pulse");
+    m.set_lit(HashSet::from([Dot::Tab(1), Dot::Agent(5)]), t0);
+    assert!(m.dot(Dot::Agent(5), mid) > 0.9, "newly asking: pulses");
+    m.set_lit(HashSet::from([Dot::Tab(1), Dot::Agent(5)]), mid);
+    assert_eq!(m.dot(Dot::Tab(1), mid), 0.0, "drawn again (sidebar revealed, workspace switched): no pulse");
 }

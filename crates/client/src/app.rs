@@ -28,7 +28,7 @@ use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
 use crate::chrome::{self, Cursor, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
-use crate::motion::{Dot, Layout, Motion};
+use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
@@ -1103,6 +1103,14 @@ impl App {
         let g = self.view.geometry();
         self.motion.begin(Layout { client: g.client, sidebar_w: regions.tabbar.x, cell: g.cell, workspace: self.view.workspace() });
         self.motion.hover(self.view.hovered(), now);
+        if self.view.workspace().is_some() {
+            // Every attention dot the model lights, drawn or not: a pulse marks only new attention.
+            let snap = self.view.snapshot();
+            let tabs = snap.tabs.iter().filter(|t| self.view.tab_agent(t.id).is_some_and(|a| a.attention)).map(|t| Dot::Tab(t.id));
+            let ws = self.view.sidebar_rows().into_iter().filter(|r| r.attention).map(|r| Dot::Workspace(r.id));
+            let agents = self.view.agent_rows().into_iter().filter(|r| r.agent.attention).map(|r| Dot::Agent(r.pane));
+            self.motion.set_lit(tabs.chain(ws).chain(agents).collect(), now);
+        }
         let focused_pane = self.view.focused();
         let panes = self.view.visible();
         let split = panes.len() > 1;
@@ -1206,7 +1214,7 @@ impl App {
             p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", xc, 1.0);
         }
         let under = tabs.iter().find(|(t, _)| Some(*t) == active).map(|(_, r)| Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 });
-        if let Some(u) = self.motion.slide(|m| &mut m.underline, under, None, now) {
+        if let Some(u) = self.motion.slide(SlideSlot::Underline, under, None, now) {
             p.rect(u, cue, 1.0);
         }
         if let Some(c) = wash(&Hit::NewTab) {
@@ -1248,7 +1256,7 @@ impl App {
         let sidebar_start = p.q.len();
         let floating = self.view.floating_sidebar();
         // The floating sidebar slides in from the left edge; the docked one never moves (panes would resize).
-        let slid = self.motion.slide(|m| &mut m.sidebar, floating, floating.map(|f| Rect { x: f.x - f.w, ..f }), now);
+        let slid = self.motion.slide(SlideSlot::Sidebar, floating, floating.map(|f| Rect { x: f.x - f.w, ..f }), now);
         if let Some(s) = self.view.sidebar_rect() {
             p.rect(s, col.bar_bg, 1.0);
             if self.view.floating_sidebar().is_some() {
@@ -1277,7 +1285,7 @@ impl App {
                 }
             }
             let bar = rects.iter().zip(&rows).find(|(_, row)| row.current).map(|((_, r), _)| Rect { x: r.x, y: r.y, w: 2, h: r.h });
-            if let Some(b) = self.motion.slide(|m| &mut m.ws_bar, bar, None, now) {
+            if let Some(b) = self.motion.slide(SlideSlot::WsBar, bar, None, now) {
                 p.rect(b, cue, 1.0);
             }
             // Each workspace's tabs, indented under it; the tab this window shows is highlighted.
@@ -1297,8 +1305,7 @@ impl App {
                 let tc = if current { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::SidebarTab(t))) };
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &truncate_cells(&label, cells), tc, 1.0);
                 if agent.is_some_and(|(_, attention)| attention) {
-                    // Keyed apart from the tab bar's badge, so each flares on its own.
-                    let v = self.motion.dot(Dot::SidebarTab(t), now);
+                    let v = self.motion.dot(Dot::Tab(t), now);
                     attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
                 }
             }

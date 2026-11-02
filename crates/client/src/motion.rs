@@ -130,11 +130,10 @@ impl Pulse {
     }
 }
 
-/// Which attention dot: tab badge, workspace row or agent row, with its id.
+/// Which attention dot: on a tab (its bar badge and sidebar row), a workspace row, or an agent row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dot {
     Tab(u64),
-    SidebarTab(u64),
     Workspace(u64),
     Agent(u64),
 }
@@ -149,22 +148,33 @@ pub struct Layout {
     pub workspace: Option<u64>,
 }
 
+/// The chrome pieces that slide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlideSlot {
+    /// The active tab's underline.
+    Underline,
+    /// The current workspace's accent bar in the sidebar.
+    WsBar,
+    /// The hover-revealed (floating) sidebar.
+    Sidebar,
+}
+
 /// Everything in the chrome that moves, keyed by what it belongs to. Asked for values while a frame
 /// is drawn; `active` says whether another frame is wanted.
 #[derive(Default)]
 pub struct Motion {
     /// Windows' "Show animations" setting.
     pub on: bool,
-    pub underline: Option<Slide>,
-    pub ws_bar: Option<Slide>,
-    pub sidebar: Option<Slide>,
+    slides: [Option<Slide>; 3],
+    /// Slots that jump to their next target this frame (the layout changed under them).
+    snap: [bool; 3],
     pub palette: Fade,
     pub find: Fade,
     pub toast: Fade,
     hover: std::collections::HashMap<crate::chrome::Hit, Fade>,
     pulses: std::collections::HashMap<Dot, Pulse>,
-    lit: std::collections::HashSet<Dot>,
-    seen: std::collections::HashSet<Dot>,
+    /// Dots lit in the model; `None` until the first model arrives (those dots light without a pulse).
+    lit: Option<std::collections::HashSet<Dot>>,
     layout: Option<Layout>,
 }
 
@@ -177,36 +187,46 @@ impl Motion {
         duration(base, self.on)
     }
 
-    /// Start of a frame. A new layout snaps every slide.
+    /// Start of a frame. Window size, dock or font changes snap every slide; another workspace has
+    /// other tabs, so it snaps the underline only (the workspace bar slides between rows).
     pub fn begin(&mut self, layout: Layout) {
-        if self.layout != Some(layout) {
-            self.layout = Some(layout);
-            self.underline = None;
-            self.ws_bar = None;
-            self.sidebar = None;
+        if let Some(old) = self.layout {
+            if (Layout { workspace: old.workspace, ..layout }) != old {
+                self.snap = [true; 3];
+            } else if layout.workspace != old.workspace {
+                self.snap[SlideSlot::Underline as usize] = true;
+            }
         }
-        self.seen.clear();
+        self.layout = Some(layout);
     }
 
-    /// End of a frame: dots not drawn this frame are no longer lit.
+    /// End of a frame.
     pub fn end(&mut self, now: Instant) {
-        self.lit = std::mem::take(&mut self.seen);
-        self.pulses.retain(|d, p| self.lit.contains(d) && p.active(now));
+        self.snap = [false; 3];
+        self.pulses.retain(|_, p| p.active(now));
         self.hover.retain(|_, f| f.on() || f.active(now));
     }
 
-    /// Where `slot` is drawn this frame, heading for `to`. A slot appears in place unless `enter`
+    /// Where `slot` is drawn this frame, heading for `to`. A new slot appears in place unless `enter`
     /// says where it comes from; `None` removes it.
-    pub fn slide(&mut self, slot: fn(&mut Motion) -> &mut Option<Slide>, to: Option<Rect>, enter: Option<Rect>, now: Instant) -> Option<Rect> {
+    pub fn slide(&mut self, slot: SlideSlot, to: Option<Rect>, enter: Option<Rect>, now: Instant) -> Option<Rect> {
         let dur = self.dur(SLIDE);
-        let s = slot(self);
+        let snap = self.snap[slot as usize];
+        let s = &mut self.slides[slot as usize];
         let Some(to) = to else {
             *s = None;
             return None;
         };
-        let slide = s.get_or_insert_with(|| Slide::new(enter.unwrap_or(to)));
-        slide.retarget(to, now, dur);
-        Some(slide.value(now))
+        match s {
+            Some(sl) if snap => sl.snap(to),
+            Some(sl) => sl.retarget(to, now, dur),
+            None => {
+                let mut sl = Slide::new(enter.unwrap_or(to));
+                sl.retarget(to, now, dur);
+                *s = Some(sl);
+            }
+        }
+        s.map(|sl| sl.value(now))
     }
 
     /// Opacity of an overlay: it fades in from 40% when it opens (so the key press shows on the very
@@ -233,28 +253,30 @@ impl Motion {
         }
     }
 
-    /// How lit `h`'s hover wash is, 0..=1.
-    pub fn hover_level(&self, h: &crate::chrome::Hit, now: Instant) -> f32 {
-        self.hover.get(h).map_or(0.0, |f| f.value(now))
-    }
-
     /// Every hover wash still showing, with its level (one frame's snapshot).
     pub fn hover_levels(&self, now: Instant) -> std::collections::HashMap<crate::chrome::Hit, f32> {
         self.hover.iter().map(|(h, f)| (h.clone(), f.value(now))).filter(|(_, v)| *v > 0.0).collect()
     }
 
-    /// A lit attention dot drawn this frame: its pulse, 0..=1, playing once when it lights up.
-    pub fn dot(&mut self, d: Dot, now: Instant) -> f32 {
-        self.seen.insert(d);
-        if !self.lit.contains(&d) && !self.pulses.contains_key(&d) {
-            let dur = self.dur(PULSE);
-            self.pulses.insert(d, Pulse::new(now, dur));
+    /// The dots the model lights now, drawn or not: those that just lit up start their pulse.
+    pub fn set_lit(&mut self, lit: std::collections::HashSet<Dot>, now: Instant) {
+        if let Some(prev) = &self.lit {
+            let dur = duration(PULSE, self.on);
+            for d in lit.difference(prev) {
+                self.pulses.insert(*d, Pulse::new(now, dur));
+            }
         }
+        self.pulses.retain(|d, _| lit.contains(d));
+        self.lit = Some(lit);
+    }
+
+    /// A lit dot's pulse, 0..=1: it plays once when its attention starts.
+    pub fn dot(&self, d: Dot, now: Instant) -> f32 {
         self.pulses.get(&d).map_or(0.0, |p| p.value(now))
     }
 
     pub fn active(&self, now: Instant) -> bool {
-        [self.underline, self.ws_bar, self.sidebar].iter().flatten().any(|s| s.active(now))
+        self.slides.iter().flatten().any(|s| s.active(now))
             || [self.palette, self.find, self.toast].iter().any(|f| f.active(now))
             || self.hover.values().any(|f| f.active(now))
             || self.pulses.values().any(|p| p.active(now))
