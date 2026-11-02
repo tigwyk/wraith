@@ -1,5 +1,6 @@
 //! Wraith config: Ghostty `key = value` syntax and key names (spec §7).
 pub mod edit;
+pub mod settings;
 mod keybind;
 mod keys;
 mod parse;
