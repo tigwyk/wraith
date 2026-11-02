@@ -274,6 +274,8 @@ pub(crate) struct App {
     pub(crate) matcher: KeybindMatcher,
     pub(crate) rs: crate::reload::State,
     focused: bool,
+    /// In front of the user (foreground, not minimized), as last told to the server.
+    foreground: bool,
     dirty: bool,
     /// Newest frame applied (debug timing only).
     last_seq: Option<u64>,
@@ -639,6 +641,7 @@ impl App {
                 start_forwarder(&link, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
                 link.send(ClientMsg::AttachWindow { workspace: None });
                 self.link = link;
+                self.foreground = false; // a new server starts at false; resent by the next sync
                 self.view.on_reconnect();
                 self.grids.clear();
                 self.server_stopped = false;
@@ -1051,10 +1054,6 @@ impl App {
                         self.ime.end();
                     }
                     self.focused = msg == WM_SETFOCUS;
-                    self.link.send(ClientMsg::Foreground(self.focused));
-                    if self.focused {
-                        self.notifier.clear_badge();
-                    }
                     self.dirty = true;
                 }
                 WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => {
@@ -1137,8 +1136,9 @@ impl App {
             ServerMsg::Notify { pane, title, body } => {
                 let visible = self.view.visible().iter().any(|(p, _)| *p == pane);
                 let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-                let ways = crate::notify::notify_ways(&self.config.agent_notify, self.focused, visible, u32::from(t.wHour) * 60 + u32::from(t.wMinute));
-                tracing::info!(pane, visible, foreground = self.focused, ?ways, "agent notify");
+                self.sync_foreground();
+                let ways = crate::notify::notify_ways(&self.config.agent_notify, self.foreground, visible, u32::from(t.wHour) * 60 + u32::from(t.wMinute));
+                tracing::info!(pane, visible, foreground = self.foreground, ?ways, "agent notify");
                 self.notifier.show(ways, pane, &title, &body);
             }
             ServerMsg::Welcome { .. } | ServerMsg::VersionMismatch { .. } | ServerMsg::Panes(_) => {}
@@ -1238,12 +1238,30 @@ impl App {
     }
 
     /// Drain server messages, render if possible, and say how the loop should wait.
+    /// Tell the server when the window comes to or leaves the user's view. Asked of Windows rather than
+    /// taken from WM_SETFOCUS, which tracks thread focus: a background or minimized window can hold
+    /// it, and the first one arrives before the handler is installed.
+    fn sync_foreground(&mut self) {
+        let hwnd = self.win.hwnd();
+        let fg = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd && !windows::Win32::UI::WindowsAndMessaging::IsIconic(hwnd).as_bool()
+        };
+        if fg != self.foreground {
+            self.foreground = fg;
+            self.link.send(ClientMsg::Foreground(fg));
+            if fg {
+                self.notifier.clear_badge();
+            }
+        }
+    }
+
     fn idle(&mut self, signaled: bool) -> Idle {
         if self.quit {
             return Idle { ctl: LoopControl::Exit, sleep_ms: 0, wait_on: None };
         }
         // The loop's wait on the frame-latency object acquired a present for us.
         self.present_token |= signaled;
+        self.sync_foreground();
         self.drain_server_msgs();
         for k in self.matcher.tick(Instant::now()) {
             self.send_key(k);
@@ -2020,6 +2038,7 @@ pub fn run() -> Result<()> {
         rs: crate::reload::State::default(),
         // Set by WM_SETFOCUS: a window started minimized or behind others never had the focus.
         focused: false,
+        foreground: false,
         dirty: true,
         last_seq: None,
         size_px: (w, h),
