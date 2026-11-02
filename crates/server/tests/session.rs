@@ -532,6 +532,28 @@ fn stop_and_join(pipe: &str, handle: thread::JoinHandle<std::io::Result<()>>) {
 }
 
 #[test]
+fn failed_layout_save_is_retried() {
+    // A file where the layout's folder should be makes the write fail, like a full disk or a locked file.
+    let blocker = layout_path("retry").parent().unwrap().join("blocked");
+    std::fs::write(&blocker, "").unwrap();
+    let path = blocker.join("layout.json");
+    let pipe = unique();
+    let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
+    let mut a = Client::gui(&pipe);
+    let ws = a.attach_window(None);
+    a.model(ModelCmd::RenameWorkspace(ws, "kept".into())).unwrap();
+    thread::sleep(Duration::from_millis(1500));
+    std::fs::remove_file(&blocker).unwrap();
+    let deadline = Instant::now() + secs(5);
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(std::fs::read_to_string(&path).is_ok_and(|s| s.contains("kept")), "the unsaved change was written once the disk worked again");
+    drop(a);
+    stop_and_join(&pipe, h);
+}
+
+#[test]
 fn layout_survives_server_restart() {
     let path = layout_path("restart");
     let pipe = unique();

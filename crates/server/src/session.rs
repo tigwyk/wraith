@@ -279,21 +279,29 @@ impl Server {
         }
     }
 
-    /// Write the layout: temp file, then replace (spec §4.4).
+    /// Write the layout: temp file on disk, then replace (spec §4.4). A failed write is tried again
+    /// `SAVE_DELAY` later.
     fn save(&mut self) {
         self.save_due = None;
         let Some(path) = &self.layout else { return };
-        self.saved_rev = self.model.rev();
         let tmp = PathBuf::from(format!("{}.tmp", path.display()));
         let write = || -> io::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            std::fs::write(&tmp, self.model.to_json())?;
+            let mut f = std::fs::File::create(&tmp)?;
+            std::io::Write::write_all(&mut f, self.model.to_json().as_bytes())?;
+            // Flushed before the rename: after a power cut the layout is old or new, never empty.
+            f.sync_all()?;
+            drop(f);
             std::fs::rename(&tmp, path)
         };
-        if let Err(e) = write() {
-            tracing::warn!("saving layout {}: {e}", path.display());
+        match write() {
+            Ok(()) => self.saved_rev = self.model.rev(),
+            Err(e) => {
+                tracing::warn!("saving layout {}: {e}", path.display());
+                self.save_due = Some(Instant::now() + SAVE_DELAY);
+            }
         }
     }
 
