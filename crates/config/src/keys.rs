@@ -1,5 +1,5 @@
 //! Typed key table: key name → setter on `Config`.
-use crate::{Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
+use crate::{CloseOnExit, Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
 
 /// Set `key` from `value`. An empty value resets the key to its default.
 pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
@@ -74,7 +74,12 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             _ => Err(bad(v)),
         }),
         "command" => set!(command, |v: &str| Ok::<_, String>(Some(v.to_string()))),
-        "close-on-exit" => set!(close_on_exit, boolean),
+        "close-on-exit" => set!(close_on_exit, |v| match v {
+            "clean" => Ok(CloseOnExit::Clean),
+            "true" | "always" => Ok(CloseOnExit::Always),
+            "false" | "never" => Ok(CloseOnExit::Never),
+            _ => Err(bad(v)),
+        }),
         "workspace" => {
             if value.is_empty() {
                 c.workspaces.clear();

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use wraith_config::{Action, Config, SplitTarget};
+use wraith_config::{Action, CloseOnExit, Config, SplitTarget};
 use wraith_proto::model::{Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
 use wraith_proto::pane::{PaneCmd, SpawnOpts};
 use wraith_proto::wire::{ClientMsg, PaneId};
@@ -67,6 +67,14 @@ pub enum Ui {
     Picker,
     MoveTab,
     NewWindow,
+}
+
+/// What a shell exit does (see `WindowView::on_exit`).
+#[derive(Debug, PartialEq)]
+pub enum ExitOut {
+    Keep,
+    ClosePane(Vec<ClientMsg>),
+    CloseWindow(Vec<ClientMsg>),
 }
 
 /// What an action produced: messages for the server, a close awaiting the user's confirmation, or a UI request.
@@ -662,6 +670,24 @@ impl WindowView {
     /// The user confirmed ending a running shell (or it had already exited).
     pub fn close_pane(&self, pane: PaneId) -> Vec<ClientMsg> {
         vec![ClientMsg::Model(ModelCmd::ClosePane(pane))]
+    }
+
+    /// What a shell exit does under `mode`: nothing, close the pane, or, when it was the last pane
+    /// of this window's workspace, close the window too (else the empty workspace would get a new shell).
+    pub fn on_exit(&self, pane: PaneId, code: u32, mode: CloseOnExit) -> ExitOut {
+        let close = match mode {
+            CloseOnExit::Never => false,
+            CloseOnExit::Clean => code == 0,
+            CloseOnExit::Always => true,
+        };
+        if !close {
+            return ExitOut::Keep;
+        }
+        let msgs = self.close_pane(pane);
+        let ws = self.workspace.and_then(|w| self.snap.workspace(w));
+        let panes: usize = ws.map_or(0, |w| w.tabs.iter().filter_map(|&t| self.snap.tab(t)).map(|t| t.root.leaves().len()).sum());
+        let mine = ws.is_some_and(|w| w.tabs.iter().filter_map(|&t| self.snap.tab(t)).any(|t| t.root.contains(pane)));
+        if mine && panes == 1 { ExitOut::CloseWindow(msgs) } else { ExitOut::ClosePane(msgs) }
     }
 
     pub fn pane_exit(&self, pane: PaneId) -> Option<u32> {

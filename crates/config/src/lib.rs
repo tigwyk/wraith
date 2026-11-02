@@ -20,6 +20,16 @@ pub enum CursorStyle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseOnExit {
+    /// Keep every exited pane, showing its exit code.
+    Never,
+    /// Close a pane whose shell exited 0; keep failures visible.
+    Clean,
+    /// Close whatever the exit code.
+    Always,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RightClick {
     Paste,
     Menu,
@@ -49,7 +59,7 @@ pub struct Config {
     pub copy_on_select: bool,
     pub right_click_action: RightClick,
     pub command: Option<String>,
-    pub close_on_exit: bool,
+    pub close_on_exit: CloseOnExit,
     pub keybinds: Vec<Keybind>,
     pub workspaces: Vec<WorkspaceDef>,
     /// `(name, command)` from `profile = name:command`.
@@ -97,7 +107,7 @@ impl Default for Config {
             copy_on_select: false,
             right_click_action: RightClick::Paste,
             command: None,
-            close_on_exit: false,
+            close_on_exit: CloseOnExit::Clean,
             keybinds: keybind::defaults(),
             workspaces: Vec::new(),
             profiles: Vec::new(),

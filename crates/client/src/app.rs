@@ -31,7 +31,7 @@ use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
 use crate::palette::Mode;
-use crate::view::{Geometry, Out, SpawnCtx, Ui, WindowView};
+use crate::view::{ExitOut, Geometry, Out, SpawnCtx, Ui, WindowView};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
@@ -846,10 +846,14 @@ impl App {
                     self.send_pane(pane, PaneCmd::PasteConfirmed(t));
                 }
             }
-            PaneEvent::Exited(_) => {
-                if self.config.close_on_exit {
-                    let msgs = self.view.close_pane(pane);
-                    self.send_all(msgs);
+            PaneEvent::Exited(code) => {
+                match self.view.on_exit(pane, code, self.config.close_on_exit) {
+                    ExitOut::Keep => {}
+                    ExitOut::ClosePane(msgs) => self.send_all(msgs),
+                    ExitOut::CloseWindow(msgs) => {
+                        self.send_all(msgs);
+                        self.detach_and_close();
+                    }
                 }
                 self.dirty = true;
             }

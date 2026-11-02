@@ -282,6 +282,31 @@ fn clicking_and_dragging() {
 }
 
 #[test]
+fn clean_exit_closes_the_pane_failed_exit_stays() {
+    use wraith_client::view::ExitOut;
+    use wraith_config::CloseOnExit;
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let close = |p| ExitOut::ClosePane(vec![ClientMsg::Model(ModelCmd::ClosePane(p))]);
+    assert_eq!(v.on_exit(1, 0, CloseOnExit::Clean), close(1));
+    assert_eq!(v.on_exit(1, 1, CloseOnExit::Clean), ExitOut::Keep, "a failure stays visible");
+    assert_eq!(v.on_exit(1, 1, CloseOnExit::Always), close(1));
+    assert_eq!(v.on_exit(1, 0, CloseOnExit::Never), ExitOut::Keep);
+}
+
+#[test]
+fn clean_exit_of_the_windows_last_pane_closes_the_window() {
+    use wraith_client::view::ExitOut;
+    use wraith_config::CloseOnExit;
+    let mut v = view();
+    let mut s = snap(11);
+    s.workspaces[0].tabs = vec![11];
+    s.tabs.retain(|t| t.id == 11);
+    v.on_snapshot(s, &ctx());
+    assert_eq!(v.on_exit(3, 0, CloseOnExit::Clean), ExitOut::CloseWindow(vec![ClientMsg::Model(ModelCmd::ClosePane(3))]));
+}
+
+#[test]
 fn dragging_a_tab_over_another_reorders_once() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());

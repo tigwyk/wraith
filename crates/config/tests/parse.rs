@@ -82,6 +82,18 @@ fn palette_and_enums() {
 }
 
 #[test]
+fn close_on_exit_defaults_to_clean_and_keeps_boolean_spellings() {
+    use wraith_config::CloseOnExit;
+    let at = |v: &str| parse_str(&format!("close-on-exit = {v}\n"), p(), &themes()).0.close_on_exit;
+    assert_eq!(parse_str("", p(), &themes()).0.close_on_exit, CloseOnExit::Clean);
+    assert_eq!(at("clean"), CloseOnExit::Clean);
+    assert_eq!((at("true"), at("always")), (CloseOnExit::Always, CloseOnExit::Always));
+    assert_eq!((at("false"), at("never")), (CloseOnExit::Never, CloseOnExit::Never));
+    let (_, d) = parse_str("close-on-exit = sometimes\n", p(), &themes());
+    assert_eq!(d.len(), 1, "a bad value is reported");
+}
+
+#[test]
 fn include_cycle_is_reported_not_infinite() {
     let dir = std::env::temp_dir().join(format!("wraith-cfg-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

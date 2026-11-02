@@ -250,7 +250,7 @@ Caveat: if a program re-renders its whole transcript on every keystroke, it will
 |---|---|
 | Server not running | Client spawns it, retries connection for 2 s, then shows an error screen with the log path and "Retry". |
 | Protocol version mismatch | Dialog: "Server is from an older version. Restart server? Running shells will close." Restart / Cancel (cancel exits client). |
-| Shell exits | Pane shows `[process exited N] Enter: restart · ctrl+shift+w: close`. Closed automatically only if `close-on-exit = true`. |
+| Shell exits | `close-on-exit = clean` (default): exit code 0 closes the pane, and closes the window if that was its last pane. Any other code shows `[process exited N] Enter: restart · ctrl+shift+w: close`. `always` (or `true`) closes whatever the code; `never` (or `false`) always keeps the pane. |
 | ConPTY creation fails | Pane shows the Win32 error text. Other panes unaffected. |
 | Server crash | Shells die with their Job Objects. The client shows "Server stopped" and relaunches it on Retry. The layout is restored from `layout.json`. |
 | Config error | Per-key fallback + toast (§7). |
