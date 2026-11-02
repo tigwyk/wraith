@@ -12,7 +12,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetClientRect, IDC_IBEAM, IsZoomed, LoadCursorW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PeekMessageW,
+    GetClientRect, IDC_ARROW, IsZoomed, LoadCursorW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PeekMessageW,
     SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
     WM_NCCALCSIZE,
     PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN,
@@ -51,7 +51,7 @@ impl Window {
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(wndproc),
                 hInstance: hinst.into(),
-                hCursor: LoadCursorW(None, IDC_IBEAM)?,
+                hCursor: LoadCursorW(None, IDC_ARROW)?,
                 hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
                 lpszClassName: class,
                 ..Default::default()

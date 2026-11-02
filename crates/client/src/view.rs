@@ -179,6 +179,11 @@ pub struct WindowView {
     palette: Option<Palette>,
     /// The open find bar (scrollback search), if any.
     find: Option<Find>,
+    /// The pointer's last position in the client area, and what is under it.
+    pointer: Option<(i32, i32)>,
+    hovered: Option<Hit>,
+    /// The chrome target a held left button went down on.
+    pressed: Option<Hit>,
 }
 
 impl WindowView {
@@ -204,6 +209,9 @@ impl WindowView {
             configured_done: false,
             palette: None,
             find: None,
+            pointer: None,
+            hovered: None,
+            pressed: None,
         }
     }
 
@@ -361,7 +369,40 @@ impl WindowView {
         }
     }
 
+    /// The pointer is at `(x, y)`: true when that changed the target under it (so it needs a redraw).
+    pub fn hover_at(&mut self, x: i32, y: i32) -> bool {
+        self.pointer = Some((x, y));
+        self.rehover()
+    }
+
+    /// Recompute the hover target after the model or the geometry changed under a still pointer.
+    fn rehover(&mut self) -> bool {
+        let hit = self.pointer.map(|(x, y)| self.hit(x, y));
+        let changed = hit != self.hovered;
+        self.hovered = hit;
+        changed
+    }
+
+    pub fn hovered(&self) -> Option<&Hit> {
+        self.hovered.as_ref()
+    }
+
+    pub fn pressed(&self) -> Option<&Hit> {
+        self.pressed.as_ref()
+    }
+
+    pub fn press(&mut self, hit: Hit) {
+        self.pressed = Some(hit);
+    }
+
+    /// The button came up, or capture or focus was lost.
+    pub fn release(&mut self) {
+        self.pressed = None;
+    }
+
     pub fn pointer_left(&mut self, now: Instant) {
+        self.pointer = None;
+        self.hovered = None;
         if self.hover.revealed {
             self.hover.leave_at.get_or_insert(now);
         }
@@ -604,6 +645,7 @@ impl WindowView {
 
     /// Recompute pane rectangles; resize the shells whose cell grid changed.
     fn relayout(&mut self) -> Vec<ClientMsg> {
+        self.rehover();
         let content = self.regions().content;
         if content.w <= 0 || content.h <= 0 {
             return Vec::new(); // minimized: leave every shell at its size

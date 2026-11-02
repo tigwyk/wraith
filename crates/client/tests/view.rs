@@ -730,3 +730,48 @@ fn esc_closes_find_and_clears() {
 fn find_has_a_default_keybinding() {
     assert!(Config::default().keybinds.iter().any(|k| k.action == Action::Find), "ctrl+shift+f");
 }
+
+#[test]
+fn hover_reports_only_target_changes() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(100, 300);
+    assert_eq!(v.hovered(), Some(&Hit::Pane(1)));
+    assert!(!v.hover_at(120, 310), "moving within the same pane changes nothing to draw");
+    assert!(v.hover_at(50, 10), "onto a tab");
+    assert_eq!(v.hovered(), Some(&Hit::Tab(10)));
+    assert!(!v.hover_at(60, 12));
+}
+
+#[test]
+fn hover_drops_target_that_disappears() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(250, 10);
+    assert_eq!(v.hovered(), Some(&Hit::Tab(11)));
+    let mut s = snap(10);
+    s.workspaces[0].tabs = vec![10];
+    s.tabs.retain(|t| t.id == 10);
+    s.panes.retain(|p| p.id != 3);
+    v.on_snapshot(s, &ctx());
+    assert_ne!(v.hovered(), Some(&Hit::Tab(11)), "tab 11 is gone");
+}
+
+#[test]
+fn pointer_left_clears_hover() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.hover_at(50, 10);
+    v.pointer_left(std::time::Instant::now());
+    assert_eq!(v.hovered(), None);
+}
+
+#[test]
+fn capture_lost_clears_press() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.press(Hit::Tab(10));
+    assert_eq!(v.pressed(), Some(&Hit::Tab(10)));
+    v.release();
+    assert_eq!(v.pressed(), None);
+}

@@ -108,3 +108,22 @@ fn chrome_colors_follow_the_theme() {
     let light = chrome_colors((250, 250, 250), (20, 20, 20), (0, 90, 200));
     assert!(light.bar_bg.0 < 250, "{:?}", light.bar_bg);
 }
+
+#[test]
+fn cursor_for_divider_is_resize() {
+    use wraith_client::chrome::{Cursor, cursor_for};
+    let vline = Divider { path: vec![], axis: Axis::Horizontal, parent: r(0, 26, 1000, 574), line: r(499, 26, 1, 574) };
+    let hline = Divider { path: vec![], axis: Axis::Vertical, parent: r(0, 26, 1000, 574), line: r(0, 300, 1000, 1) };
+    let divs = [vline, hline];
+    assert_eq!(cursor_for(&Hit::Divider(0), &divs, false), Cursor::SizeWE, "side-by-side panes: drag left/right");
+    assert_eq!(cursor_for(&Hit::Divider(1), &divs, false), Cursor::SizeNS, "stacked panes: drag up/down");
+}
+
+#[test]
+fn cursor_over_tracking_pane_is_arrow() {
+    use wraith_client::chrome::{Cursor, cursor_for};
+    assert_eq!(cursor_for(&Hit::Pane(1), &[], false), Cursor::IBeam);
+    assert_eq!(cursor_for(&Hit::Pane(1), &[], true), Cursor::Arrow, "the program owns the mouse");
+    assert_eq!(cursor_for(&Hit::Tab(10), &[], false), Cursor::Arrow);
+    assert_eq!(cursor_for(&Hit::None, &[], false), Cursor::Arrow);
+}

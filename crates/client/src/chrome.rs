@@ -42,7 +42,7 @@ pub fn close_rect(tab: Rect, cell_w: i32) -> Rect {
     Rect { x: tab.x + tab.w - w, y: tab.y, w, h: tab.h }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Hit {
     Tab(TabId),
     TabClose(TabId),
@@ -107,6 +107,27 @@ pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
         }
     }
     Hit::None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    Arrow,
+    IBeam,
+    SizeWE,
+    SizeNS,
+}
+
+/// The pointer shape over `hit`: what a press there would do. `tracking`: the pane's program owns the mouse.
+pub fn cursor_for(hit: &Hit, dividers: &[Divider], tracking: bool) -> Cursor {
+    match hit {
+        Hit::Divider(i) => match dividers.get(*i).map(|d| d.axis) {
+            Some(wraith_proto::model::Axis::Horizontal) => Cursor::SizeWE,
+            Some(wraith_proto::model::Axis::Vertical) => Cursor::SizeNS,
+            None => Cursor::Arrow,
+        },
+        Hit::Pane(_) if !tracking => Cursor::IBeam,
+        _ => Cursor::Arrow,
+    }
 }
 
 type Rgb = (u8, u8, u8);

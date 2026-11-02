@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    GetCursorPos, HTCLIENT, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
@@ -25,7 +26,7 @@ use wraith_proto::model::{AgentState, Rect, TabId};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
-use crate::chrome::{self, Hit, chrome_colors};
+use crate::chrome::{self, Cursor, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
 use crate::images::ImageStore;
 use crate::paint::Painter;
@@ -542,6 +543,8 @@ impl App {
                 }
                 WM_LBUTTONUP => {
                     self.view.end_drag();
+                    self.view.release();
+                    self.dirty = true;
                     unsafe {
                         let _ = ReleaseCapture();
                     }
@@ -559,9 +562,18 @@ impl App {
             let before = self.view.floating_sidebar();
             self.view.pointer_moved(x, y, Instant::now());
             self.dirty |= before != self.view.floating_sidebar();
+            self.dirty |= self.view.hover_at(x, y);
         }
         let hit = self.view.hit(x, y);
+        if msg == WM_LBUTTONUP && self.view.pressed().is_some() {
+            self.view.release();
+            self.dirty = true;
+        }
         if msg == WM_LBUTTONDOWN {
+            if !matches!(hit, Hit::Pane(_) | Hit::Divider(_) | Hit::Sidebar | Hit::Bar | Hit::None) {
+                self.view.press(hit.clone());
+                self.dirty = true;
+            }
             match hit {
                 Hit::Workspace(w) => {
                     let msgs = self.view.workspace_click(w);
@@ -769,7 +781,37 @@ impl App {
                     self.dirty = true;
                     return Some(LRESULT(0));
                 }
+                WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
+                    let mut pt = POINT::default();
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                    }
+                    let hit = self.view.hit(pt.x, pt.y);
+                    let tracking = matches!(hit, Hit::Pane(p) if self.view.panes.get(&p).is_some_and(|v| v.mouse_tracking));
+                    let id = match chrome::cursor_for(&hit, &self.view.dividers(), tracking) {
+                        Cursor::Arrow => IDC_ARROW,
+                        Cursor::IBeam => IDC_IBEAM,
+                        Cursor::SizeWE => IDC_SIZEWE,
+                        Cursor::SizeNS => IDC_SIZENS,
+                    };
+                    unsafe {
+                        if let Ok(c) = LoadCursorW(None, id) {
+                            SetCursor(Some(c));
+                        }
+                    }
+                    return Some(LRESULT(1));
+                }
+                WM_CAPTURECHANGED => {
+                    if self.view.pressed().is_some() {
+                        self.view.release();
+                        self.dirty = true;
+                    }
+                }
                 WM_SETFOCUS | WM_KILLFOCUS => {
+                    if msg == WM_KILLFOCUS {
+                        self.view.release();
+                    }
                     self.focused = msg == WM_SETFOCUS;
                     self.link.send(ClientMsg::Foreground(self.focused));
                     if self.focused {
@@ -1054,10 +1096,22 @@ impl App {
                 Painter { q: &mut q }.rect(rect, bg, dim);
             }
         }
+        // Hover and press washes for clickable chrome.
+        let (hovered, pressed) = (self.view.hovered().cloned(), self.view.pressed().cloned());
+        let wash = |h: &Hit| -> Option<(u8, u8, u8)> {
+            if pressed.as_ref() == Some(h) {
+                Some(chrome::mix(col.bar_bg, col.bar_fg, 0.16))
+            } else if hovered.as_ref() == Some(h) {
+                Some(chrome::mix(col.bar_bg, col.bar_fg, 0.08))
+            } else {
+                None
+            }
+        };
         let mut p = Painter { q: &mut q };
         if split {
-            for d in self.view.dividers() {
-                p.rect(d.line, col.divider, 1.0);
+            for (i, d) in self.view.dividers().into_iter().enumerate() {
+                let c = if hovered == Some(Hit::Divider(i)) || self.view.dragging() { accent } else { col.divider };
+                p.rect(d.line, c, 1.0);
             }
             if let Some((_, r)) = panes.iter().find(|(id, _)| Some(*id) == focused_pane) {
                 for edge in [
@@ -1078,9 +1132,13 @@ impl App {
         let pad_x = m.w as i32 / 2;
         for (id, r) in &tabs {
             let is_active = Some(*id) == active;
+            // Hovering the close button lights its tab too.
+            let tab_wash = wash(&Hit::Tab(*id)).or_else(|| wash(&Hit::TabClose(*id)).map(|_| chrome::mix(col.bar_bg, col.bar_fg, 0.08)));
             if is_active {
                 p.rect(*r, col.tab_active_bg, 1.0);
                 p.rect(Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 }, accent, 1.0);
+            } else if let Some(c) = tab_wash {
+                p.rect(*r, c, 1.0);
             }
             // An agent's icon leads the title; its state badge sits before the close button.
             let agent = self.view.tab_agent(*id).map(|a| (a.icon, a.state, a.attention));
@@ -1093,13 +1151,21 @@ impl App {
             let title = self.view.snapshot().tab_title(*id);
             let title = truncate_cells(&agent.map_or(title.clone(), |(icon, ..)| format!("{icon} {title}")), cells);
             let ty = r.y + (r.h - m.h as i32) / 2;
-            let tc = if is_active { col.bar_fg } else { col.bar_fg_dim };
+            let tc = if is_active || tab_wash.is_some() { col.bar_fg } else { col.bar_fg_dim };
             p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &title, tc, 1.0);
             let x = chrome::close_rect(*r, m.w as i32);
+            let close_wash = wash(&Hit::TabClose(*id));
+            if let Some(c) = close_wash {
+                p.rect(x, chrome::mix(c, col.bar_fg, 0.1), 1.0);
+            }
             if let Some(b) = badge {
                 p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x - m.w as i32, ty, b, accent, 1.0);
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", col.bar_fg_dim, 1.0);
+            let xc = if close_wash.is_some() { col.bar_fg } else { col.bar_fg_dim };
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", xc, 1.0);
+        }
+        if let Some(c) = wash(&Hit::NewTab) {
+            p.rect(plus, c, 1.0);
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
@@ -1147,6 +1213,8 @@ impl App {
                 if row.current {
                     p.rect(*r, col.tab_active_bg, 1.0);
                     p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                } else if let Some(c) = wash(&Hit::Workspace(row.id)) {
+                    p.rect(*r, c, 1.0);
                 }
                 let c = ((row.color >> 16) as u8, (row.color >> 8) as u8, row.color as u8);
                 p.rect(Rect { x: r.x + pad_x, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, c, 1.0);
@@ -1167,6 +1235,8 @@ impl App {
                 let current = Some(t) == shown;
                 if current {
                     p.rect(r, col.tab_active_bg, 1.0);
+                } else if let Some(c) = wash(&Hit::SidebarTab(t)) {
+                    p.rect(r, c, 1.0);
                 }
                 let title = snap.tab_title(t);
                 let label = agent.map_or(title.clone(), |(icon, _)| format!("{icon} {title}"));
@@ -1177,7 +1247,12 @@ impl App {
                     p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
                 }
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", col.bar_fg_dim, 1.0);
+            let new_wash = wash(&Hit::NewWorkspace);
+            if let Some(c) = new_wash {
+                p.rect(new_row, c, 1.0);
+            }
+            let nc = if new_wash.is_some() { col.bar_fg } else { col.bar_fg_dim };
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", nc, 1.0);
             // Agents: waiting first (oldest first), then working, then idle (spec §4.2).
             let agents = self.view.agent_rects();
             if !agents.is_empty() {
@@ -1194,6 +1269,9 @@ impl App {
                     AgentState::Working => ("working", col.bar_fg_dim),
                     AgentState::Idle => ("idle", col.bar_fg_dim),
                 };
+                if let Some(c) = wash(&Hit::Agent(row.pane)) {
+                    p.rect(*r, c, 1.0);
+                }
                 let ws = snap.workspace(row.workspace).map_or("", |w| w.name.as_str());
                 let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
                 let text = truncate_cells(&format!("{} {} · {state} · {ws}", a.icon, a.name), cells);
