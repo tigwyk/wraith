@@ -584,7 +584,15 @@ fn layout_survives_server_restart() {
     stop_and_join(&pipe, h);
     assert!(path.exists(), "ServerStop must leave the layout on disk");
 
-    let h = spawn_server_thread_at(&pipe, Some(path)).unwrap();
+    // The old server's per-client threads close their pipe instances after it returns; until the
+    // last one goes, the first-instance bind fails with AddrInUse.
+    let deadline = Instant::now() + secs(5);
+    let h = loop {
+        match spawn_server_thread_at(&pipe, Some(path.clone())) {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            r => break r.unwrap(),
+        }
+    };
     let mut b = Client::gui(&pipe);
     let got = b.attach_window(Some(ws));
     assert_eq!(got, ws);
