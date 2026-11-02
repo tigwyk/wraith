@@ -6,7 +6,7 @@ struct Inst {
     float2 size : SIZE;   // pixels
     float4 uv : UV;       // atlas u0 v0 u1 v1
     float4 color : COLOR; // straight RGBA
-    uint kind : KIND;     // 0 solid, 1 mono glyph (tint by coverage), 2 color glyph (premultiplied)
+    uint kind : KIND;     // 0 solid, 1 mono glyph (tint by coverage), 2 color glyph (premultiplied), 3 image (straight)
 };
 
 struct VsOut {
@@ -28,10 +28,16 @@ VsOut vs(Inst i, uint vid : SV_VertexID) {
 }
 
 Texture2D atlas : register(t0);
+Texture2D img : register(t1);
 SamplerState samp : register(s0);
 
 float4 ps(VsOut i) : SV_Target {
     if (i.kind == 0) return float4(i.color.rgb * i.color.a, i.color.a);
+    if (i.kind == 3) {
+        float4 t = img.Sample(samp, i.uv);
+        float a = t.a * i.color.a;
+        return float4(t.rgb * a, a);
+    }
     float4 t = atlas.Sample(samp, i.uv);
     if (i.kind == 1) {
         float a = t.a * i.color.a;

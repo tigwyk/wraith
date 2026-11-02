@@ -18,11 +18,13 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT};
 use windows::core::{PCSTR, Result, s};
 use wraith_proto::model::Rect;
-use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, SelRange, StyleFlags};
+use wraith_proto::wire::PaneId;
+use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, ImagePlacement, SelRange, StyleFlags};
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
 use crate::font::{CellMetrics, FaceId, FontStack};
 use crate::gpu::Gpu;
+use crate::images::{ImageStore, image_quad};
 
 /// One-line overlays drawn over the grid in inverted colors.
 #[derive(Clone, Copy)]
@@ -98,6 +100,8 @@ pub struct GridRenderer {
     quads: Vec<Quad>,
     /// (cells wide, shaped row) per `Overlay`.
     overlays: [Option<(u16, CachedRow)>; 3],
+    /// Image placements of the latest frame (each frame carries all of them).
+    images: Vec<ImagePlacement>,
 }
 
 /// Shaders and state shared by every grid and the chrome of one window.
@@ -289,6 +293,7 @@ impl GridRenderer {
             cursor: None,
             quads: Vec::new(),
             overlays: [None, None, None],
+            images: Vec::new(),
         }
     }
 
@@ -334,6 +339,7 @@ impl GridRenderer {
         self.bg = frame.colors.bg;
         self.cursor_color = frame.colors.cursor;
         self.cursor = Some(frame.cursor);
+        self.images.clone_from(&frame.images);
         for row in &frame.dirty_rows {
             let Some(slot) = self.rows.get_mut(row.y as usize) else { continue };
             let mut cached = CachedRow::default();
@@ -417,6 +423,45 @@ impl GridRenderer {
         opts: &DrawOpts,
         fill: Option<Rect>,
     ) {
+        self.push_bg(q, origin, m, opts, fill);
+        self.push_fg(q, gpu, atlas, fonts, origin, m, opts);
+    }
+
+    /// Like `push_quads`, with this pane's images layered in: `z < 0` between the backgrounds and the
+    /// text, `z >= 0` over the text. Image quads go into their own batches in `out`; `q` is the open
+    /// untextured batch, flushed into `out` before each image batch.
+    #[allow(clippy::too_many_arguments, reason = "one draw call's full input; grouping adds a type nobody else uses")]
+    pub fn push_layers(
+        &mut self,
+        out: &mut Vec<Batch>,
+        q: &mut Vec<Quad>,
+        store: &ImageStore,
+        pane: PaneId,
+        gpu: &Gpu,
+        atlas: &mut GlyphAtlas,
+        fonts: &FontStack,
+        origin: (f32, f32),
+        m: &CellMetrics,
+        opts: &DrawOpts,
+        rect: Rect,
+    ) {
+        self.push_bg(q, origin, m, opts, Some(rect));
+        self.push_images(out, q, store, pane, origin, m, rect, opts.opacity, true);
+        self.push_fg(q, gpu, atlas, fonts, origin, m, opts);
+        self.push_images(out, q, store, pane, origin, m, rect, opts.opacity, false);
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "internal helper of push_layers")]
+    fn push_images(&self, out: &mut Vec<Batch>, q: &mut Vec<Quad>, store: &ImageStore, pane: PaneId, origin: (f32, f32), m: &CellMetrics, clip: Rect, alpha: f32, below: bool) {
+        for p in self.images.iter().filter(|p| (p.z < 0) == below) {
+            let Some((srv, size)) = store.get(pane, p.image_id) else { continue };
+            let Some(quad) = image_quad(p, *size, origin, m, clip, alpha) else { continue };
+            out.push(Batch { quads: std::mem::take(q), texture: None });
+            out.push(Batch { quads: vec![quad], texture: Some(srv.clone()) });
+        }
+    }
+
+    fn push_bg(&self, q: &mut Vec<Quad>, origin: (f32, f32), m: &CellMetrics, opts: &DrawOpts, fill: Option<Rect>) {
         let (cw, ch) = (m.w as f32, m.h as f32);
         let cell_xy = |x: u16, y: usize| (origin.0 + f32::from(x) * cw, origin.1 + y as f32 * ch);
         let solid = |q: &mut Vec<Quad>, x: f32, y: f32, w: f32, h: f32, c: Rgb| {
@@ -443,13 +488,27 @@ impl GridRenderer {
                 solid(q, px, py, cw * f32::from(x1 - x0 + 1), ch, opts.selection_color);
             }
         }
+        if let Some((x, y)) = self.block_cursor(opts) {
+            let (px, py) = cell_xy(x, y as usize);
+            solid(q, px, py, cw, ch, self.cursor_color.unwrap_or(self.fg));
+        }
+    }
+
+    fn block_cursor(&self, opts: &DrawOpts) -> Option<(u16, u16)> {
+        self.cursor.filter(|c| c.visible && opts.cursor_blink_on && opts.focused && c.style == CursorShape::Block).map(|c| (c.x, c.y))
+    }
+
+    /// Text, decorations, the non-block cursor and overlays: everything over the backgrounds.
+    #[allow(clippy::too_many_arguments, reason = "one draw call's full input; grouping adds a type nobody else uses")]
+    fn push_fg(&self, q: &mut Vec<Quad>, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, origin: (f32, f32), m: &CellMetrics, opts: &DrawOpts) {
+        let (cw, ch) = (m.w as f32, m.h as f32);
+        let cell_xy = |x: u16, y: usize| (origin.0 + f32::from(x) * cw, origin.1 + y as f32 * ch);
+        let solid = |q: &mut Vec<Quad>, x: f32, y: f32, w: f32, h: f32, c: Rgb| {
+            q.push(Quad { pos: [x, y], size: [w, h], uv: [0.0; 4], color: f(c, 1.0), kind: 0 });
+        };
         let cursor = self.cursor.filter(|c| c.visible && opts.cursor_blink_on);
         let cursor_rgb = self.cursor_color.unwrap_or(self.fg);
-        let block_at = cursor.filter(|c| opts.focused && c.style == CursorShape::Block).map(|c| (c.x, c.y));
-        if let Some((x, y)) = block_at {
-            let (px, py) = cell_xy(x, y as usize);
-            solid(q, px, py, cw, ch, cursor_rgb);
-        }
+        let block_at = self.block_cursor(opts);
         for (y, row) in self.rows.iter().enumerate() {
             for g in &row.glyphs {
                 let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });

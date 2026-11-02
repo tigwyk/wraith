@@ -27,6 +27,7 @@ use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
 use crate::chrome::{self, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
+use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
 use crate::palette::Mode;
@@ -229,6 +230,8 @@ pub(crate) struct App {
     pipe: Rc<Pipeline>,
     /// Row caches of the panes drawn so far; a pane's entry appears with its first frame.
     grids: HashMap<PaneId, GridRenderer>,
+    /// Inline image textures, per pane.
+    images: ImageStore,
     link: ServerLink,
     pub(crate) view: WindowView,
     spawn_ctx: SpawnCtx,
@@ -787,12 +790,14 @@ impl App {
             ServerMsg::WindowAttached { workspace } => {
                 self.view.set_workspace(workspace);
                 self.grids.clear();
+                self.images = ImageStore::default();
             }
             ServerMsg::Snapshot(s) => {
                 let msgs = self.view.on_snapshot(s, &self.spawn_ctx);
                 self.send_all(msgs);
                 let live: std::collections::HashSet<PaneId> = self.view.snapshot().panes.iter().map(|p| p.id).collect();
                 self.grids.retain(|p, _| live.contains(p));
+                self.images.retain_panes(|p| live.contains(&p));
                 self.set_title();
                 self.dirty = true;
             }
@@ -801,6 +806,7 @@ impl App {
                 let msgs = self.view.on_workspace_taken(workspace);
                 self.send_all(msgs);
                 self.grids.clear();
+                self.images = ImageStore::default();
                 self.dirty = true;
             }
             ServerMsg::Event { pane, ev } => self.on_pane_event(pane, ev),
@@ -847,7 +853,16 @@ impl App {
                     v.mouse_tracking = on;
                 }
             }
-            PaneEvent::ImageUpload { .. } | PaneEvent::ImageDelete { .. } => {}
+            PaneEvent::ImageUpload { image_id, width, height, rgba } => {
+                if let Err(e) = self.images.upload(&self.gpu, pane, image_id, width, height, &rgba) {
+                    tracing::warn!(pane, image_id, "image upload: {e}");
+                }
+                self.dirty = true;
+            }
+            PaneEvent::ImageDelete { image_id } => {
+                self.images.delete(pane, image_id);
+                self.dirty = true;
+            }
         }
     }
 
@@ -962,6 +977,8 @@ impl App {
         let panes = self.view.visible();
         let split = panes.len() > 1;
         let mut q: Vec<Quad> = Vec::new();
+        // Untextured quads are batched in `q`; image placements split it into more batches.
+        let mut batches: Vec<Batch> = Vec::new();
         // Pane grids first, then chrome over and around them.
         for &(id, rect) in &panes {
             let exit = self.view.pane_exit(id).map(|code| format!("[process exited {code}] Enter: restart · ctrl+shift+w: close"));
@@ -969,7 +986,8 @@ impl App {
             match self.grids.get_mut(&id) {
                 Some(g) => {
                     g.set_overlay(Overlay::Exit, exit.as_deref(), &self.fonts);
-                    g.push_quads(&mut q, &self.gpu, &mut self.atlas, &self.fonts, ((rect.x + pad.0) as f32, (rect.y + pad.1) as f32), &m, &opts, Some(rect));
+                    let origin = ((rect.x + pad.0) as f32, (rect.y + pad.1) as f32);
+                    g.push_layers(&mut batches, &mut q, &self.images, id, &self.gpu, &mut self.atlas, &self.fonts, origin, &m, &opts, rect);
                 }
                 None => Painter { q: &mut q }.rect(rect, bg, opacity),
             }
@@ -1122,7 +1140,8 @@ impl App {
         if let Some(t) = &self.stats {
             notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, false, false);
         }
-        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &[Batch { quads: q, texture: None }], [0.0; 4]);
+        batches.push(Batch { quads: q, texture: None });
+        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
@@ -1289,6 +1308,7 @@ pub fn run() -> Result<()> {
         atlas,
         pipe,
         grids: HashMap::new(),
+        images: ImageStore::default(),
         link,
         view,
         spawn_ctx,

@@ -4,6 +4,7 @@ pub mod chrome;
 pub mod font;
 pub mod gpu;
 pub mod grid;
+pub mod images;
 pub mod input;
 pub mod reload;
 pub mod link;
