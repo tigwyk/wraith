@@ -11,7 +11,18 @@ use wraith_proto::model::{Axis, ModelCmd, ModelSnapshot, PaneNode, TabId, Worksp
 use wraith_proto::pane::{PaneCmd, PaneEvent, SpawnOpts};
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo, ServerMsg, read_frame, write_frame};
 use wraith_server::pty::is_alive;
-use wraith_server::session::{spawn_server_thread, spawn_server_thread_at};
+use wraith_server::session::{layout_path_in, spawn_server_thread, spawn_server_thread_at};
+
+#[test]
+fn elevated_server_keeps_its_own_layout_and_history() {
+    // Both servers number panes from 1: sharing a folder would cross-restore and delete each other's history.
+    let base = std::path::Path::new(r"C:\Users\me\AppData\Local");
+    let normal = layout_path_in(base, false);
+    let admin = layout_path_in(base, true);
+    assert_eq!(normal, base.join(r"wraith\layout.json"));
+    assert_ne!(normal.parent(), admin.parent(), "{admin:?}");
+    assert!(admin.starts_with(base.join("wraith")), "{admin:?}");
+}
 
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)

@@ -75,12 +75,19 @@ struct Client {
     foreground: bool,
 }
 
-/// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json`.
+/// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json` (`wraith\admin\` when elevated).
 pub fn default_layout_path() -> PathBuf {
     if let Some(p) = std::env::var_os("WRAITH_LAYOUT_PATH") {
         return PathBuf::from(p);
     }
-    std::env::var_os("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from).join("wraith").join("layout.json")
+    let local = std::env::var_os("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from);
+    layout_path_in(&local, wraith_ipc::security::is_elevated())
+}
+
+/// An elevated server has its own pipe and so its own layout and history: both number panes from 1.
+pub fn layout_path_in(local_app_data: &Path, elevated: bool) -> PathBuf {
+    let dir = local_app_data.join("wraith");
+    if elevated { dir.join("admin") } else { dir }.join("layout.json")
 }
 
 /// Serve `pipe` until a `ServerStop`, persisting the layout at `default_layout_path()`.
