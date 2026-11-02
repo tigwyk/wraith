@@ -179,10 +179,14 @@ impl Pane {
         term.set_scrollback_max_lines(Some(opts.scrollback_lines)).map_err(io_err)?;
         term.resize(cols, rows, opts.cell_w_px, opts.cell_h_px).map_err(io_err)?;
         if was_restored {
-            // Reset what the old program left (alternate screen, modes), write a marker right after the
+            // Undo what the old program may have left on (alternate screen, mouse reporting, bracketed
+            // paste, hidden cursor, application cursor keys) without moving the cursor (a soft reset
+            // would home it and the marker would overwrite old output), write a marker right after the
             // old output, then scroll it all into history so the fresh shell starts on a clean screen.
+            // Leave the alternate screen only if in it: 1049l also restores the saved cursor.
+            let leave_alt = if matches!(term.active_screen(), Ok(Screen::Alternate)) { "\x1b[?1049l" } else { "" };
             let restored = format!(
-                "\x1b[?1049l\x1b[0m\x1b[!p\r\n\x1b[2m── restored {} ──\x1b[0m{}",
+                "{leave_alt}\x1b[0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b[?25h\r\n\x1b[2m── restored {} ──\x1b[0m{}",
                 local_time(),
                 "\r\n".repeat(usize::from(rows))
             );

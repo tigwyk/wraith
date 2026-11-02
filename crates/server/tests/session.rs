@@ -767,6 +767,19 @@ fn agents_are_not_saved_in_the_layout() {
 
 use wraith_proto::pane::ScrollTo;
 
+/// Start a server on a pipe a stopped server may still be releasing (its client threads hold the
+/// pipe briefly after it stops).
+fn restart_server_at(pipe: &str, path: &std::path::Path) -> thread::JoinHandle<std::io::Result<()>> {
+    let deadline = Instant::now() + secs(5);
+    loop {
+        match spawn_server_thread_at(pipe, Some(path.to_path_buf())) {
+            Ok(h) => return h,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            Err(e) => panic!("restart: {e}"),
+        }
+    }
+}
+
 fn snap_file(layout: &std::path::Path, pane: PaneId) -> PathBuf {
     layout.parent().unwrap().join("scrollback").join(format!("{pane}.snap"))
 }
@@ -788,22 +801,47 @@ fn pane_with_history(path: &std::path::Path, pipe: &str, marker: &str) -> PaneId
 fn server_stop_saves_and_restart_restores_history() {
     let path = layout_path("history");
     let pipe = unique();
-    let pane = pane_with_history(&path, &pipe, "M5-HISTORY-MARKER");
-    assert!(snap_file(&path, pane).exists(), "server-stop saved the pane's history");
-
+    // The marker scrolls far into history (a full screen and more of output after it).
     let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
     let mut c = Client::gui(&pipe);
     c.attach_window(None);
+    let (_, pane) = c.new_tab(&format!("cmd.exe /k \"echo M5-HISTORY-MARKER & {}\"", emit("flood 100")));
     c.subscribe(&[pane]);
+    assert!(c.pump_until(pane, secs(10), |text, _| text.contains("line-100 ")), "output printed");
+    drop(c);
+    stop_and_join(&pipe, h);
+    assert!(snap_file(&path, pane).exists(), "server-stop saved the pane's history");
+
+    let h = restart_server_at(&pipe, &path);
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    c.subscribe(&[pane]);
+    // The restored pane re-runs its command; let that finish before looking at history.
+    assert!(c.pump_until(pane, secs(10), |text, _| text.contains("line-100 ")), "fresh shell ran");
     c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Scroll(ScrollTo::Top) });
     let mut last = String::new();
     let ok = c.pump_until(pane, secs(10), |text, _| {
         last = text.to_string();
-        // The restored pane re-runs the same command, so the old output must be *above* the marker line.
-        matches!((text.find("M5-HISTORY-MARKER"), text.find("restored")), (Some(old), Some(line)) if old < line)
+        text.lines().next().is_some_and(|l| l.contains("M5-HISTORY-MARKER"))
     });
-    assert!(ok, "old output and the marker line are in history; screen was:
+    assert!(ok, "the oldest restored line is at the top of history; top was:
 {last}");
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Search(wraith_proto::pane::SearchCmd::Set("restored".into())) });
+    assert!(
+        c.pump_until(pane, secs(10), |_, ev| matches!(ev, PaneEvent::Frame(f) if f.search.as_ref().is_some_and(|s| s.total == 1))),
+        "exactly one marker line"
+    );
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Search(wraith_proto::pane::SearchCmd::Set("line-".into())) });
+    let mut total = 0;
+    let all = c.pump_until(pane, secs(10), |_, ev| {
+        if let PaneEvent::Frame(f) = ev
+            && let Some(s) = &f.search
+        {
+            total = s.total;
+        }
+        total == 200
+    });
+    assert!(all, "every old line survives next to the 100 new ones (the marker overwrote none); found {total}");
     assert!(!snap_file(&path, pane).exists(), "a loaded snapshot is removed");
     drop(c);
     stop_and_join(&pipe, h);
