@@ -293,8 +293,17 @@ fn detached_workspace_keeps_shells_and_next_window_reattaches() {
     a.subscribe(&[pane]);
     a.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Text("set WRAITH_X=kept\r".into()) });
     assert!(a.pump_until(pane, secs(5), |t, _| t.contains("WRAITH_X=kept")));
+    // Detach as a closing window does: dropping `a` alone leaves the pipe open in its reader thread
+    // until the server happens to send it something.
+    a.send(ClientMsg::DetachWindow);
     drop(a);
-    thread::sleep(Duration::from_millis(300));
+    // `b` is another connection, so the server may see its attach first: wait until `ws` is free.
+    let mut cli = Client::connect(&pipe, ClientKind::Cli);
+    let deadline = Instant::now() + secs(5);
+    while cli.list().iter().any(|p| p.id == pane && p.attached) {
+        assert!(Instant::now() < deadline, "server never noticed the window left");
+        thread::sleep(Duration::from_millis(10));
+    }
 
     let mut b = Client::gui(&pipe);
     assert_eq!(b.attach_window(None), ws, "most recently detached workspace");
