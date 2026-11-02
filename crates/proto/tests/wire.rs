@@ -46,6 +46,7 @@ fn frame() -> FrameDelta {
         scrollbar: Scrollbar { total: 50, offset: 10, len: 40 },
         title: None,
         images: vec![],
+        search: None,
     }
 }
 

@@ -689,3 +689,44 @@ fn clicking_a_sidebar_tab_shows_it() {
     assert_eq!(v.tab_click(11), vec![ClientMsg::Model(ModelCmd::SelectTab(11))]);
     assert!(v.tab_click(10).is_empty(), "already showing");
 }
+
+// ---- M5: scrollback search ----
+
+use wraith_proto::pane::SearchCmd;
+
+fn search_cmd(msgs: &[ClientMsg]) -> Vec<(PaneId, SearchCmd)> {
+    msgs.iter().filter_map(|m| if let ClientMsg::Cmd { pane, cmd: PaneCmd::Search(c) } = m { Some((*pane, c.clone())) } else { None }).collect()
+}
+
+#[test]
+fn find_keys_drive_search_cmds() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert!(v.find().is_none());
+    v.action(Action::Find, &ctx());
+    assert_eq!(v.find().map(|f| (f.pane, f.query.as_str())), Some((2, "")), "find opens on the focused pane");
+    let t = |v: &mut WindowView, s: &str| v.find_key(&key_text(KeyCode::KeyA, s)).unwrap().msgs;
+    assert_eq!(search_cmd(&t(&mut v, "a")), vec![(2, SearchCmd::Set("a".into()))], "search as you type");
+    assert_eq!(search_cmd(&t(&mut v, "b")), vec![(2, SearchCmd::Set("ab".into()))]);
+    let k = |code| KeyEvent { code, mods: Mods(0), text: None, action: KeyAction::Press, composing: false };
+    assert_eq!(search_cmd(&v.find_key(&k(KeyCode::Backspace)).unwrap().msgs), vec![(2, SearchCmd::Set("a".into()))]);
+    assert_eq!(search_cmd(&v.find_key(&k(KeyCode::Enter)).unwrap().msgs), vec![(2, SearchCmd::Next)], "Enter: older");
+    let shift_enter = KeyEvent { mods: Mods(Mods::SHIFT), ..k(KeyCode::Enter) };
+    assert_eq!(search_cmd(&v.find_key(&shift_enter).unwrap().msgs), vec![(2, SearchCmd::Prev)], "Shift+Enter: newer");
+}
+
+#[test]
+fn esc_closes_find_and_clears() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert!(v.find_key(&key_text(KeyCode::KeyA, "a")).is_none(), "closed: keys go to the pane");
+    v.action(Action::Find, &ctx());
+    let esc = KeyEvent { code: KeyCode::Escape, mods: Mods(0), text: None, action: KeyAction::Press, composing: false };
+    assert_eq!(search_cmd(&v.find_key(&esc).unwrap().msgs), vec![(2, SearchCmd::Close)]);
+    assert!(v.find().is_none());
+}
+
+#[test]
+fn find_has_a_default_keybinding() {
+    assert!(Config::default().keybinds.iter().any(|k| k.action == Action::Find), "ctrl+shift+f");
+}

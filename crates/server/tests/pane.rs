@@ -448,3 +448,78 @@ fn process_scan_attaches_and_detaches() {
     let seen: Vec<Option<String>> = got.iter().filter_map(|e| if let PaneEvent::AgentProcess(p) = e { Some(p.clone()) } else { None }).collect();
     assert_eq!(seen, vec![Some("codex".to_string()), None], "attached while it runs, detached after");
 }
+
+// ---- Scrollback search (M5) ----
+
+use wraith_proto::pane::SearchCmd;
+use wraith_proto::SearchView;
+
+/// Pump until a frame's search view satisfies `pred`; returns that view.
+fn until_search(h: &PaneHandle, m: &mut Mirror, t: Duration, mut pred: impl FnMut(&Option<SearchView>) -> bool) -> Option<Option<SearchView>> {
+    let mut got = None;
+    pump(h, m, t, |m, _| {
+        let s = m.last.as_ref().map(|f| f.search.clone()).unwrap_or(None);
+        if pred(&s) {
+            got = Some(s);
+            true
+        } else {
+            false
+        }
+    });
+    got
+}
+
+#[test]
+fn search_finds_and_highlights_viewport_matches() {
+    let h = spawn_pane(opts(&emit("print xx needle yy NEEDLE"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.contains("needle")).0);
+    h.send(PaneCmd::Search(SearchCmd::Set("needle".into()))).unwrap();
+    let s = until_search(&h, &mut m, secs(5), |s| s.as_ref().is_some_and(|s| s.total == 2)).expect("two matches, ASCII case-insensitive").unwrap();
+    let mut hits: Vec<(u16, u16, u16)> = s.hits.iter().map(|h| (h.y, h.x0, h.x1)).collect();
+    hits.sort();
+    assert_eq!(hits, vec![(0, 3, 8), (0, 13, 18)], "cell ranges, end inclusive");
+}
+
+#[test]
+fn next_scrolls_to_older_match() {
+    let h = spawn_pane(opts(&emit("flood 300"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.max_line() >= 300).0);
+    h.send(PaneCmd::Search(SearchCmd::Set("line-150 ".into()))).unwrap();
+    assert!(until_search(&h, &mut m, secs(5), |s| s.as_ref().is_some_and(|s| s.total == 1)).is_some());
+    h.send(PaneCmd::Search(SearchCmd::Next)).unwrap();
+    let s = until_search(&h, &mut m, secs(5), |s| s.as_ref().is_some_and(|s| s.selected == Some(0) && s.hits.iter().any(|h| h.selected))).expect("the match scrolled into view, selected");
+    let y = s.unwrap().hits.iter().find(|h| h.selected).unwrap().y;
+    assert!(m.rows.get(&y).is_some_and(|r| r.contains("line-150 ")), "highlight row shows the match: {:?}", m.rows.get(&y));
+}
+
+#[test]
+fn close_clears_highlights() {
+    let h = spawn_pane(opts(&emit("print a needle"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.contains("needle")).0);
+    h.send(PaneCmd::Search(SearchCmd::Set("needle".into()))).unwrap();
+    assert!(until_search(&h, &mut m, secs(5), |s| s.as_ref().is_some_and(|s| s.total == 1)).is_some());
+    h.send(PaneCmd::Search(SearchCmd::Close)).unwrap();
+    assert!(until_search(&h, &mut m, secs(5), Option::is_none).is_some());
+}
+
+#[test]
+fn search_keeps_input_fast_while_flooding() {
+    let h = spawn_pane(opts(&emit("flood"))).unwrap();
+    let mut m = Mirror::default();
+    assert!(pump(&h, &mut m, secs(5), |m, _| m.max_line() >= 1000).0);
+    h.send(PaneCmd::Search(SearchCmd::Set("fox".into()))).unwrap();
+    let mut all = Vec::new();
+    for _ in 0..50 {
+        h.send(PaneCmd::Text("x".into())).unwrap();
+        all.extend(waits(pump(&h, &mut m, Duration::from_millis(20), |_, _| false).1));
+    }
+    all.extend(waits(pump(&h, &mut m, Duration::from_millis(300), |_, _| false).1));
+    assert_eq!(all.len(), 50);
+    all.sort();
+    assert!(all[49] < Duration::from_millis(5), "max wait {:?}", all[49]);
+    assert!(all[48] < Duration::from_millis(2), "p99 wait {:?}", all[48]);
+    assert!(m.last.as_ref().and_then(|f| f.search.as_ref()).is_some_and(|s| s.total > 0), "matches keep coming");
+}

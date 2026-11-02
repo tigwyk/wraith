@@ -77,6 +77,7 @@ fn frame(rows: Vec<Row>, images: Vec<ImagePlacement>) -> FrameDelta {
         scrollbar: Scrollbar { total: 5, offset: 0, len: 5 },
         title: None,
         images,
+        search: None,
     }
 }
 

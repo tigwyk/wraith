@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R
 use windows::core::{PCSTR, Result, s};
 use wraith_proto::model::Rect;
 use wraith_proto::wire::PaneId;
-use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, ImagePlacement, SelRange, StyleFlags};
+use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, ImagePlacement, SearchView, SelRange, StyleFlags};
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
 use crate::font::{CellMetrics, FaceId, FontStack};
@@ -46,6 +46,10 @@ pub struct DrawOpts {
 }
 
 type Rgb = (u8, u8, u8);
+
+/// Search match backgrounds: every match, and the one Enter/Shift+Enter selected.
+pub const SEARCH_HIT: Rgb = (0x5c, 0x4a, 0x12);
+pub const SEARCH_SELECTED: Rgb = (0xb0, 0x7a, 0x00);
 
 /// One instanced rectangle: a solid fill (`kind` 0), a monochrome glyph (1) or a color glyph (2).
 #[derive(Clone, Copy)]
@@ -102,6 +106,8 @@ pub struct GridRenderer {
     overlays: [Option<(u16, CachedRow)>; 3],
     /// Image placements of the latest frame (each frame carries all of them).
     images: Vec<ImagePlacement>,
+    /// The pane's open search: its count and on-screen matches (latest frame).
+    search: Option<SearchView>,
 }
 
 /// Shaders and state shared by every grid and the chrome of one window.
@@ -294,6 +300,7 @@ impl GridRenderer {
             quads: Vec::new(),
             overlays: [None, None, None],
             images: Vec::new(),
+            search: None,
         }
     }
 
@@ -304,6 +311,11 @@ impl GridRenderer {
     /// The pane's default background.
     pub fn background(&self) -> (u8, u8, u8) {
         self.bg
+    }
+
+    /// The open search's count and selection, for the find bar.
+    pub fn search(&self) -> Option<&SearchView> {
+        self.search.as_ref()
     }
 
     pub fn cursor_pos(&self) -> Option<(u16, u16)> {
@@ -340,6 +352,7 @@ impl GridRenderer {
         self.cursor_color = frame.colors.cursor;
         self.cursor = Some(frame.cursor);
         self.images.clone_from(&frame.images);
+        self.search.clone_from(&frame.search);
         for row in &frame.dirty_rows {
             let Some(slot) = self.rows.get_mut(row.y as usize) else { continue };
             let mut cached = CachedRow::default();
@@ -481,6 +494,10 @@ impl GridRenderer {
                 let (px, py) = cell_xy(x, y);
                 solid(q, px, py, cw * f32::from(n), ch, opts.selection_color);
             }
+        }
+        for h in self.search.iter().flat_map(|s| &s.hits) {
+            let (px, py) = cell_xy(h.x0, h.y as usize);
+            solid(q, px, py, cw * f32::from(h.x1.saturating_sub(h.x0) + 1), ch, if h.selected { SEARCH_SELECTED } else { SEARCH_HIT });
         }
         if let Some(sel) = opts.selection {
             for (y, x0, x1) in selection_spans(sel, self.cols) {

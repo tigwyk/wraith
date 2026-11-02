@@ -16,6 +16,26 @@ pub struct FrameDelta {
     pub title: Option<String>,
     /// Every Kitty graphics placement on screen now (not a delta); the client draws exactly these.
     pub images: Vec<ImagePlacement>,
+    /// The open scrollback search, if any: its count and the viewport's matches.
+    pub search: Option<SearchView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchView {
+    pub total: u32,
+    /// Index of the selected match (0 = newest), once Next/Prev picked one.
+    pub selected: Option<u32>,
+    /// Matches on screen, one entry per row a match covers.
+    pub hits: Vec<SearchHit>,
+}
+
+/// Cells `x0..=x1` of viewport row `y` are part of a match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub y: u16,
+    pub x0: u16,
+    pub x1: u16,
+    pub selected: bool,
 }
 
 /// One image placement in viewport cells. `row` (and `col`) may be negative for a placement that has

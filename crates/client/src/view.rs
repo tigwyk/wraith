@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use wraith_config::{Action, CloseOnExit, Config, SplitTarget};
 use wraith_proto::model::{AgentInfo, AgentState, Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
-use wraith_proto::pane::{PaneCmd, SpawnOpts};
+use wraith_proto::pane::{PaneCmd, SearchCmd, SpawnOpts};
 use wraith_proto::wire::{ClientMsg, PaneId};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
@@ -127,6 +127,13 @@ pub struct SidebarRow {
 /// Sidebar rows: workspaces, their tabs, and the trailing "new workspace" row.
 type SidebarLayout = (Vec<(WorkspaceId, Rect)>, Vec<(TabId, Rect)>, Rect);
 
+/// The find bar: which pane it searches and what was typed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Find {
+    pub pane: PaneId,
+    pub query: String,
+}
+
 /// One row of the sidebar's Agents list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
@@ -170,6 +177,8 @@ pub struct WindowView {
     known_ws: HashSet<WorkspaceId>,
     configured_done: bool,
     palette: Option<Palette>,
+    /// The open find bar (scrollback search), if any.
+    find: Option<Find>,
 }
 
 impl WindowView {
@@ -194,6 +203,7 @@ impl WindowView {
             known_ws: HashSet::new(),
             configured_done: false,
             palette: None,
+            find: None,
         }
     }
 
@@ -215,6 +225,45 @@ impl WindowView {
         if let Some(p) = &mut self.palette {
             p.type_text(text);
         }
+    }
+
+    pub fn find(&self) -> Option<&Find> {
+        self.find.as_ref()
+    }
+
+    /// IME or pasted text typed into the open find bar.
+    pub fn find_text(&mut self, text: &str) -> Option<Out> {
+        let f = self.find.as_mut()?;
+        f.query.extend(text.chars().filter(|c| !c.is_control()));
+        Some(Out::msgs(vec![ClientMsg::Cmd { pane: f.pane, cmd: PaneCmd::Search(SearchCmd::Set(f.query.clone())) }]))
+    }
+
+    /// A key while the find bar may be open: typing searches, Enter/Shift+Enter step through
+    /// matches, Esc closes. `None`: not open, the key is not consumed.
+    pub fn find_key(&mut self, ev: &KeyEvent) -> Option<Out> {
+        use wraith_proto::Mods;
+        let f = self.find.as_mut()?;
+        if ev.action == KeyAction::Release {
+            return Some(Out::default());
+        }
+        let pane = f.pane;
+        let cmd = match ev.code {
+            KeyCode::Escape => {
+                self.find = None;
+                SearchCmd::Close
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter if ev.mods.has(Mods::SHIFT) => SearchCmd::Prev,
+            KeyCode::Enter | KeyCode::NumpadEnter => SearchCmd::Next,
+            KeyCode::Backspace => {
+                f.query.pop();
+                SearchCmd::Set(f.query.clone())
+            }
+            _ => match ev.text.as_deref().filter(|_| !ev.mods.has(Mods::CTRL | Mods::ALT)) {
+                Some(t) => return self.find_text(t),
+                None => return Some(Out::default()),
+            },
+        };
+        Some(Out::msgs(vec![ClientMsg::Cmd { pane, cmd: PaneCmd::Search(cmd) }]))
     }
 
     /// A key while the palette may be open. `None`: not open, the key is not consumed.
@@ -756,6 +805,12 @@ impl WindowView {
                 Out::msgs(vec![ClientMsg::AttachWindow { workspace: Some(to) }])
             }
             Action::CommandPalette => Out { ui: Some(Ui::Palette), ..Out::default() },
+            Action::Find => {
+                if let Some(pane) = self.focused() {
+                    self.find = Some(Find { pane, query: String::new() });
+                }
+                Out::default()
+            }
             Action::WorkspacePicker => Out { ui: Some(Ui::Picker), ..Out::default() },
             Action::MoveTabToWorkspace => Out { ui: Some(Ui::MoveTab), ..Out::default() },
             Action::NewWindow => Out { ui: Some(Ui::NewWindow), ..Out::default() },

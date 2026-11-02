@@ -1,0 +1,5 @@
+# M5 ledger — plan: docs/superpowers/plans/2026-11-02-wraith-m5.md
+
+Plan: Ruling: scope from the user (search, persistence, local packaging); highlights computed on the pane thread and sent in FrameDelta.search; history saved on server-stop only; winget zip+portable manifest, validated, not submitted.
+Task 1: complete — scrollback search: PaneCmd::Search(Set/Next/Prev/Close); server search.rs on libghostty's incremental Search (64 ticks per frame, keeps frames coming while running); FrameDelta.search {total, selected, per-row hits (wrapped matches split)}; client `find` action (ctrl+shift+f, palette group Panes), find bar (type to search, Enter older, Shift+Enter newer, Esc closes) at the searched pane's top right with n/total; grid draws hit/selected backgrounds. server pane +4 (incl. flood p99 < 2 ms with a search open), view +3, grid +1; workspace + clippy green.
+Task 1: Ruling: while the find bar is open it takes every key (like the palette), so pane keybinds pause until Esc — cost if wrong: a user expecting e.g. ctrl+tab to work inside find.

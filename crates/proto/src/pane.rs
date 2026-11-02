@@ -7,6 +7,8 @@ use crate::{FrameDelta, KeyEvent, MouseEvent, SelRange};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PaneCmd {
+    /// Scrollback search in this pane (M5).
+    Search(SearchCmd),
     Key(KeyEvent),
     Mouse(MouseEvent),
     /// Typed or IME-committed text, written as-is.
@@ -92,4 +94,16 @@ pub struct SpawnOpts {
     pub image_storage_limit: u64,
     /// `agent-detect` entries: extra (name, regex) process matchers.
     pub agent_detect: Vec<(String, String)>,
+}
+
+/// Find in a pane's scrollback. Matching is libghostty's: byte-exact, ASCII case-insensitive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchCmd {
+    /// Search for this text (an empty needle clears the matches but keeps the search open).
+    Set(String),
+    /// Select the next older match, scrolling it into view.
+    Next,
+    /// Select the next newer match.
+    Prev,
+    Close,
 }

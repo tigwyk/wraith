@@ -146,7 +146,7 @@ fn group_of(a: Action) -> (usize, &'static str) {
     match a {
         NewWorkspace | CloseWorkspace | NextWorkspace | PreviousWorkspace | WorkspacePicker => (0, "Workspaces"),
         NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace => (1, "Tabs"),
-        NewSplit(_) | GotoSplit(_) | ToggleSplitZoom | ResizeSplit(..) | EqualizeSplits | CloseSurface => (2, "Panes"),
+        NewSplit(_) | GotoSplit(_) | ToggleSplitZoom | ResizeSplit(..) | EqualizeSplits | CloseSurface | Find => (2, "Panes"),
         _ => (3, "Window"),
     }
 }

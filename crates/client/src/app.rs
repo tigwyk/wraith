@@ -385,7 +385,7 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) {
-        if let Some(out) = self.view.palette_key(&ev, &self.spawn_ctx) {
+        if let Some(out) = self.view.palette_key(&ev, &self.spawn_ctx).or_else(|| self.view.find_key(&ev)) {
             self.run_out(out);
             self.dirty = true;
             return;
@@ -722,6 +722,9 @@ impl App {
                     if let ImeUpdate::Commit(t) = self.ime.on_composition(hwnd, lparam) {
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
+                            self.dirty = true;
+                        } else if let Some(out) = self.view.find_text(&t) {
+                            self.run_out(out);
                             self.dirty = true;
                         } else {
                             self.send_focused(PaneCmd::Text(t));
@@ -1199,6 +1202,25 @@ impl App {
                     p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
                 }
             }
+        }
+        // Find bar: top right of the pane it searches, with the match count.
+        if let Some(f) = self.view.find()
+            && let Some((_, r)) = panes.iter().find(|(id, _)| *id == f.pane)
+        {
+            let count = self.grids.get(&f.pane).and_then(GridRenderer::search).map_or(String::new(), |s| match s.selected {
+                Some(i) => format!("{}/{}", i + 1, s.total),
+                None => format!("{}", s.total),
+            });
+            let (cw, row_h) = (m.w as i32, m.h as i32 + 8);
+            let w = (34 * cw).min(r.w - 2 * cw).max(12 * cw);
+            let bar = Rect { x: r.x + r.w - w - cw, y: r.y + 4, w, h: row_h };
+            p.rect(Rect { x: bar.x - 1, y: bar.y - 1, w: bar.w + 2, h: bar.h + 2 }, accent, 1.0);
+            p.rect(bar, col.bar_bg, 1.0);
+            let ty = bar.y + (bar.h - m.h as i32) / 2;
+            let count_w = crate::paint::text_width(&self.fonts, &count);
+            let room = ((bar.w - count_w - 3 * pad_x) / cw).max(0) as usize;
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}▏", f.query), room), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
         // Command palette / picker, centered over everything.
         if let Some(pal) = self.view.palette() {

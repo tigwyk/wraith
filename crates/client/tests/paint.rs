@@ -22,6 +22,7 @@ fn frame(bg: (u8, u8, u8)) -> FrameDelta {
         scrollbar: Scrollbar { total: 2, offset: 0, len: 2 },
         title: None,
         images: vec![],
+        search: None,
     }
 }
 

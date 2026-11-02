@@ -19,7 +19,7 @@ use libghostty_vt::terminal::{
     ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType, Mode, Point, PointCoordinate,
     PrimaryDeviceAttributes, ProgramStatusState, ProgressState, ScrollViewport, SecondaryDeviceAttributes, SemanticPromptKind, Terminal,
 };
-pub use wraith_proto::pane::{AgentSignal, PaneCmd, PaneEvent, ScrollTo};
+pub use wraith_proto::pane::{AgentSignal, PaneCmd, PaneEvent, ScrollTo, SearchCmd};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, SelRange};
 
 use crate::frame_build::build_frame;
@@ -150,6 +150,8 @@ struct Pane {
     next_scan: Instant,
     agent_proc: Option<String>,
     detect: Vec<(String, regex::Regex)>,
+    /// The open scrollback search (M5).
+    search: Option<crate::search::PaneSearch>,
 }
 
 fn io_err(e: impl std::fmt::Display) -> io::Error {
@@ -197,6 +199,7 @@ impl Pane {
             next_scan: Instant::now(),
             agent_proc: None,
             detect: Vec::new(),
+            search: None,
         };
         pane.detect = crate::agentscan::compile(&pane.opts.agent_detect);
         let (fg, bg, pal) = (pane.opts.default_fg, pane.opts.default_bg, pane.opts.palette.clone());
@@ -325,6 +328,25 @@ impl Pane {
                 self.changed = true;
                 // A new view starts with mouse tracking off; tell it what is true now.
                 let _ = self.events.send(PaneEvent::MouseTracking(self.mouse_tracking));
+            }
+            PaneCmd::Search(c) => {
+                match c {
+                    SearchCmd::Set(needle) => {
+                        if self.search.is_none() {
+                            self.search = crate::search::PaneSearch::new(&mut self.term);
+                        }
+                        if let Some(s) = &mut self.search {
+                            s.set_needle(&mut self.term, &needle);
+                        }
+                    }
+                    SearchCmd::Next | SearchCmd::Prev => {
+                        if let Some(s) = &mut self.search {
+                            s.select(&mut self.term, c == SearchCmd::Next);
+                        }
+                    }
+                    SearchCmd::Close => self.search = None,
+                }
+                self.changed = true;
             }
             PaneCmd::Restart => self.restart(),
             PaneCmd::Shutdown => return false,
@@ -530,6 +552,11 @@ impl Pane {
             let _ = self.events.send(ev);
         }
         frame.images = images;
+        if let Some(s) = &mut self.search {
+            // More to search: keep frames coming until it has caught up.
+            self.changed |= s.step(&mut self.term);
+            frame.search = Some(s.view(&mut self.term));
+        }
         let held_us = self.output_since.take().map_or(0, |t| t.elapsed().as_micros() as u64);
         tracing::debug!(seq = self.seq, rows = frame.dirty_rows.len(), held_us, "frame sent");
         let _ = self.events.send(PaneEvent::Frame(frame));

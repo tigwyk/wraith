@@ -8,6 +8,7 @@ pub mod pane;
 pub mod profile;
 pub mod pty;
 pub mod shell;
+pub mod search;
 pub mod session;
 #[doc(hidden)]
 pub mod testseq;

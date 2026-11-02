@@ -38,6 +38,7 @@ fn frame(full: bool, rows: Vec<Row>, cursor: Option<(u16, u16)>) -> FrameDelta {
         scrollbar: Scrollbar { total: 5, offset: 0, len: 5 },
         title: None,
         images: vec![],
+        search: None,
     }
 }
 
@@ -236,4 +237,28 @@ fn sprite_shapes() {
     for c in ('\u{2500}'..='\u{2570}').chain('\u{2574}'..='\u{257F}') {
         assert!(sprite_rects(c, 9, 19, 1).is_some_and(|r| !r.is_empty()), "{c:?}");
     }
+}
+
+#[test]
+fn search_hits_are_highlighted_selected_one_stronger() {
+    use wraith_client::grid::{SEARCH_HIT, SEARCH_SELECTED};
+    use wraith_proto::{SearchHit, SearchView};
+    let mut r = rig();
+    let mut f = frame(true, vec![], None);
+    f.search = Some(SearchView {
+        total: 2,
+        selected: Some(0),
+        hits: vec![SearchHit { y: 1, x0: 2, x1: 4, selected: false }, SearchHit { y: 3, x0: 0, x1: 1, selected: true }],
+    });
+    r.grid.apply(&f, &r.fonts);
+    r.draw(&opts());
+    let c = |(r, g, b): (u8, u8, u8)| [r, g, b, 255];
+    assert_eq!(r.cell(3, 1), c(SEARCH_HIT));
+    assert_eq!(r.cell(5, 1), [1, 2, 3, 255], "past the match");
+    assert_eq!(r.cell(1, 3), c(SEARCH_SELECTED));
+    let mut cleared = frame(false, vec![], None);
+    cleared.search = None;
+    r.grid.apply(&cleared, &r.fonts);
+    r.draw(&opts());
+    assert_eq!(r.cell(3, 1), [1, 2, 3, 255], "closing the search clears the highlights");
 }
