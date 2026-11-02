@@ -1021,9 +1021,13 @@ impl WindowView {
         }
     }
 
+    pub fn gear_rect(&self) -> Rect {
+        chrome::gear_rect(self.regions().tabbar, self.geom.caption_w, self.geom.cell.0 as i32)
+    }
+
     pub fn tab_layout(&self) -> (Vec<(TabId, Rect)>, Rect) {
         let tabs: Vec<TabId> = self.workspace.and_then(|w| self.snap.workspace(w)).map(|w| w.tabs.clone()).unwrap_or_default();
-        let (rects, plus) = chrome::tab_rects(tabs.len(), self.regions().tabbar, self.geom.cell.0 as i32, self.geom.caption_w);
+        let (rects, plus) = chrome::tab_rects(tabs.len(), self.regions().tabbar, self.geom.cell.0 as i32, self.geom.caption_w + self.gear_rect().w);
         (tabs.into_iter().zip(rects).collect(), plus)
     }
 
@@ -1053,6 +1057,7 @@ impl WindowView {
             sidebar_tabs: &self.sidebar_tab_rects(),
             panes: &panes,
             dividers: &dividers,
+            gear: self.gear_rect(),
             cell_w: self.geom.cell.0 as i32,
         };
         chrome::hit(&c, x, y)

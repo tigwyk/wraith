@@ -1,6 +1,6 @@
 #![cfg(windows)]
 use wraith_client::atlas::{GlyphAtlas, GlyphKey};
-use wraith_client::font::FontStack;
+use wraith_client::font::{FontStack, monospace_families};
 use wraith_client::gpu::Gpu;
 use wraith_proto::StyleFlags;
 
@@ -106,4 +106,12 @@ fn nerd_font_icons_fall_back_from_plain_cascadia() {
     assert_eq!(g.len(), 1);
     assert_ne!(g[0].glyph, 0, "icon rendered as .notdef box");
     assert!(g[0].face >= 4, "expected a fallback face, got {}", g[0].face);
+}
+
+#[test]
+fn monospace_families_lists_installed_monospace_only() {
+    let f = monospace_families();
+    assert!(f.iter().any(|n| n == "Consolas"), "{f:?}");
+    assert!(!f.iter().any(|n| n == "Arial"), "{f:?}");
+    assert!(f.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
 }

@@ -8,7 +8,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
     DWRITE_SCRIPT_ANALYSIS, DWRITE_SHAPING_GLYPH_PROPERTIES, DWRITE_SHAPING_TEXT_PROPERTIES, DWRITE_TYPOGRAPHIC_FEATURES,
-    DWriteCreateFactory, IDWriteFactory2, IDWriteFontCollection, IDWriteFontFace, IDWriteFontFace2, IDWriteTextAnalyzer,
+    DWriteCreateFactory, IDWriteFactory2, IDWriteFont1, IDWriteFontCollection, IDWriteLocalizedStrings, IDWriteFontFace, IDWriteFontFace2, IDWriteTextAnalyzer,
 };
 use windows::core::{Interface, PCWSTR, Result, w};
 use wraith_proto::StyleFlags;
@@ -298,6 +298,47 @@ impl FontStack {
             }
             a = b;
         }
+    }
+}
+
+/// Installed families whose regular face is monospaced, sorted (the settings panel's font list).
+pub fn monospace_families() -> Vec<String> {
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(factory) = DWriteCreateFactory::<IDWriteFactory2>(DWRITE_FACTORY_TYPE_SHARED) else { return out };
+        let mut collection = None;
+        if factory.GetSystemFontCollection(&mut collection, false).is_err() {
+            return out;
+        }
+        let Some(c) = collection else { return out };
+        for i in 0..c.GetFontFamilyCount() {
+            let Ok(family) = c.GetFontFamily(i) else { continue };
+            let mono = family
+                .GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL)
+                .ok()
+                .and_then(|f| f.cast::<IDWriteFont1>().ok())
+                .is_some_and(|f| f.IsMonospacedFont().as_bool());
+            if mono && let Some(name) = family.GetFamilyNames().ok().and_then(|n| localized(&n)) {
+                out.push(name);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The `en-us` name, else the first.
+fn localized(names: &IDWriteLocalizedStrings) -> Option<String> {
+    unsafe {
+        let mut index = 0u32;
+        let mut exists = BOOL(0);
+        let _ = names.FindLocaleName(w!("en-us"), &mut index, &mut exists);
+        let index = if exists.as_bool() { index } else { 0 };
+        let len = names.GetStringLength(index).ok()?;
+        let mut buf = vec![0u16; len as usize + 1];
+        names.GetString(index, &mut buf).ok()?;
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
     }
 }
 
