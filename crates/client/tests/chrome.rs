@@ -53,7 +53,7 @@ fn tab_rects_fit_bar_with_new_tab_button() {
 static WS: [(u64, Rect); 1] = [(7, Rect { x: 0, y: 40, w: 192, h: 20 })];
 
 fn ctx<'a>(g: &'a wraith_client::chrome::Regions, tabs: &'a [(u64, Rect)], panes: &'a [(u64, Rect)], divs: &'a [Divider]) -> HitCtx<'a> {
-    HitCtx { regions: g, tabs, new_tab: r(392, 0, 24, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), panes, dividers: divs, cell_w: 8 }
+    HitCtx { regions: g, tabs, new_tab: r(392, 0, 24, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), agents: &[], panes, dividers: divs, cell_w: 8 }
 }
 
 #[test]

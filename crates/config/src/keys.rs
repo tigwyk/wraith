@@ -1,5 +1,5 @@
 //! Typed key table: key name → setter on `Config`.
-use crate::{CloseOnExit, Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
+use crate::{AgentNotify, CloseOnExit, Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
 
 /// Set `key` from `value`. An empty value resets the key to its default.
 pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
@@ -80,6 +80,42 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             "false" | "never" => Ok(CloseOnExit::Never),
             _ => Err(bad(v)),
         }),
+        "agent-notify" => {
+            let mut n = AgentNotify { toast: false, flash: false, badge: false, sound: false, ..c.agent_notify };
+            if value.is_empty() {
+                n = AgentNotify { when_always: n.when_always, quiet: n.quiet, ..AgentNotify::default() };
+            }
+            for w in value.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+                match w {
+                    "toast" => n.toast = true,
+                    "flash" => n.flash = true,
+                    "badge" => n.badge = true,
+                    "sound" => n.sound = true,
+                    _ => return Err(bad(value)),
+                }
+            }
+            c.agent_notify = n;
+        }
+        "agent-notify-when" => {
+            c.agent_notify.when_always = match value {
+                "" | "unfocused" => false,
+                "always" => true,
+                _ => return Err(bad(value)),
+            }
+        }
+        "agent-notify-quiet" => {
+            c.agent_notify.quiet = if value.is_empty() {
+                None
+            } else {
+                let hm = |s: &str| -> Option<u32> {
+                    let (h, m) = s.trim().split_once(':')?;
+                    let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+                    (h < 24 && m < 60).then_some(h * 60 + m)
+                };
+                let (a, b) = value.split_once('-').ok_or_else(|| bad(value))?;
+                Some((hm(a).ok_or_else(|| bad(value))?, hm(b).ok_or_else(|| bad(value))?))
+            }
+        }
         "agent-detect" => {
             if value.is_empty() {
                 c.agent_detect.clear();

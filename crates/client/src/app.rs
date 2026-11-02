@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
-use wraith_proto::model::{Rect, TabId};
+use wraith_proto::model::{AgentState, Rect, TabId};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
@@ -219,6 +219,10 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// Not exported by the windows crate.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+
+/// Tab badge for a working agent, one frame per `SPIN_MS`.
+const SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
+const SPIN_MS: u128 = 150;
 const WM_NCMOUSELEAVE: u32 = 0x02A2;
 
 pub(crate) struct App {
@@ -255,6 +259,9 @@ pub(crate) struct App {
     size_px: (u32, u32),
     blink_on: bool,
     next_blink: Instant,
+    /// Working-agent spinner: animation clock and next frame.
+    started: Instant,
+    next_spin: Instant,
     /// The pane a selection drag started in.
     mouse_down: Option<PaneId>,
     wheel_acc: i32,
@@ -269,6 +276,8 @@ pub(crate) struct App {
     /// The caption button under the pointer, and the one a press started on.
     caption_hover: Option<Caption>,
     caption_down: Option<Caption>,
+    /// Toasts, taskbar flash and badge for agents that need the user (spec §5.4).
+    notifier: crate::notify::Notifier,
 }
 
 impl App {
@@ -559,6 +568,10 @@ impl App {
                     return self.send_all(msgs);
                 }
                 Hit::NewWorkspace => return self.action(Action::NewWorkspace),
+                Hit::Agent(p) => {
+                    let msgs = self.view.focus_pane(p);
+                    return self.send_all(msgs);
+                }
                 Hit::Divider(i) => {
                     self.view.start_divider_drag(i);
                     unsafe {
@@ -751,11 +764,25 @@ impl App {
                 }
                 WM_SETFOCUS | WM_KILLFOCUS => {
                     self.focused = msg == WM_SETFOCUS;
+                    self.link.send(ClientMsg::Foreground(self.focused));
+                    if self.focused {
+                        self.notifier.clear_badge();
+                    }
                     self.dirty = true;
                 }
                 WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MOUSEMOVE | WM_MOUSEWHEEL | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP => {
                     self.set_caption_hover(None);
                     self.mouse(msg, wparam, lparam);
+                    return Some(LRESULT(0));
+                }
+                crate::notify::WM_TOAST_CLICKED => {
+                    // The user clicked an agent's toast: bring its pane up here.
+                    let msgs = self.view.focus_pane(wparam.0 as PaneId);
+                    self.send_all(msgs);
+                    unsafe {
+                        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_RESTORE);
+                        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+                    }
                     return Some(LRESULT(0));
                 }
                 WM_APP => {
@@ -819,8 +846,12 @@ impl App {
                 tracing::warn!("server: {e}");
                 crate::reload::toast_text(self, "server", e);
             }
-            // Agent notifications are wired in M4 Task 5.
-            ServerMsg::Notify { .. } => {}
+            ServerMsg::Notify { pane, title, body } => {
+                let visible = self.view.visible().iter().any(|(p, _)| *p == pane);
+                let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+                let ways = crate::notify::notify_ways(&self.config.agent_notify, self.focused, visible, u32::from(t.wHour) * 60 + u32::from(t.wMinute));
+                self.notifier.show(ways, pane, &title, &body);
+            }
             ServerMsg::Welcome { .. } | ServerMsg::VersionMismatch { .. } | ServerMsg::Panes(_) => {}
         }
     }
@@ -937,12 +968,20 @@ impl App {
         if self.view.tick(now) {
             self.dirty = true;
         }
+        let spinning = self.view.tab_layout().0.iter().any(|(t, _)| self.view.tab_agent(*t).is_some_and(|a| a.state == AgentState::Working));
+        if spinning && now >= self.next_spin {
+            self.next_spin = now + Duration::from_millis(SPIN_MS as u64);
+            self.dirty = true;
+        }
         crate::reload::poll(self);
         self.try_render(false);
         let until_blink = self.next_blink.saturating_duration_since(Instant::now()).as_millis() as u32;
         let mut sleep = if self.config.cursor_style_blink { until_blink.max(1) } else { 1000 };
         if let Some(t) = crate::reload::next_deadline(self).into_iter().chain(self.view.next_deadline()).min() {
             sleep = sleep.min(t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
+        }
+        if spinning {
+            sleep = sleep.min(SPIN_MS as u32);
         }
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
@@ -1025,6 +1064,7 @@ impl App {
         }
         // Tab bar.
         p.rect(regions.tabbar, col.bar_bg, 1.0);
+        let spin_frame = self.started.elapsed().as_millis() / SPIN_MS;
         let (tabs, plus) = self.view.tab_layout();
         let active = self.view.active_tab().map(|t| t.id);
         let pad_x = m.w as i32 / 2;
@@ -1034,12 +1074,23 @@ impl App {
                 p.rect(*r, col.tab_active_bg, 1.0);
                 p.rect(Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 }, accent, 1.0);
             }
-            let cells = ((r.w - 2 * pad_x - 2 * m.w as i32) / m.w as i32).max(0) as usize;
-            let title = truncate_cells(&self.view.snapshot().tab_title(*id), cells);
+            // An agent's icon leads the title; its state badge sits before the close button.
+            let agent = self.view.tab_agent(*id).map(|a| (a.icon, a.state, a.attention));
+            let badge = agent.and_then(|(_, state, attention)| match state {
+                AgentState::Working => Some(SPINNER[(spin_frame % SPINNER.len() as u128) as usize]),
+                AgentState::Asking | AgentState::Done if attention => Some("●"),
+                _ => None,
+            });
+            let cells = (((r.w - 2 * pad_x - 2 * m.w as i32) / m.w as i32).max(0) as usize).saturating_sub(usize::from(badge.is_some()) * 2);
+            let title = self.view.snapshot().tab_title(*id);
+            let title = truncate_cells(&agent.map_or(title.clone(), |(icon, ..)| format!("{icon} {title}")), cells);
             let ty = r.y + (r.h - m.h as i32) / 2;
             let tc = if is_active { col.bar_fg } else { col.bar_fg_dim };
             p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &title, tc, 1.0);
             let x = chrome::close_rect(*r, m.w as i32);
+            if let Some(b) = badge {
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x - m.w as i32, ty, b, accent, 1.0);
+            }
             p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", col.bar_fg_dim, 1.0);
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
@@ -1101,6 +1152,30 @@ impl App {
                 }
             }
             p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", col.bar_fg_dim, 1.0);
+            // Agents: waiting first (oldest first), then working, then idle (spec §4.2).
+            let agents = self.view.agent_rects();
+            if !agents.is_empty() {
+                let hy = agents[0].1.y - new_row.h + (new_row.h - m.h as i32) / 2;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, s.x + pad_x, hy, "AGENTS", col.bar_fg_dim, 1.0);
+            }
+            let rows = self.view.agent_rows();
+            let snap = self.view.snapshot();
+            for ((_, r), row) in agents.iter().zip(&rows) {
+                let a = &row.agent;
+                let (state, color) = match a.state {
+                    AgentState::Asking => ("needs input", col.bar_fg),
+                    AgentState::Done => ("done", col.bar_fg),
+                    AgentState::Working => ("working", col.bar_fg_dim),
+                    AgentState::Idle => ("idle", col.bar_fg_dim),
+                };
+                let ws = snap.workspace(row.workspace).map_or("", |w| w.name.as_str());
+                let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
+                let text = truncate_cells(&format!("{} {} · {state} · {ws}", a.icon, a.name), cells);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &text, color, 1.0);
+                if a.attention {
+                    p.rect(Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, 1.0);
+                }
+            }
         }
         // Command palette / picker, centered over everything.
         if let Some(pal) = self.view.palette() {
@@ -1279,7 +1354,13 @@ fn build_spawn_ctx(config: &Config) -> SpawnCtx {
 pub fn run() -> Result<()> {
     let path = wraith_config::default_path();
     let (config, diags) = wraith_config::load(&path, &themes_dir());
+    // COM for the taskbar and toasts; the app id groups windows and names toasts. Both before the window.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    crate::notify::set_app_id();
     let win = Window::create("Wraith", 1000, 640, config.background_opacity < 1.0)?;
+    let notifier = crate::notify::Notifier::new(win.hwnd());
     let gpu = Gpu::new()?;
     let fonts = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
     let atlas = GlyphAtlas::new(&gpu, 2048)?;
@@ -1342,6 +1423,8 @@ pub fn run() -> Result<()> {
         size_px: (w, h),
         blink_on: true,
         next_blink: Instant::now() + Duration::from_millis(600),
+        started: Instant::now(),
+        next_spin: Instant::now(),
         mouse_down: None,
         wheel_acc: 0,
         title: String::new(),
@@ -1351,6 +1434,7 @@ pub fn run() -> Result<()> {
         quit: false,
         caption_hover: None,
         caption_down: None,
+        notifier,
     }));
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
     app.borrow().win.show();

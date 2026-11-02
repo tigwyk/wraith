@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use wraith_config::{Action, CloseOnExit, Config, SplitTarget};
-use wraith_proto::model::{Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
+use wraith_proto::model::{AgentInfo, AgentState, Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
 use wraith_proto::pane::{PaneCmd, SpawnOpts};
 use wraith_proto::wire::{ClientMsg, PaneId};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent};
@@ -117,11 +117,20 @@ pub struct SidebarRow {
     pub id: WorkspaceId,
     pub name: String,
     pub color: u32,
-    /// An agent in the workspace needs input (always false until agent state exists, M4).
+    /// An agent in the workspace needs the user (rolled up from its panes).
     pub attention: bool,
     pub current: bool,
     /// Another window shows it.
     pub elsewhere: bool,
+}
+
+/// One row of the sidebar's Agents list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentRow {
+    pub pane: PaneId,
+    pub workspace: WorkspaceId,
+    pub tab: TabId,
+    pub agent: AgentInfo,
 }
 
 /// How long the hover-revealed sidebar lingers after the pointer leaves it (spec §4.2).
@@ -329,11 +338,67 @@ impl WindowView {
                 id: w.id,
                 name: w.name.clone(),
                 color: w.color,
-                attention: false,
+                attention: w.tabs.iter().filter_map(|&t| self.snap.tab(t)).flat_map(|t| t.root.leaves()).any(|p| {
+                    self.snap.pane(p).and_then(|m| m.agent.as_ref()).is_some_and(|a| a.attention)
+                }),
                 current: Some(w.id) == self.workspace,
                 elsewhere: w.attached && Some(w.id) != self.workspace,
             })
             .collect()
+    }
+
+    /// Every pane with an agent: waiting ones first (oldest first), then working, then idle.
+    pub fn agent_rows(&self) -> Vec<AgentRow> {
+        let mut rows: Vec<AgentRow> = self
+            .snap
+            .panes
+            .iter()
+            .filter_map(|p| {
+                let a = p.agent.as_ref()?;
+                let tab = self.snap.tabs.iter().find(|t| t.root.contains(p.id))?;
+                Some(AgentRow { pane: p.id, workspace: tab.workspace, tab: tab.id, agent: a.clone() })
+            })
+            .collect();
+        let rank = |s: AgentState| match s {
+            AgentState::Asking | AgentState::Done => 0,
+            AgentState::Working => 1,
+            AgentState::Idle => 2,
+        };
+        rows.sort_by_key(|r| (rank(r.agent.state), r.agent.since, r.pane));
+        rows
+    }
+
+    /// Rows of the sidebar's Agents list, below the workspaces (after a header row).
+    pub fn agent_rects(&self) -> Vec<(PaneId, Rect)> {
+        let (_, new_ws) = self.workspace_rects();
+        if self.sidebar_rect().is_none() {
+            return Vec::new();
+        }
+        let row_h = new_ws.h;
+        let y0 = new_ws.y + 2 * row_h + 6;
+        self.agent_rows().iter().enumerate().map(|(i, r)| (r.pane, Rect { x: new_ws.x, y: y0 + i as i32 * row_h, w: new_ws.w, h: row_h })).collect()
+    }
+
+    /// The agent a tab's badge shows: the one most in need of the user.
+    pub fn tab_agent(&self, tab: TabId) -> Option<&AgentInfo> {
+        let t = self.snap.tab(tab)?;
+        let urgency = |a: &AgentInfo| (a.attention, matches!(a.state, AgentState::Asking), matches!(a.state, AgentState::Working));
+        t.root.leaves().into_iter().filter_map(|p| self.snap.pane(p)?.agent.as_ref()).max_by_key(|a| urgency(a))
+    }
+
+    /// Show `pane`: its workspace in this window, its tab selected, the pane focused (one ordered batch).
+    pub fn focus_pane(&self, pane: PaneId) -> Vec<ClientMsg> {
+        let Some(tab) = self.snap.tabs.iter().find(|t| t.root.contains(pane)) else { return Vec::new() };
+        let mut msgs = Vec::new();
+        let here = self.workspace == Some(tab.workspace);
+        if !here {
+            msgs.push(ClientMsg::AttachWindow { workspace: Some(tab.workspace) });
+        }
+        if !here || self.active_tab().map(|t| t.id) != Some(tab.id) {
+            msgs.push(ClientMsg::Model(ModelCmd::SelectTab(tab.id)));
+        }
+        msgs.push(ClientMsg::Model(ModelCmd::FocusPane(pane)));
+        msgs
     }
 
     /// Row rectangles of the sidebar and its trailing "new workspace" row.
@@ -731,6 +796,7 @@ impl WindowView {
             new_tab,
             workspaces: &workspaces,
             new_workspace,
+            agents: &self.agent_rects(),
             panes: &panes,
             dividers: &dividers,
             cell_w: self.geom.cell.0 as i32,

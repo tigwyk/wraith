@@ -484,12 +484,12 @@ fn close_workspace_asks_when_shells_run() {
 }
 
 #[test]
-fn attention_dot_is_false_in_m3() {
+fn sidebar_rows_list_workspaces() {
     let mut v = with_sidebar();
     v.on_snapshot(three_workspaces(), &ctx());
     let rows = v.sidebar_rows();
     assert_eq!(rows.len(), 3);
-    assert!(rows.iter().all(|r| !r.attention));
+    assert!(rows.iter().all(|r| !r.attention), "no agents, no dots");
     assert!(rows[0].current && !rows[1].current);
     assert_eq!(rows[1].name, "web");
 }
@@ -585,4 +585,80 @@ fn move_tab_mode_moves_the_active_tab() {
     type_all(&mut v, "infra");
     let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
     assert_eq!(out.msgs, vec![ClientMsg::Model(ModelCmd::MoveTab { tab: 10, to: 3, index: None })]);
+}
+
+// ---- M4 Task 5: agents in the window ----
+
+fn agent(state: AgentState, attention: bool, since: u64) -> Option<AgentInfo> {
+    Some(AgentInfo { harness: "claude".into(), name: "Claude Code".into(), icon: '*', state, attention, message: format!("m{since}"), since })
+}
+
+/// Workspace 1 (tabs 10 = [1|2], 11 = [3]) plus workspace 2 with tab 20 = [4], panes carrying agents.
+fn agents_snap(a: [Option<AgentInfo>; 4]) -> ModelSnapshot {
+    let mut s = snap(10);
+    s.workspaces.push(Workspace { tabs: vec![20], active_tab: Some(20), ..ws(2, "web", false) });
+    s.tabs.push(Tab { id: 20, workspace: 2, title_override: None, root: leaf(4), focused: 4, zoomed: None });
+    s.panes.push(meta(4, None, "pwsh", None));
+    for (p, info) in s.panes.iter_mut().zip(a) {
+        p.agent = info;
+    }
+    s
+}
+
+#[test]
+fn agent_rows_sorted_waiting_oldest_first_then_working_then_idle() {
+    let mut v = with_sidebar();
+    v.on_snapshot(
+        agents_snap([agent(AgentState::Idle, false, 1), agent(AgentState::Working, false, 2), agent(AgentState::Asking, true, 9), agent(AgentState::Done, true, 5)]),
+        &ctx(),
+    );
+    let order: Vec<PaneId> = v.agent_rows().iter().map(|r| r.pane).collect();
+    assert_eq!(order, vec![4, 3, 2, 1], "waiting (oldest first), working, idle");
+    let row = v.agent_rows().into_iter().find(|r| r.pane == 4).unwrap();
+    assert_eq!((row.workspace, row.tab), (2, 20));
+}
+
+#[test]
+fn workspace_attention_rolls_up() {
+    let mut v = with_sidebar();
+    v.on_snapshot(agents_snap([None, None, agent(AgentState::Working, false, 1), agent(AgentState::Asking, true, 2)]), &ctx());
+    let dots: Vec<bool> = v.sidebar_rows().iter().map(|r| r.attention).collect();
+    assert_eq!(dots, vec![false, true], "only workspace 2 has an agent needing the user");
+}
+
+#[test]
+fn agent_row_click_focuses_pane_across_workspace() {
+    let mut v = with_sidebar();
+    v.on_snapshot(agents_snap([None, None, None, agent(AgentState::Asking, true, 1)]), &ctx());
+    assert_eq!(
+        v.focus_pane(4),
+        vec![
+            ClientMsg::AttachWindow { workspace: Some(2) },
+            ClientMsg::Model(ModelCmd::SelectTab(20)),
+            ClientMsg::Model(ModelCmd::FocusPane(4)),
+        ]
+    );
+    assert_eq!(v.focus_pane(1), vec![ClientMsg::Model(ModelCmd::FocusPane(1))], "same workspace, active tab: just focus");
+    assert_eq!(v.focus_pane(3), vec![ClientMsg::Model(ModelCmd::SelectTab(11)), ClientMsg::Model(ModelCmd::FocusPane(3))]);
+    assert!(v.focus_pane(999).is_empty());
+}
+
+#[test]
+fn agent_rows_are_clickable_in_the_sidebar() {
+    let mut v = with_sidebar();
+    v.on_snapshot(agents_snap([None, None, None, agent(AgentState::Asking, true, 1)]), &ctx());
+    let rects = v.agent_rects();
+    assert_eq!(rects.len(), 1);
+    let (pane, r) = rects[0];
+    let (_, new_ws) = v.workspace_rects();
+    assert!(r.y > new_ws.y, "below the workspace list");
+    assert_eq!(v.hit(r.x + 5, r.y + 2), Hit::Agent(pane));
+}
+
+#[test]
+fn tab_badge_picks_the_most_urgent_agent() {
+    let mut v = view();
+    v.on_snapshot(agents_snap([agent(AgentState::Working, false, 1), agent(AgentState::Asking, true, 2), None, None]), &ctx());
+    assert_eq!(v.tab_agent(10).map(|a| a.state), Some(AgentState::Asking));
+    assert_eq!(v.tab_agent(11), None);
 }

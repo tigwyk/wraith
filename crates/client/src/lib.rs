@@ -6,6 +6,7 @@ pub mod gpu;
 pub mod grid;
 pub mod images;
 pub mod input;
+pub mod notify;
 pub mod reload;
 pub mod link;
 pub mod paint;

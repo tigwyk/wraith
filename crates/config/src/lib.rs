@@ -19,6 +19,25 @@ pub enum CursorStyle {
     BlockHollow,
 }
 
+/// How an agent that needs the user is announced (spec §5.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AgentNotify {
+    pub toast: bool,
+    pub flash: bool,
+    pub badge: bool,
+    pub sound: bool,
+    /// `agent-notify-when = always`: also while the window is in front and the pane in view.
+    pub when_always: bool,
+    /// Quiet hours as (start, end) minutes after midnight; may cross midnight.
+    pub quiet: Option<(u32, u32)>,
+}
+
+impl Default for AgentNotify {
+    fn default() -> AgentNotify {
+        AgentNotify { toast: true, flash: true, badge: true, sound: false, when_always: false, quiet: None }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseOnExit {
     /// Keep every exited pane, showing its exit code.
@@ -62,6 +81,7 @@ pub struct Config {
     pub close_on_exit: CloseOnExit,
     /// `agent-detect = name:regex`, extra agent process matchers.
     pub agent_detect: Vec<(String, String)>,
+    pub agent_notify: AgentNotify,
     pub keybinds: Vec<Keybind>,
     pub workspaces: Vec<WorkspaceDef>,
     /// `(name, command)` from `profile = name:command`.
@@ -111,6 +131,7 @@ impl Default for Config {
             command: None,
             close_on_exit: CloseOnExit::Clean,
             agent_detect: Vec::new(),
+            agent_notify: AgentNotify::default(),
             keybinds: keybind::defaults(),
             workspaces: Vec::new(),
             profiles: Vec::new(),

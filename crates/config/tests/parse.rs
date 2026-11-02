@@ -247,3 +247,16 @@ fn image_storage_limit_parses_bytes() {
     let (c, _) = parse_str("", p(), &themes());
     assert_eq!(c.image_storage_limit, 320 * 1024 * 1024);
 }
+
+#[test]
+fn agent_notify_keys() {
+    use wraith_config::AgentNotify;
+    let d = parse_str("", p(), &themes()).0.agent_notify;
+    assert_eq!(d, AgentNotify { toast: true, flash: true, badge: true, sound: false, when_always: false, quiet: None });
+    let (c, diags) = parse_str("agent-notify = toast,sound\nagent-notify-when = always\nagent-notify-quiet = 22:00-08:30\n", p(), &themes());
+    assert!(diags.is_empty(), "{diags:?}");
+    assert_eq!(c.agent_notify, AgentNotify { toast: true, flash: false, badge: false, sound: true, when_always: true, quiet: Some((22 * 60, 8 * 60 + 30)) });
+    for bad in ["agent-notify = toast,beep", "agent-notify-when = sometimes", "agent-notify-quiet = 25:00-08:00", "agent-notify-quiet = 22:00"] {
+        assert_eq!(parse_str(&format!("{bad}\n"), p(), &themes()).1.len(), 1, "{bad}");
+    }
+}

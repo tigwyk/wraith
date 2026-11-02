@@ -49,6 +49,8 @@ pub enum Hit {
     NewTab,
     Workspace(WorkspaceId),
     NewWorkspace,
+    /// A row of the sidebar's Agents list.
+    Agent(PaneId),
     /// An index into `HitCtx::dividers`.
     Divider(usize),
     Pane(PaneId),
@@ -65,6 +67,7 @@ pub struct HitCtx<'a> {
     pub new_tab: Rect,
     pub workspaces: &'a [(WorkspaceId, Rect)],
     pub new_workspace: Rect,
+    pub agents: &'a [(PaneId, Rect)],
     pub panes: &'a [(PaneId, Rect)],
     pub dividers: &'a [Divider],
     pub cell_w: i32,
@@ -74,6 +77,9 @@ pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
     if c.regions.sidebar.is_some_and(|s| s.contains(x, y)) {
         if let Some((id, _)) = c.workspaces.iter().find(|(_, r)| r.contains(x, y)) {
             return Hit::Workspace(*id);
+        }
+        if let Some((pane, _)) = c.agents.iter().find(|(_, r)| r.contains(x, y)) {
+            return Hit::Agent(*pane);
         }
         return if c.new_workspace.contains(x, y) { Hit::NewWorkspace } else { Hit::Sidebar };
     }
