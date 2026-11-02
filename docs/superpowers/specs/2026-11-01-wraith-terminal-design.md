@@ -38,7 +38,7 @@ Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 
 ## 2. Non-goals for v1
 
-Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting scrollback or processes across a *server* restart (layout only). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI (planned for M5).
+Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting processes across a *server* restart (scrollback persistence was added in M5: history is saved on `server-stop` and restored above a fresh shell). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI (planned for M5).
 
 ## 3. Architecture
 
@@ -278,7 +278,7 @@ Each milestone gets its own implementation plan.
 | M2 | Server/client split: `proto`, named pipe, pane threads, backpressure, reattach, `wr ctl` basics. | Close window → reopen → same shells and screens. |
 | M3 | Workspaces, tabs, splits, sidebar, palette, workspace picker, profiles, shell integration, layout persistence, multiple windows. Inline images (Kitty graphics, §6.1). | Full chrome works. Server restart restores layout. `kitten icat photo.jpg` shows the photo inline, and it scrolls with the text. |
 | M4 | Agent integration: `agent` crate, hooks + installers, passive detection, attention roll-up, taskbar + Windows toasts. | Claude Code and Codex in hidden tabs produce a toast within 1 s of asking. Clicking it focuses the pane. |
-| M5 | Backlog: scrollback search, quake/drop-down window, settings GUI, installer + winget + auto-update, ARM64, scrollback persistence. | Prioritized after M4. |
+| M5 | Scrollback search (find bar, `ctrl+shift+f`), scrollback persistence across `server-stop`, local packaging (dist zip, per-user install script, winget manifest validated but not submitted). | Done; see `docs/m5-acceptance.md`. |
 | Backlog | Quake/drop-down window, settings GUI, auto-update, ARM64 (left from M5). **Hover feedback on clickable chrome:** sidebar workspaces, tabs and agent rows (and tab bar tabs) react to mouse hover, so users discover the window is mouse-friendly rather than assuming keyboard-only. **Polish ("juice") pass:** make Wraith enticing to use: easy to navigate, responsive-feeling, and better than users expect from a terminal. Includes hover and press feedback, subtle motion on state changes (tab, sidebar, palette, badges), clear focus cues, and discoverable affordances. Animation never costs input latency (spec §6.3). | Unscheduled. |
 
 ## 11. Known risks

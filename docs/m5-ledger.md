@@ -14,3 +14,8 @@ Task 4: Bug found live: a restored pane's marker line was missing and its line c
 Task 4: tests restart servers through restart_server_at, which waits out a stopped server still releasing its pipe (its client threads hold it for a moment after the stop returns).
 Final: minor (deferred): a server started within milliseconds of a `server-stop` can find the pipe still held (AddrInUse) and exit; the client then reports "no server". Pre-existing; only a script restarting that fast would see it.
 Task 4: Bug found live (a regression from the Ghostty 7cd6fa0 upgrade, not M5): libghostty now defaults to a ~10 KB scrollback *byte* cap and Wraith only set a line limit, so every pane kept roughly one page (~950 lines of a flood) whatever `scrollback-limit` said; restored history was then pushed out by the re-run command. Fix: clear the byte cap; the line limit (from scrollback-limit) governs — scrollback_keeps_the_configured_lines_not_a_byte_default RED (oldest line-4047 of 5000 with a 10 000-line limit) → GREEN.
+Task 4: complete — acceptance in docs/m5-acceptance.md; spec §2 and §10 updated.
+Final review: self-review (the session's rules disallow starting a reviewer subagent unasked) — weaker than a fresh reviewer.
+Final: minor (deferred): a restored pane shows a screen's worth of blank lines between the marker and the new session (the window resizes the pane after the restore sequence ran) — cosmetic; belongs to the polish pass.
+Final: minor (deferred): no LICENSE file for Wraith itself ships (the repo has none; the user decides the license text).
+Final: minor (deferred): Esc leaves the view where the search left it, rather than returning to the bottom.
