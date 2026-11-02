@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounded, unbounded};
 use wraith_ipc::PipeListener;
 use wraith_proto::model::{ModelCmd, TabId, WorkspaceId};
-use wraith_proto::pane::{PaneCmd, PaneEvent, SpawnOpts};
+use wraith_agent::{Agent, Ctx, Source, became_visible, step, typed};
+use wraith_proto::pane::{AgentSignal, PaneCmd, PaneEvent, SpawnOpts};
 use wraith_proto::wire::{
     ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo, ServerMsg, read_frame, write_frame,
 };
@@ -27,6 +28,10 @@ const CLIENT_QUEUE: usize = 256;
 
 /// Layout writes are coalesced: one write this long after the first unsaved change (spec §4.4).
 const SAVE_DELAY: Duration = Duration::from_secs(1);
+
+/// Agent-driven snapshot pushes are coalesced to at most one per this interval (a chatty hook must
+/// not flood the windows).
+const AGENT_PUSH_GAP: Duration = Duration::from_millis(100);
 
 enum Ev {
     Connected(ClientId, Sender<ServerMsg>),
@@ -45,6 +50,8 @@ struct Client {
     /// Refused (bad Hello): told why, then ignored until it closes its end. The server never closes
     /// first, because closing a pipe discards a reply the client has not read yet.
     refused: bool,
+    /// When this window last came to the foreground.
+    focused_at: Option<Instant>,
 }
 
 /// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json`.
@@ -149,7 +156,21 @@ fn serve(pipe: String, mut listener: PipeListener, layout: Option<PathBuf>) -> i
     };
     let model = layout.as_deref().map_or_else(Model::new, load_model);
     let saved_rev = model.rev();
-    let mut server = Server { tx, pipe: pipe.clone(), clients: HashMap::new(), panes: HashMap::new(), model, layout, saved_rev, save_due: None };
+    let now = Instant::now();
+    let mut server = Server {
+        tx,
+        pipe: pipe.clone(),
+        clients: HashMap::new(),
+        panes: HashMap::new(),
+        model,
+        layout,
+        saved_rev,
+        save_due: None,
+        agents: HashMap::new(),
+        push_due: None,
+        last_push: now,
+        epoch: now,
+    };
     server.restore();
     server.run(&rx);
     // Shells are gone (run dropped every pane). Wake the accept thread so it releases the pipe.
@@ -169,6 +190,13 @@ struct Server {
     layout: Option<PathBuf>,
     saved_rev: u64,
     save_due: Option<Instant>,
+    /// The coding agent in each pane that has one (spec §5.3).
+    agents: HashMap<PaneId, Agent>,
+    /// Coalesced snapshot push for agent changes.
+    push_due: Option<Instant>,
+    last_push: Instant,
+    /// Zero of `AgentInfo::since`.
+    epoch: Instant,
 }
 
 impl Server {
@@ -179,11 +207,17 @@ impl Server {
 
     fn run(&mut self, rx: &Receiver<Ev>) {
         loop {
-            let ev = match self.save_due {
+            let ev = match self.save_due.into_iter().chain(self.push_due).min() {
                 Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
                     Ok(ev) => ev,
                     Err(RecvTimeoutError::Timeout) => {
-                        self.save();
+                        let now = Instant::now();
+                        if self.push_due.is_some_and(|t| t <= now) {
+                            self.push_snapshot();
+                        }
+                        if self.save_due.is_some_and(|t| t <= now) {
+                            self.save();
+                        }
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -195,7 +229,7 @@ impl Server {
             };
             match ev {
                 Ev::Connected(id, tx) => {
-                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false });
+                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None });
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
@@ -248,6 +282,7 @@ impl Server {
     }
 
     fn push_snapshot(&mut self) {
+        (self.push_due, self.last_push) = (None, Instant::now());
         let snap = self.model.snapshot();
         for id in self.gui_ids() {
             self.send(id, ServerMsg::Snapshot(snap.clone()));
@@ -378,10 +413,23 @@ impl Server {
                 self.refuse(id);
                 return;
             }
+            // A hook connection is only ever trusted with agent events.
+            (Some(ClientKind::Hook), m @ ClientMsg::AgentEvent { .. }) => m,
+            (Some(ClientKind::Hook), _) => return,
             (Some(_), m) => m,
         };
         match m {
             ClientMsg::Hello { .. } | ClientMsg::ServerStop => {}
+            ClientMsg::AgentEvent { pane, harness, signal } => {
+                if kind != Some(ClientKind::Gui) && self.panes.contains_key(&pane) {
+                    self.agent_signal(pane, harness.as_deref(), signal, Source::Hook);
+                }
+            }
+            ClientMsg::Foreground(fg) => {
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.focused_at = fg.then(Instant::now).or(c.focused_at);
+                }
+            }
             ClientMsg::AttachWindow { workspace } => self.attach_window(id, workspace),
             ClientMsg::DetachWindow => self.detach_window(id),
             ClientMsg::Model(cmd) => {
@@ -400,6 +448,7 @@ impl Server {
                     if let Some(h) = self.panes.get(&p) {
                         let _ = h.send(PaneCmd::Reattach);
                     }
+                    self.agent_edit(p, became_visible);
                 }
             }
             // Shutdown and Reattach are the server's own lifecycle commands, never a client's.
@@ -409,6 +458,14 @@ impl Server {
                     return;
                 }
                 let restart = matches!(cmd, PaneCmd::Restart);
+                let typing = match &cmd {
+                    PaneCmd::Key(k) => k.action != wraith_proto::KeyAction::Release,
+                    PaneCmd::Text(_) | PaneCmd::Paste(_) | PaneCmd::PasteConfirmed(_) => true,
+                    _ => false,
+                };
+                if typing {
+                    self.agent_edit(pane, typed);
+                }
                 if let Some(h) = self.panes.get(&pane) {
                     let _ = h.send(cmd);
                 }
@@ -479,6 +536,7 @@ impl Server {
                 Effect::Kill(pane) => {
                     // Dropping the handle shuts the pane down; its Job Object kills the shell tree.
                     self.panes.remove(&pane);
+                    self.agents.remove(&pane);
                     for c in self.clients.values_mut() {
                         c.subs.remove(&pane);
                     }
@@ -529,9 +587,74 @@ impl Server {
         }
     }
 
+    /// Some window draws `pane` right now.
+    fn visible(&self, pane: PaneId) -> bool {
+        self.clients.values().any(|c| c.kind == Some(ClientKind::Gui) && c.subs.contains(&pane))
+    }
+
+    /// Feed one agent event through the state engine. A hook event for a pane with no agent yet
+    /// attaches one first (named by `harness`).
+    fn agent_signal(&mut self, pane: PaneId, harness: Option<&str>, sig: AgentSignal, src: Source) {
+        let ctx = Ctx { visible: self.visible(pane), now: Instant::now() };
+        let before = self.agents.get(&pane).is_some_and(|a| a.attention);
+        let mut a = self.agents.remove(&pane);
+        if a.is_none() && src == Source::Hook && !matches!(sig, AgentSignal::Detached | AgentSignal::Attached) {
+            a = step(None, &crate::agents::signal(AgentSignal::Attached, harness), src, &ctx);
+        }
+        if let Some(a) = step(a, &crate::agents::signal(sig, harness), src, &ctx) {
+            self.agents.insert(pane, a);
+        }
+        self.agent_changed(pane, before);
+    }
+
+    /// Apply a user-side change (typed, became visible) to the pane's agent.
+    fn agent_edit(&mut self, pane: PaneId, f: fn(&mut Agent)) {
+        let Some(a) = self.agents.get_mut(&pane) else { return };
+        let before = a.attention;
+        f(a);
+        self.agent_changed(pane, before);
+    }
+
+    /// Mirror the agent into the model (coalesced push) and notify one window when attention rises.
+    fn agent_changed(&mut self, pane: PaneId, attention_before: bool) {
+        let info = self.agents.get(&pane).map(|a| crate::agents::info(a, self.epoch));
+        if self.model.note_agent(pane, info) && self.push_due.is_none() {
+            self.push_due = Some((self.last_push + AGENT_PUSH_GAP).max(Instant::now()));
+        }
+        let Some(a) = self.agents.get(&pane).filter(|a| a.attention && !attention_before) else { return };
+        let snap = self.model.snapshot();
+        let ws = self.model.workspace_of(pane);
+        let ws_name = ws.and_then(|w| snap.workspace(w)).map_or(String::new(), |w| w.name.clone());
+        let tab = snap.tabs.iter().find(|t| t.root.contains(pane)).map_or(String::new(), |t| snap.tab_title(t.id));
+        let msg = ServerMsg::Notify { pane, title: crate::agents::notify_title(a, &ws_name, &tab), body: a.message.clone() };
+        // The window showing the workspace, else the one the user used last.
+        let gui = |c: &&Client| c.kind == Some(ClientKind::Gui);
+        let target = self
+            .clients
+            .iter()
+            .filter(|(_, c)| gui(c) && ws.is_some() && c.workspace == ws)
+            .map(|(&id, _)| id)
+            .next()
+            .or_else(|| self.clients.iter().filter(|(_, c)| gui(c)).max_by_key(|(id, c)| (c.focused_at, **id)).map(|(&id, _)| id));
+        if let Some(id) = target {
+            // The snapshot carrying the new state goes first, so the window draws what it is told about.
+            self.push_snapshot();
+            self.send(id, msg);
+        }
+    }
+
     fn pane_event(&mut self, pane: PaneId, ev: PaneEvent) {
         if !self.panes.contains_key(&pane) {
             return; // closed since the event was queued
+        }
+        if let PaneEvent::Agent(sig) = ev {
+            return self.agent_signal(pane, None, sig, Source::Passive);
+        }
+        if let PaneEvent::Title(t) = &ev
+            && let Some(a) = self.agents.get(&pane)
+            && wraith_agent::harness(&a.harness).and_then(|h| h.ask_title.as_ref()).is_some_and(|r| r.is_match(t))
+        {
+            self.agent_signal(pane, None, AgentSignal::Ask { message: t.clone() }, Source::Passive);
         }
         let changed = match &ev {
             PaneEvent::Title(t) => self.model.note_title(pane, t.clone()),

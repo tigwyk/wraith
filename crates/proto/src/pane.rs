@@ -57,6 +57,20 @@ pub enum PaneEvent {
     MouseTracking(bool),
     /// How long an input command waited between being queued and its bytes reaching the PTY.
     InputWritten { waited: Duration },
+    /// Something the terminal saw that says what an agent is doing (spec §5.2).
+    Agent(AgentSignal),
+}
+
+/// An agent event, from a hook (`wr hook`) or seen in the terminal. Messages are untrusted text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentSignal {
+    /// An agent started in the pane (its harness comes with the event).
+    Attached,
+    Detached,
+    Working,
+    Ask { message: String },
+    TurnEnd { message: String },
+    Idle,
 }
 
 /// What a client asks the server to spawn when there is no detached pane to reattach.

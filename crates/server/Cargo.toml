@@ -8,6 +8,7 @@ license.workspace = true
 libghostty-vt.workspace = true
 windows.workspace = true
 wraith-proto.workspace = true
+wraith-agent.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true
 serde.workspace = true

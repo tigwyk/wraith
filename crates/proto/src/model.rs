@@ -266,6 +266,34 @@ pub struct PaneMeta {
     pub exit: Option<u32>,
     pub profile: String,
     pub cmdline: String,
+    /// The coding agent running here, if any (live only; never saved; absent in older layout files).
+    #[serde(default)]
+    pub agent: Option<AgentInfo>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentState {
+    Idle,
+    Working,
+    /// Waiting for the user to answer.
+    Asking,
+    /// Finished its turn.
+    Done,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentInfo {
+    /// Harness id (`claude`, `codex`, ...).
+    pub harness: String,
+    pub name: String,
+    pub icon: char,
+    pub state: AgentState,
+    /// The user should look at this pane.
+    pub attention: bool,
+    /// Sanitized message from the agent.
+    pub message: String,
+    /// Model clock when `state` last changed: lower is older.
+    pub since: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

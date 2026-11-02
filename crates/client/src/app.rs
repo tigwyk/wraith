@@ -819,6 +819,8 @@ impl App {
                 tracing::warn!("server: {e}");
                 crate::reload::toast_text(self, "server", e);
             }
+            // Agent notifications are wired in M4 Task 5.
+            ServerMsg::Notify { .. } => {}
             ServerMsg::Welcome { .. } | ServerMsg::VersionMismatch { .. } | ServerMsg::Panes(_) => {}
         }
     }
@@ -836,7 +838,7 @@ impl App {
                 self.last_seq = Some(f.seq);
                 self.dirty = true;
             }
-            PaneEvent::Title(_) | PaneEvent::Bell | PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) => {}
+            PaneEvent::Title(_) | PaneEvent::Bell | PaneEvent::InputWritten { .. } | PaneEvent::Cwd(_) | PaneEvent::Agent(_) => {}
             PaneEvent::Clipboard(t) | PaneEvent::Copied(t) => set_clipboard(self.win.hwnd(), &t),
             PaneEvent::PasteNeedsConfirm(t) => {
                 let lines = t.lines().count().max(1);

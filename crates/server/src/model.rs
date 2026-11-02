@@ -2,7 +2,7 @@
 //! process; every command returns the `Effect`s the session must carry out, so each rule is
 //! testable without ConPTY.
 use serde::{Deserialize, Serialize};
-use wraith_proto::model::{Axis, ModelCmd, ModelSnapshot, PaneMeta, PaneNode, Removal, Tab, TabId, Workspace, WorkspaceId};
+use wraith_proto::model::{AgentInfo, Axis, ModelCmd, ModelSnapshot, PaneMeta, PaneNode, Removal, Tab, TabId, Workspace, WorkspaceId};
 use wraith_proto::pane::SpawnOpts;
 use wraith_proto::wire::PaneId;
 
@@ -104,7 +104,7 @@ impl Model {
     fn add_pane(&mut self, profile: &str, spawn: &SpawnOpts) -> PaneId {
         let id = self.next_pane;
         self.next_pane += 1;
-        self.panes.push(PaneMeta { id, title: String::new(), cwd: spawn.cwd.clone(), exit: None, profile: profile.into(), cmdline: spawn.cmdline.clone() });
+        self.panes.push(PaneMeta { id, title: String::new(), cwd: spawn.cwd.clone(), exit: None, profile: profile.into(), cmdline: spawn.cmdline.clone(), agent: None });
         id
     }
 
@@ -323,6 +323,10 @@ impl Model {
         self.edit_meta(pane, |p| (p.exit != Some(code)).then(|| p.exit = Some(code)))
     }
 
+    pub fn note_agent(&mut self, pane: PaneId, agent: Option<AgentInfo>) -> bool {
+        self.edit_meta(pane, |p| (p.agent != agent).then(|| p.agent = agent))
+    }
+
     pub fn clear_exit(&mut self, pane: PaneId) -> bool {
         self.edit_meta(pane, |p| p.exit.take().map(drop))
     }
@@ -353,7 +357,9 @@ impl Model {
     pub fn to_json(&self) -> String {
         let mut workspaces = self.workspaces.clone();
         workspaces.iter_mut().for_each(|w| w.attached = false);
-        let saved = Saved { version: FILE_VERSION, workspaces, tabs: self.tabs.clone(), panes: self.panes.clone(), clock: self.clock };
+        let mut panes = self.panes.clone();
+        panes.iter_mut().for_each(|p| p.agent = None); // agents are live state, gone after a restart
+        let saved = Saved { version: FILE_VERSION, workspaces, tabs: self.tabs.clone(), panes, clock: self.clock };
         serde_json::to_string_pretty(&saved).expect("model serializes")
     }
 

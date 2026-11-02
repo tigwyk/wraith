@@ -10,7 +10,7 @@ use crate::pane::{PaneCmd, PaneEvent};
 pub type PaneId = u64;
 
 /// Bumped on any incompatible change to these types.
-pub const PROTO_VERSION: u32 = 2;
+pub const PROTO_VERSION: u32 = 3;
 
 /// Largest body a peer may announce; anything bigger drops the connection before allocating.
 pub const MAX_FRAME: u32 = 64 << 20;
@@ -19,6 +19,8 @@ pub const MAX_FRAME: u32 = 64 << 20;
 pub enum ClientKind {
     Gui,
     Cli,
+    /// `wr hook`: may only send `AgentEvent`.
+    Hook,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,6 +30,10 @@ pub enum ClientMsg {
     AttachWindow { workspace: Option<WorkspaceId> },
     /// Leave the workspace running in the server (window closed).
     DetachWindow,
+    /// What an agent in `pane` is doing (`harness` names it on first sight).
+    AgentEvent { pane: PaneId, harness: Option<String>, signal: crate::pane::AgentSignal },
+    /// This window gained or lost the foreground (picks the window that shows notifications).
+    Foreground(bool),
     Model(ModelCmd),
     /// The panes this window draws now. Frames and images flow only for these.
     Subscribe { panes: Vec<PaneId> },
@@ -49,6 +55,8 @@ pub enum ServerMsg {
     Event { pane: PaneId, ev: PaneEvent },
     Panes(Vec<PaneInfo>),
     Error(String),
+    /// An agent needs the user: show a toast, flash the taskbar (sent to one window).
+    Notify { pane: PaneId, title: String, body: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

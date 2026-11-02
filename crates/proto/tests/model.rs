@@ -160,7 +160,7 @@ fn snapshot() -> ModelSnapshot {
             last_used: 3,
         }],
         tabs: vec![Tab { id: 10, workspace: 1, title_override: None, root: grid(), focused: 2, zoomed: None }],
-        panes: vec![PaneMeta { id: 2, title: "vim".into(), cwd: None, exit: Some(1), profile: "pwsh".into(), cmdline: "pwsh.exe".into() }],
+        panes: vec![PaneMeta { id: 2, title: "vim".into(), cwd: None, exit: Some(1), profile: "pwsh".into(), cmdline: "pwsh.exe".into(), agent: None }],
     }
 }
 

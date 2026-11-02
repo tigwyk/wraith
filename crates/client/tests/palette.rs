@@ -113,7 +113,7 @@ fn snap() -> ModelSnapshot {
         last_used: id,
     };
     let t = |id: u64, ws, pane| Tab { id, workspace: ws, title_override: None, root: PaneNode::Leaf(pane), focused: pane, zoomed: None };
-    let p = |id, cwd: Option<&str>| PaneMeta { id, title: String::new(), cwd: cwd.map(Into::into), exit: None, profile: "pwsh".into(), cmdline: String::new() };
+    let p = |id, cwd: Option<&str>| PaneMeta { id, title: String::new(), cwd: cwd.map(Into::into), exit: None, profile: "pwsh".into(), cmdline: String::new(), agent: None };
     ModelSnapshot {
         rev: 1,
         workspaces: vec![w(1, "api", Some(r"C:\src\api"), true), w(2, "web", None, false)],

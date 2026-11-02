@@ -37,7 +37,7 @@ fn leaf(id: PaneId) -> PaneNode {
 }
 
 fn meta(id: PaneId, cwd: Option<&str>, profile: &str, exit: Option<u32>) -> PaneMeta {
-    PaneMeta { id, title: format!("t{id}"), cwd: cwd.map(Into::into), exit, profile: profile.into(), cmdline: "x".into() }
+    PaneMeta { id, title: format!("t{id}"), cwd: cwd.map(Into::into), exit, profile: profile.into(), cmdline: "x".into(), agent: None }
 }
 
 fn tab(id: TabId, root: PaneNode, focused: PaneId) -> Tab {

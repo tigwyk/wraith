@@ -596,3 +596,152 @@ fn save_is_debounced() {
     drop(c);
     stop_and_join(&pipe, h);
 }
+
+// ---- Agents (spec §5): hook clients, tracking, attention, notify ----
+
+use wraith_proto::model::AgentState;
+use wraith_proto::pane::AgentSignal;
+
+fn hook(pipe: &str, pane: PaneId, signal: AgentSignal) {
+    let mut h = Client::connect(pipe, ClientKind::Hook);
+    h.send(ClientMsg::AgentEvent { pane, harness: Some("claude".into()), signal });
+}
+
+fn ask(message: &str) -> AgentSignal {
+    AgentSignal::Ask { message: message.into() }
+}
+
+fn agent_state(c: &ModelSnapshot, pane: PaneId) -> Option<(AgentState, bool)> {
+    c.pane(pane).and_then(|p| p.agent.as_ref()).map(|a| (a.state, a.attention))
+}
+
+/// Notifies seen within `t` (other messages are consumed, snapshots remembered).
+fn notifies(c: &mut Client, t: Duration) -> Vec<PaneId> {
+    let deadline = Instant::now() + t;
+    let mut out = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if let Some(ServerMsg::Notify { pane, .. }) = c.next(left) {
+            out.push(pane);
+        }
+    }
+    out
+}
+
+#[test]
+fn hook_client_may_only_send_agent_events() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    let ws = c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    let mut h = Client::connect(&pipe, ClientKind::Hook);
+    h.send(ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: "x".into(), spawn: spawn("cmd.exe /k") }));
+    h.send(ClientMsg::Kill { pane });
+    h.send(ClientMsg::AgentEvent { pane, harness: Some("claude".into()), signal: AgentSignal::Working });
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Working, false))), "the agent event counts");
+    assert_eq!(c.snap.workspace(ws).unwrap().tabs.len(), 1, "a hook client cannot create tabs");
+    assert!(c.list().iter().any(|p| p.id == pane), "a hook client cannot kill panes");
+}
+
+#[test]
+fn hook_event_for_unknown_pane_is_ignored() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    hook(&pipe, 9999, ask("x"));
+    hook(&pipe, pane, AgentSignal::Working);
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane).is_some()));
+    assert!(c.snap.pane(9999).is_none());
+}
+
+#[test]
+fn agent_info_reaches_snapshot() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    hook(&pipe, pane, AgentSignal::Attached);
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane).is_some()));
+    let a = c.snap.pane(pane).unwrap().agent.clone().unwrap();
+    assert_eq!((a.harness.as_str(), a.name.as_str(), a.state), ("claude", "Claude Code", AgentState::Idle));
+    hook(&pipe, pane, AgentSignal::Detached);
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane).is_none()));
+}
+
+#[test]
+fn ask_in_hidden_pane_notifies_owner_window_once() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, hidden) = c.new_tab("cmd.exe /k");
+    let (_, shown) = c.new_tab("cmd.exe /k");
+    c.subscribe(&[shown]);
+    hook(&pipe, hidden, ask("Allow Bash?"));
+    assert_eq!(notifies(&mut c, Duration::from_millis(1500)), vec![hidden], "one notify, within 1 s");
+    assert_eq!(agent_state(&c.snap, hidden), Some((AgentState::Asking, true)));
+    hook(&pipe, hidden, ask("Allow Bash?"));
+    assert!(notifies(&mut c, Duration::from_millis(800)).is_empty(), "already waiting: no second notify");
+}
+
+#[test]
+fn ask_notifies_last_focused_window_when_workspace_detached() {
+    let pipe = server();
+    let mut a = Client::gui(&pipe);
+    let ws1 = a.attach_window(None);
+    let (_, pane) = a.new_tab("cmd.exe /k");
+    a.model(ModelCmd::NewWorkspace { name: None, root_dir: None, profile: "x".into(), layout: "single".into(), spawn: spawn("cmd.exe /k") }).unwrap();
+    let ws2 = *a.snap.workspaces.iter().map(|w| &w.id).max().unwrap();
+    a.attach_window(Some(ws2));
+    assert!(!a.snap.workspace(ws1).unwrap().attached, "ws1 is now in no window");
+    let mut b = Client::gui(&pipe);
+    b.attach_window(None);
+    a.send(ClientMsg::Foreground(true));
+    a.send(ClientMsg::Foreground(false));
+    b.send(ClientMsg::Foreground(true));
+    thread::sleep(Duration::from_millis(200));
+    hook(&pipe, pane, ask("?"));
+    assert_eq!(notifies(&mut b, Duration::from_millis(1500)), vec![pane], "the last focused window tells the user");
+    assert!(notifies(&mut a, Duration::from_millis(300)).is_empty(), "and only that one");
+}
+
+#[test]
+fn typing_clears_ask() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    c.subscribe(&[pane]);
+    hook(&pipe, pane, ask("?"));
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Asking, true))));
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Text("y".into()) });
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Idle, false))));
+}
+
+#[test]
+fn viewing_clears_turn_end_attention() {
+    let pipe = server();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    hook(&pipe, pane, AgentSignal::TurnEnd { message: "done".into() });
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Done, true))), "hidden: attention");
+    c.subscribe(&[pane]);
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane) == Some((AgentState::Idle, false))), "seen: cleared");
+}
+
+#[test]
+fn agents_are_not_saved_in_the_layout() {
+    let path = layout_path("agents");
+    let pipe = unique();
+    let h = spawn_server_thread_at(&pipe, Some(path.clone())).unwrap();
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    let (_, pane) = c.new_tab("cmd.exe /k");
+    hook(&pipe, pane, ask("?"));
+    assert!(c.wait_snapshot(secs(5), |s| agent_state(s, pane).is_some()));
+    c.model(ModelCmd::RenameTab(c.snap.workspace(c.ws).unwrap().active_tab.unwrap(), Some("t".into()))).unwrap();
+    thread::sleep(Duration::from_millis(1500));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("Claude"), "agent state is live only");
+    drop(c);
+    stop_and_join(&pipe, h);
+}
