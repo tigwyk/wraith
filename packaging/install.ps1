@@ -21,7 +21,7 @@ Copy-Item -Recurse (Join-Path $src 'themes') (Join-Path $Prefix 'themes')
 "installed to $Prefix"
 
 $version = (Get-Item (Join-Path $Prefix 'wraith.exe')).VersionInfo.ProductVersion
-if (-not $version) { $version = '0.1.0' }
+if (-not $version) { $version = '0.2.0' }
 if ($DryRun) {
     "dry run: would add $Prefix to the user PATH, run 'wraith.exe --register' (Start Menu shortcut) and write HKCU uninstall entry 'Wraith'"
     return
