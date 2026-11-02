@@ -13,6 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
+use crate::palette::{Choice, Mode, Palette, move_tab_items, palette_items, picker_items};
 use crate::selection::Selection;
 
 /// Pixel space of the window: its client size, the font's cell, pane padding and chrome heights.
@@ -143,6 +144,7 @@ pub struct WindowView {
     awaiting_new_ws: bool,
     known_ws: HashSet<WorkspaceId>,
     configured_done: bool,
+    palette: Option<Palette>,
 }
 
 impl WindowView {
@@ -165,6 +167,84 @@ impl WindowView {
             awaiting_new_ws: false,
             known_ws: HashSet::new(),
             configured_done: false,
+            palette: None,
+        }
+    }
+
+    pub fn palette(&self) -> Option<&Palette> {
+        self.palette.as_ref()
+    }
+
+    pub fn open_palette(&mut self, mode: Mode, ctx: &SpawnCtx) {
+        let items = match mode {
+            Mode::Palette => palette_items(&ctx.config.keybinds),
+            Mode::Picker => picker_items(&self.snap, &ctx.config.workspaces),
+            Mode::MoveTab => self.workspace.map(|w| move_tab_items(&self.snap, w)).unwrap_or_default(),
+        };
+        self.palette = Some(Palette::new(mode, items));
+    }
+
+    /// IME or pasted text typed into the open palette.
+    pub fn palette_text(&mut self, text: &str) {
+        if let Some(p) = &mut self.palette {
+            p.type_text(text);
+        }
+    }
+
+    /// A key while the palette may be open. `None`: not open, the key is not consumed.
+    pub fn palette_key(&mut self, ev: &KeyEvent, ctx: &SpawnCtx) -> Option<Out> {
+        use wraith_proto::Mods;
+        let p = self.palette.as_mut()?;
+        if ev.action == KeyAction::Release {
+            return Some(Out::default());
+        }
+        match ev.code {
+            KeyCode::Escape => self.palette = None,
+            KeyCode::ArrowUp => p.up(),
+            KeyCode::ArrowDown => p.down(),
+            KeyCode::Backspace => p.backspace(),
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                let (choice, mode) = (p.accept(), p.mode);
+                self.palette = None;
+                return Some(choice.map_or_else(Out::default, |c| self.run_choice(c, mode, ctx)));
+            }
+            _ => {
+                if let Some(t) = ev.text.as_deref().filter(|_| !ev.mods.has(Mods::CTRL | Mods::ALT)) {
+                    p.type_text(t);
+                }
+            }
+        }
+        Some(Out::default())
+    }
+
+    fn run_choice(&mut self, choice: Choice, mode: Mode, ctx: &SpawnCtx) -> Out {
+        let new_workspace = |this: &mut WindowView, name: Option<String>, dir: Option<String>, layout: String| {
+            this.awaiting_new_ws = true;
+            let prof = ctx.profile(None);
+            let cwd = dir.clone().or_else(|| std::env::var("USERPROFILE").ok());
+            Out::model(ModelCmd::NewWorkspace {
+                name,
+                root_dir: dir,
+                profile: prof.name.clone(),
+                layout,
+                spawn: ctx.spawn(prof, cwd.as_deref(), this.est_cells(), this.cell_px()),
+            })
+        };
+        match choice {
+            Choice::Action(a) => self.action(a, ctx),
+            Choice::Workspace(id) if mode == Mode::MoveTab => match self.active_tab().map(|t| t.id) {
+                Some(tab) => Out::model(ModelCmd::MoveTab { tab, to: id, index: None }),
+                None => Out::default(),
+            },
+            Choice::Workspace(id) => Out::msgs(self.workspace_click(id)),
+            Choice::ConfiguredWorkspace(i) => match ctx.config.workspaces.get(i) {
+                Some(def) => new_workspace(self, Some(def.name.clone()), def.dir.clone(), def.layout.clone()),
+                None => Out::default(),
+            },
+            Choice::Directory(path) => {
+                let name = path.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().map(str::to_string);
+                new_workspace(self, name, Some(path), "single".into())
+            }
         }
     }
 

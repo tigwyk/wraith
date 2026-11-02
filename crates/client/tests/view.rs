@@ -441,3 +441,96 @@ fn attention_dot_is_false_in_m3() {
     assert!(rows[0].current && !rows[1].current);
     assert_eq!(rows[1].name, "web");
 }
+
+// ---- Task 10: command palette and workspace picker in the view ----
+
+use wraith_client::palette::Mode;
+
+fn key_text(code: KeyCode, text: &str) -> KeyEvent {
+    KeyEvent { code, mods: Mods(0), text: Some(text.into()), action: KeyAction::Press, composing: false }
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent { code, mods: Mods(0), text: None, action: KeyAction::Press, composing: false }
+}
+
+fn type_all(v: &mut WindowView, s: &str) {
+    for ch in s.chars() {
+        let out = v.palette_key(&key_text(KeyCode::KeyA, &ch.to_string()), &ctx());
+        assert!(out.is_some(), "the open palette takes every key");
+    }
+}
+
+#[test]
+fn palette_opens_filters_and_runs_an_action() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert!(v.palette().is_none() && v.palette_key(&key(KeyCode::Enter), &ctx()).is_none(), "closed: keys are not consumed");
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "new tab");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert!(v.palette().is_none(), "accepting closes it");
+    assert!(matches!(out.msgs.as_slice(), [ClientMsg::Model(ModelCmd::NewTab { .. })]), "{out:?}");
+}
+
+#[test]
+fn escape_closes_and_returns_focus() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "sp");
+    let out = v.palette_key(&key(KeyCode::Escape), &ctx()).unwrap();
+    assert!(out.msgs.is_empty() && v.palette().is_none());
+    assert!(v.palette_key(&key_text(KeyCode::KeyA, "a"), &ctx()).is_none(), "keys reach the pane again");
+    assert_eq!(v.input(PaneCmd::Text("a".into())), Some(cmd(2, PaneCmd::Text("a".into()))));
+}
+
+#[test]
+fn palette_arrows_and_backspace() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    v.palette_key(&key(KeyCode::ArrowDown), &ctx());
+    v.palette_key(&key(KeyCode::ArrowDown), &ctx());
+    assert_eq!(v.palette().unwrap().selected, 2);
+    v.palette_key(&key(KeyCode::ArrowUp), &ctx());
+    assert_eq!(v.palette().unwrap().selected, 1);
+    type_all(&mut v, "xy");
+    v.palette_key(&key(KeyCode::Backspace), &ctx());
+    assert_eq!(v.palette().unwrap().query, "x");
+    let ctrl_a = KeyEvent { mods: Mods(Mods::CTRL), ..key_text(KeyCode::KeyA, "a") };
+    v.palette_key(&ctrl_a, &ctx());
+    assert_eq!(v.palette().unwrap().query, "x", "chords are not typed into the query");
+}
+
+#[test]
+fn picker_attaches_a_workspace_or_creates_one_for_a_directory() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    v.open_palette(Mode::Picker, &ctx());
+    type_all(&mut v, "web");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert_eq!(out.msgs, vec![ClientMsg::AttachWindow { workspace: Some(2) }]);
+
+    let mut s = three_workspaces();
+    s.panes[0].cwd = Some(r"C:\src\newproj".into());
+    v.on_snapshot(s, &ctx());
+    v.open_palette(Mode::Picker, &ctx());
+    type_all(&mut v, "newproj");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    let [ClientMsg::Model(ModelCmd::NewWorkspace { name, root_dir, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((name.as_deref(), root_dir.as_deref(), spawn.cwd.as_deref()), (Some("newproj"), Some(r"C:\src\newproj"), Some(r"C:\src\newproj")));
+}
+
+#[test]
+fn move_tab_mode_moves_the_active_tab() {
+    let mut v = view();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let out = v.action(Action::MoveTabToWorkspace, &ctx());
+    assert_eq!(out.ui, Some(Ui::MoveTab));
+    v.open_palette(Mode::MoveTab, &ctx());
+    assert_eq!(v.palette().unwrap().visible().len(), 2, "every workspace but this one");
+    type_all(&mut v, "infra");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert_eq!(out.msgs, vec![ClientMsg::Model(ModelCmd::MoveTab { tab: 10, to: 3, index: None })]);
+}

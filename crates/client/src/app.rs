@@ -27,7 +27,8 @@ use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 use crate::chrome::{self, Hit, chrome_colors};
 use crate::link::{AttachError, ServerLink, kill_server};
 use crate::paint::Painter;
-use crate::view::{Geometry, SpawnCtx, Ui, WindowView};
+use crate::palette::Mode;
+use crate::view::{Geometry, Out, SpawnCtx, Ui, WindowView};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
@@ -335,6 +336,11 @@ impl App {
     }
 
     fn on_key(&mut self, ev: KeyEvent) {
+        if let Some(out) = self.view.palette_key(&ev, &self.spawn_ctx) {
+            self.run_out(out);
+            self.dirty = true;
+            return;
+        }
         if ev.action == wraith_proto::KeyAction::Release {
             return self.send_key(ev);
         }
@@ -360,25 +366,34 @@ impl App {
             Action::ReloadConfig | Action::ToggleFrameOverlay | Action::Unbind => crate::reload::action(self, a),
             _ => {
                 let out = self.view.action(a, &self.spawn_ctx);
-                self.send_all(out.msgs);
-                if let Some(pane) = out.confirm_close
-                    && self.confirm("A process is still running in this terminal. End it?")
-                {
-                    let msgs = self.view.close_pane(pane);
-                    self.send_all(msgs);
-                }
-                if let Some(ws) = out.confirm_close_workspace
-                    && self.confirm("Processes are still running in this workspace. Close it?")
-                {
-                    let msgs = self.view.close_workspace(ws);
-                    self.send_all(msgs);
-                }
-                if out.ui == Some(Ui::NewWindow) {
-                    self.new_window();
-                }
+                self.run_out(out);
             }
         }
         self.dirty = true;
+    }
+
+    /// Carry out what a view action asked for: messages, confirmations, UI.
+    fn run_out(&mut self, out: Out) {
+        self.send_all(out.msgs);
+        if let Some(pane) = out.confirm_close
+            && self.confirm("A process is still running in this terminal. End it?")
+        {
+            let msgs = self.view.close_pane(pane);
+            self.send_all(msgs);
+        }
+        if let Some(ws) = out.confirm_close_workspace
+            && self.confirm("Processes are still running in this workspace. Close it?")
+        {
+            let msgs = self.view.close_workspace(ws);
+            self.send_all(msgs);
+        }
+        match out.ui {
+            Some(Ui::NewWindow) => self.new_window(),
+            Some(Ui::Palette) => self.view.open_palette(Mode::Palette, &self.spawn_ctx),
+            Some(Ui::Picker) => self.view.open_palette(Mode::Picker, &self.spawn_ctx),
+            Some(Ui::MoveTab) => self.view.open_palette(Mode::MoveTab, &self.spawn_ctx),
+            None => {}
+        }
     }
 
     fn confirm(&self, text: &str) -> bool {
@@ -638,7 +653,12 @@ impl App {
                 }
                 WM_IME_COMPOSITION => {
                     if let ImeUpdate::Commit(t) = self.ime.on_composition(hwnd, lparam) {
-                        self.send_focused(PaneCmd::Text(t));
+                        if self.view.palette().is_some() {
+                            self.view.palette_text(&t);
+                            self.dirty = true;
+                        } else {
+                            self.send_focused(PaneCmd::Text(t));
+                        }
                         return Some(LRESULT(0));
                     }
                 }
@@ -938,6 +958,37 @@ impl App {
                 }
             }
             p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", col.bar_fg_dim, 1.0);
+        }
+        // Command palette / picker, centered over everything.
+        if let Some(pal) = self.view.palette() {
+            let (cw, row_h) = (m.w as i32, m.h as i32 + 6);
+            let items = pal.visible();
+            let shown = items.len().min(12);
+            let w = (60 * cw).min(self.size_px.0 as i32 - 2 * cw).max(10 * cw);
+            let panel = Rect { x: (self.size_px.0 as i32 - w) / 2, y: regions.tabbar.h + 12, w, h: (shown as i32 + 1) * row_h + 10 };
+            p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, accent, 1.0);
+            p.rect(panel, col.bar_bg, 1.0);
+            let title = match pal.mode {
+                Mode::Palette => "› ",
+                Mode::Picker => "Workspace › ",
+                Mode::MoveTab => "Move tab to › ",
+            };
+            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}▏", pal.query), col.bar_fg, 1.0);
+            let first = pal.selected.saturating_sub(shown.saturating_sub(1));
+            for (n, item) in items.iter().skip(first).take(shown).enumerate() {
+                let r = Rect { x: panel.x, y: panel.y + 5 + (n as i32 + 1) * row_h, w: panel.w, h: row_h };
+                if first + n == pal.selected {
+                    p.rect(r, col.tab_active_bg, 1.0);
+                    p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                }
+                let ty = r.y + (r.h - m.h as i32) / 2;
+                let group = format!("{} › ", item.group);
+                let gw = p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &group, col.bar_fg_dim, 1.0);
+                let detail_w = crate::paint::text_width(&self.fonts, &item.detail);
+                let room = ((r.w - gw - detail_w - 3 * pad_x) / cw).max(0) as usize;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x + gw, ty, &truncate_cells(&item.label, room), col.bar_fg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - detail_w, ty, &item.detail, col.bar_fg_dim, 1.0);
+            }
         }
         // Notices.
         let notice = |p: &mut Painter, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, text: &str, at_bottom: bool, left: bool| {

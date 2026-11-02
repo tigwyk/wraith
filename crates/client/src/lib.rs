@@ -8,6 +8,7 @@ pub mod input;
 pub mod reload;
 pub mod link;
 pub mod paint;
+pub mod palette;
 pub mod selection;
 pub mod sprite;
 pub mod view;
