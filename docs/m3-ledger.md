@@ -36,3 +36,6 @@ Task 6: Ruling: remote.rs became link.rs with ServerLink (all messages) PLUS a t
 Task 6: Ruling: spawn_server/connect gained an env slice (attach_with_env) so tests start servers with their own WRAITH_LAYOUT_PATH instead of touching the user's layout.json; latency.rs already isolates through LOCALAPPDATA.
 Task 6: Ruling: fixed my Task 4 test dropped_slow_client_sees_its_pipe_close — its helper thread kept draining the pipe, so the client was not slow and it only passed by timing (found by the first full-workspace run); now a raw connection that stops reading; 3/3 green reruns.
 Task 6: complete (commits 4d9f520..b30bae4, tests: rtk proxy cargo test --workspace → exit 0, 37 suites ok; link 8/8, cli all)
+Task 7: Ruling: Painter::text/text_width take the FontStack instead of a CellMetrics argument (metrics come from fonts.metrics()); Batch.texture is bound at slot t1 but only exercised by Task 13.
+Task 7: Ruling: GridRenderer::push_quads gained a fill: Option<Rect> that paints the pane's background rectangle (a multi-pane frame has no single clear color); draw() passes None and keeps its clear-to-background behavior, so the M1 grid tests are the unchanged regression suite.
+Task 7: complete (commits dde695c..83058ec, tests: rtk proxy cargo test --workspace → exit 0; paint 3/3, grid 13/13)
