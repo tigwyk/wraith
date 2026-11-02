@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wraith_client::link::{AttachError, RemotePane, ServerLink, kill_server};
+use wraith_client::link::{AttachError, ServerLink, kill_server};
 use wraith_ipc::connect;
 use wraith_proto::model::ModelCmd;
-use wraith_proto::pane::{PaneEvent, SpawnOpts};
+use wraith_proto::pane::SpawnOpts;
 use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneInfo, ServerMsg, read_frame, write_frame};
 
 fn unique() -> String {
@@ -24,8 +24,34 @@ fn layout_env() -> Vec<(String, String)> {
     vec![("WRAITH_LAYOUT_PATH".into(), dir.join("layout.json").display().to_string())]
 }
 
-fn attach(pipe: &str) -> Result<RemotePane, AttachError> {
-    RemotePane::attach_with_env(pipe, spawn(), exe(), &layout_env())
+/// A window as the app opens one: attach, open a tab if the workspace has none, use its focused pane.
+struct Win {
+    link: ServerLink,
+    id: u64,
+    reattached: bool,
+}
+
+fn attach(pipe: &str) -> Result<Win, AttachError> {
+    let link = ServerLink::connect_with_env(pipe, exe(), &layout_env())?;
+    link.send(ClientMsg::AttachWindow { workspace: None });
+    let (mut ws, mut opened) = (None, false);
+    loop {
+        match link.msgs.recv_timeout(Duration::from_secs(5)).expect("server answers the attach") {
+            ServerMsg::WindowAttached { workspace } => ws = Some(workspace),
+            ServerMsg::Snapshot(s) => {
+                let Some(w) = ws else { continue };
+                match s.workspace(w).and_then(|w| w.active_tab).and_then(|t| s.tab(t)) {
+                    Some(t) => return Ok(Win { id: t.focused, reattached: !opened, link }),
+                    None if !opened => {
+                        opened = true;
+                        link.send(ClientMsg::Model(ModelCmd::NewTab { workspace: w, profile: "default".into(), spawn: spawn() }));
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn exe() -> &'static Path {
@@ -91,10 +117,10 @@ fn detach_then_attach_reattaches() {
     let pipe = unique();
     let mut a = attach(&pipe).unwrap();
     let id = a.id;
-    a.detach();
+    a.link.finish(ClientMsg::DetachWindow);
     let mut b = attach(&pipe).unwrap();
     assert_eq!((b.id, b.reattached), (id, true));
-    b.kill();
+    b.link.finish(ClientMsg::Kill { pane: b.id });
     thread::sleep(Duration::from_millis(200));
     assert!(list(&pipe).is_empty());
     stop(&pipe);
@@ -130,7 +156,7 @@ fn server_outlives_killed_client_process() {
 #[test]
 fn concurrent_launches_share_one_server() {
     let pipe = unique();
-    let panes: Vec<RemotePane> = (0..8)
+    let panes: Vec<Win> = (0..8)
         .map(|_| {
             let pipe = pipe.clone();
             thread::spawn(move || attach(&pipe).unwrap())
@@ -150,23 +176,23 @@ fn concurrent_launches_share_one_server() {
 #[test]
 fn no_server_binary_reports_no_server() {
     let t = Instant::now();
-    let err = RemotePane::attach(&unique(), spawn(), Path::new("C:/nope/wraith.exe")).err().expect("must fail");
+    let err = ServerLink::connect(&unique(), Path::new("C:/nope/wraith.exe")).err().expect("must fail");
     assert!(matches!(err, AttachError::NoServer { .. }), "{err:?}");
     assert!(t.elapsed() < Duration::from_millis(2500), "{:?}", t.elapsed());
 }
 
 #[test]
-fn server_death_disconnects_events() {
+fn server_death_disconnects_the_link() {
     let pipe = unique();
-    let pane = attach(&pipe).unwrap();
-    // Drain the first frames so only the disconnect is left.
-    while let Ok(PaneEvent::Frame(_) | PaneEvent::Title(_)) = pane.events.recv_timeout(Duration::from_millis(300)) {}
+    let win = attach(&pipe).unwrap();
+    // Drain what the attach sent so only the disconnect is left.
+    while win.link.msgs.recv_timeout(Duration::from_millis(300)).is_ok() {}
     kill_server(&pipe).unwrap();
     let t = Instant::now();
     loop {
-        match pane.events.recv_timeout(Duration::from_secs(1)) {
+        match win.link.msgs.recv_timeout(Duration::from_secs(1)) {
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => panic!("events still open 1 s after the server died"),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => panic!("link still open 1 s after the server died"),
             Ok(_) => assert!(t.elapsed() < Duration::from_secs(1)),
         }
     }
