@@ -42,5 +42,6 @@ pub fn info(a: &Agent, epoch: Instant) -> AgentInfo {
 /// Toast title for an agent that wants the user: "<Agent> needs input — <workspace>/<tab>".
 pub fn notify_title(a: &Agent, workspace: &str, tab: &str) -> String {
     let what = if a.state == State::Waiting(Wait::Ask) { "needs input" } else { "finished" };
-    format!("{} {what} — {workspace}/{tab}", name(&a.harness))
+    // Tab titles come from the terminal (OSC 0/2): untrusted, like agent messages.
+    sanitize(&format!("{} {what} — {workspace}/{tab}", name(&a.harness)))
 }
