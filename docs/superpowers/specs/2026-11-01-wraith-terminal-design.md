@@ -1,6 +1,6 @@
 # Wraith — Native Windows Terminal on libghostty-vt
 
-Status: design approved in brainstorming, pending written-spec review
+Status: approved; M0–M7 built
 Date: 2026-11-01
 Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 
@@ -38,7 +38,7 @@ Working name: **Wraith** (rename freely; avoid "Ghostty" in the product name)
 
 ## 2. Non-goals for v1
 
-Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting processes across a *server* restart (scrollback persistence was added in M5: history is saved on `server-stop` and restored above a fresh shell). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI (planned for M5).
+Lua or any scripting language in config. macOS/Linux. Remote/SSH sessions as server-managed hosts. Persisting processes across a *server* restart (scrollback persistence was added in M5: history is saved on `server-stop` and restored above a fresh shell). Tab tear-off into new windows by drag (multiple windows exist; moving tabs between them uses a command). A settings GUI (backlog).
 
 ## 3. Architecture
 
@@ -67,7 +67,7 @@ If no server is running, the client spawns `wraith.exe --server` detached. The s
 ### 3.3 Server threading
 
 - **Main thread:** named-pipe accept loop (overlapped I/O), session model, routing, agent tracker.
-- **One thread per pane:** owns the ConPTY handles, `Terminal`, `RenderState`, `key::Encoder`, `mouse::Encoder`, and a sidecar `osc::Parser`. All of these are `!Send`, so they never leave this thread. Commands arrive on a channel (input, resize, scroll, selection, subscribe/unsubscribe, ready-credit).
+- **One thread per pane:** owns the ConPTY handles, `Terminal`, `RenderState`, `key::Encoder`, and `mouse::Encoder`; OSC signals arrive through libghostty callbacks (see the §5.2 M4 note). All of these are `!Send`, so they never leave this thread. Commands arrive on a channel (input, resize, scroll, selection, subscribe/unsubscribe, ready-credit).
 - **One reader thread per pane:** blocking `ReadFile` on the ConPTY output pipe, forwarding byte chunks to the pane thread.
 - **Bundled ConPTY.** Wraith ships `conpty.dll` + `OpenConsole.exe` from `Microsoft.Windows.Console.ConPTY` (pinned 1.25.260930003, MIT) next to `wraith.exe`. Every pane is created with `ConptyCreatePseudoConsole(..., flags = 8 /* passthrough */, ...)`, and resize/close go through the same DLL. Inbox ConPTY strips the Kitty graphics APC (M0 findings), so inline images need the bundled DLL. If the DLL is missing, panes fall back to inbox `CreatePseudoConsole` without inline images, and a warning is logged. The pane answers the DA1 query (`ESC[c`) that the bundled OpenConsole sends at startup.
 - Each pane's shell runs inside its own **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Closing the pane closes the job and kills every descendant. The job also gives the process list for agent detection.
@@ -76,7 +76,7 @@ If no server is running, the client spawns `wraith.exe --server` detached. The s
 
 - Pipe name `\\.\pipe\wraith-<user-SID>`. Its security descriptor grants access to the current user SID only. The server rejects connections whose client token SID differs.
 - Handshake: `Hello{proto_version, client_kind: Gui|Cli|Hook}` → `Welcome{server_version}` or `VersionMismatch`.
-- Client → server: `Input{pane, KeyEvent|MouseEvent|Text|Paste}`, `Resize{pane, cols, rows, cell_w, cell_h}`, `Subscribe{panes}`, `Ready{pane, frame_seq}`, `Scroll{pane, delta|to}`, `SetSelection{pane, range|none}`, `Copy{pane}`, `Command{Action}`, `AgentEvent{...}` (hooks), `Query{...}` (cli).
+- Client → server: `Input{pane, KeyEvent|MouseEvent|Text|Paste}`, `Resize{pane, cols, rows, cell_w, cell_h}`, `Subscribe{panes}`, `Ready{pane, frame_seq}`, `Scroll{pane, delta|to}`, `SetSelection{pane, range|none}`, `Copy{pane}`, `Command{Action}`, `AgentEvent{...}` (hooks), `Query{...}` (cli), `Watch` (cli: `wr events` receives every model snapshot).
 - Server → client: `ModelSnapshot` then `ModelEvent`s (workspace/tab/pane created, closed, renamed, moved; agent state; attention), `FrameDelta{pane, seq, full: bool, rows: [(y, cells)], cursor, colors, scrollbar}`, `Clipboard{text}`, `Bell{pane}`, `Notify{pane, title, body}`, `ImageUpload{image_id, width, height, rgba}` (sent once per image per client), `ImageDelete{image_id}`. `FrameDelta` also carries the visible image placements `{image_id, cell rect, source rect, z}`.
 - **M3 ruling (model sync):** the server pushes a whole `ModelSnapshot` (with a `rev`) after every model change instead of `ModelEvent`s. The model is small (kilobytes), changes at human speed, and a full snapshot cannot drift out of sync. Per-change events stay possible if the model grows. Frame and image events are gated by `Subscribe{panes}`. Image placements in a `FrameDelta` are the full on-screen list, not a delta. Images are uploaded once per view, keyed by id and libghostty generation, and re-sent after a reattach.
 - **Encoding happens on the server.** It holds the terminal modes, so the client sends abstract key and mouse events.
@@ -137,7 +137,7 @@ Rules:
 
 ### 4.4 Persistence
 
-The server writes `%LOCALAPPDATA%\wraith\layout.json` (workspaces, tabs, pane trees, cwd, titles, profiles) on every model change, debounced 1 s, with atomic replace. On server start it restores this layout with fresh shells. No scrollback or process persistence across server restarts in v1.
+The server writes `%LOCALAPPDATA%\wraith\layout.json` (workspaces, tabs, pane trees, cwd, titles, profiles) on every model change, debounced 1 s, with atomic replace. On server start it restores this layout with fresh shells. Scrollback is saved on `server-stop` and restored above the fresh shell (M5). Processes do not survive a server restart.
 
 ## 5. Agent integration
 
@@ -210,7 +210,7 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 
 ### 6.1 Renderer
 
-- D3D11 device, `DXGI_SWAP_CHAIN_EFFECT_FLIP_DISCARD`, waitable swap chain for latency (`SetMaximumFrameLatency(1)`). Composition with Mica through DirectComposition when `background-opacity < 1`.
+- D3D11 device, `DXGI_SWAP_CHAIN_EFFECT_FLIP_DISCARD`, waitable swap chain for latency (`SetMaximumFrameLatency(1)`). Mica through the DWM system backdrop when `background-opacity < 1`.
 - Per pane: instanced quad pass for cell backgrounds and decorations (underline styles, strikethrough, cursor, selection), then instanced glyph pass sampling a glyph atlas. Chrome uses the same pipeline plus a rounded-rect pass.
 - Text: DirectWrite `IDWriteTextAnalyzer` for shaping runs (ligatures on by default, `font-feature` configurable), `IDWriteFontFallback` for fallback, `IDWriteFactory4::TranslateColorGlyphRun` for color emoji. Atlas key = (font face, glyph id, size, subpixel x offset quantized to 1/4 px). Grayscale antialiasing with gamma/contrast matched to DirectWrite defaults.
 - **Inline images (Kitty graphics):** libghostty-vt (`kitty-graphics` feature, `png` decoding) stores the images and placements on the server. The client keeps one D3D11 texture per `image_id` and draws a textured-quad pass per placement, below or above text by `z`. Image memory is capped by `image-storage-limit` (Ghostty key, default 320 MB per pane), and the oldest images are evicted first. Sixel and iTerm2 OSC 1337 images are not supported, because libghostty-vt does not implement them.
@@ -220,8 +220,8 @@ Attention rolls up pane → tab → workspace → window, as a max over children
 ### 6.2 Input
 
 - `WM_KEYDOWN`/`WM_SYSKEYDOWN`/`WM_CHAR` with scancode and `ToUnicodeEx`. Compute the physical key + mods + produced text, and send it as an abstract `KeyEvent` that the server maps to `libghostty_vt::key::Event`.
-- IME via `ImmGetCompositionString`. The candidate window is positioned at the cursor, and the preedit text is drawn inline.
-- Mouse: client-side hit testing to the pane cell. When the terminal has mouse tracking on (from `ModelEvent`), forward it as `MouseEvent`. Otherwise handle selection locally against the pane's cell cache, and send `SetSelection` to the server for copying.
+- IME via `ImmGetCompositionString`. The candidate window is positioned at the cursor, and the preedit text is drawn inline (in the palette and find bar it follows their query).
+- Mouse: client-side hit testing to the pane cell. When the terminal has mouse tracking on (from a `MouseTracking` pane event), forward it as `MouseEvent`. Otherwise handle selection locally against the pane's cell cache, and send `SetSelection` to the server for copying.
 - Clipboard: copy-on-select (`copy-on-select = true`), right-click paste (`right-click-action = paste|menu`). Paste goes through the server's paste-safety check, and a confirmation is shown for multi-line or unsafe paste.
 
 ### 6.3 Always fast: performance rules
@@ -250,7 +250,7 @@ Caveat: if a program re-renders its whole transcript on every keystroke, it will
 
 | Situation | Behaviour |
 |---|---|
-| Server not running | Client spawns it, retries connection for 2 s, then shows an error screen with the log path and "Retry". |
+| Server not running | Client spawns it, retries connection for 2 s, then shows an error dialog with the log folder and Retry / Cancel. |
 | Protocol version mismatch | Dialog: "Server is from an older version. Restart server? Running shells will close." Restart / Cancel (cancel exits client). |
 | Shell exits | `close-on-exit = clean` (default): exit code 0 closes the pane, and closes the window if that was its last pane. Any other code shows `[process exited N] Enter: restart · ctrl+shift+w: close`. `always` (or `true`) closes whatever the code; `never` (or `false`) always keeps the pane. |
 | ConPTY creation fails | Pane shows the Win32 error text. Other panes unaffected. |
@@ -280,12 +280,13 @@ Each milestone gets its own implementation plan.
 | M4 | Agent integration: `agent` crate, hooks + installers, passive detection, attention roll-up, taskbar + Windows toasts. | Claude Code and Codex in hidden tabs produce a toast within 1 s of asking. Clicking it focuses the pane. |
 | M5 | Scrollback search (find bar, `ctrl+shift+f`), scrollback persistence across `server-stop`, local packaging (dist zip, per-user install script, winget manifest validated but not submitted). | Done; see `docs/m5-acceptance.md`. |
 | M6 | Hover feedback and polish: every clickable piece of chrome reacts to hover and press, the pointer shape follows the target (resize arrows on dividers), the command palette takes the mouse, tooltips name icon-only buttons and their keys, accents dim in an inactive window, and state changes move briefly (tab underline and workspace bar slide, floating sidebar slides in, palette and find bar fade in, new attention dots flare once). Motion follows Windows' "Show animations" setting and never costs input latency (§6.3). | Done; see `docs/m6-acceptance.md`. |
+| M7 | Spec gaps from the 2026-11-02 review: `wr config check`, `wr events --json`, Retry when the server won't start, the right-click menu (`right-click-action = menu`), inline IME composition, `agent-tab-pulse`, and this spec brought up to date. | Done; see `docs/m7-acceptance.md`. |
 | Backlog | Quake/drop-down window, settings GUI, auto-update, ARM64. | Unscheduled. |
 
 ## 11. Known risks
 
 1. **libghostty-vt on Windows is untested** (docs.rs builds only for Linux, and the API is pre-1.0). M0 de-risks this. Pin the crate version and wrap it in the `server` crate so API breaks stay local.
 2. **Zig version and libghostty-vt source:** Wraith vendors libghostty-rs (`vendor/libghostty-rs`, see its `VENDORED.md`) with bindings regenerated against a pinned Ghostty `main` commit, which needs Zig 0.17.x. (M0–M3 ran on the published 0.2.2 crate, whose older Ghostty pin needed Zig 0.15.x.) Moving the pin means re-running `gen-bindings` and the full suite.
-3. **No OSC 9/777/133 callbacks in libghostty-vt:** handled with a sidecar `osc::Parser` fed from the byte stream. It must handle OSC split across read chunks.
+3. **No OSC 9/777/133 callbacks in libghostty-vt:** resolved in M4. The vendored Ghostty exposes them as callbacks, so no sidecar parser exists.
 4. **ConPTY quirks (resolved in M0):** inbox ConPTY passes OSC 9/777/133/7 but strips the Kitty APC. The bundled ConPTY in passthrough mode passes all of them, native and WSL (`docs/m0-findings.md`). Remaining risk: a future ConPTY package changes passthrough behaviour. Mitigation: the version is pinned, and the passthrough tests run in CI.
 5. **Unpackaged toasts** require an AUMID shortcut. Without the installer, first run creates it.
