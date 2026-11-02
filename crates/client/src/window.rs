@@ -12,7 +12,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetClientRect, IDC_ARROW, IsZoomed, LoadCursorW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PeekMessageW,
+    GetClientRect, IDC_ARROW, IsZoomed, LoadCursorW, LoadIconW, MSG, NCCALCSIZE_PARAMS, PM_REMOVE, PeekMessageW,
     SM_CXPADDEDBORDER, SM_CYFRAME, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
     WM_NCCALCSIZE,
     PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN,
@@ -51,6 +51,8 @@ impl Window {
                 style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: Some(wndproc),
                 hInstance: hinst.into(),
+                // Resource 1 from build.rs; the system also takes the small icon from it.
+                hIcon: LoadIconW(Some(hinst.into()), PCWSTR(1 as _)).unwrap_or_default(),
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
                 hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
                 lpszClassName: class,

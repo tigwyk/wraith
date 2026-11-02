@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <title>Wraith</title>
+  <!-- Drawn on a 16px grid so every multiple of 16 renders pixel-sharp: 2px pane gaps, 1x2px eyes. -->
+  <rect width="16" height="16" rx="3.5" fill="#0078D4"/>
+  <path d="M3 13 V6 a5 5 0 0 1 10 0 V13z" fill="#FFFFFF"/>
+  <!-- hem: two 1px feet per lower pane -->
+  <path d="M3 13h1v1h-1z M6 13h1v1h-1z M9 13h1v1h-1z M12 13h1v1h-1z" fill="#FFFFFF"/>
+  <rect x="7" y="0" width="2" height="16" fill="#0078D4"/>
+  <rect x="0" y="7" width="16" height="2" fill="#0078D4"/>
+  <rect x="5" y="4" width="1" height="2" fill="#0A2A4A"/>
+  <rect x="10" y="4" width="1" height="2" fill="#0A2A4A"/>
+</svg>
