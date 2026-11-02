@@ -9,6 +9,8 @@
     <br />
     Tabs, splits and workspaces, with shells that outlive the window and agents that ask for you.
     <br />
+    <a href="https://tigwyk.github.io/wraith/">Website</a>
+    ·
     <a href="#about">About</a>
     ·
     <a href="https://github.com/tigwyk/wraith/releases/latest">Download</a>
