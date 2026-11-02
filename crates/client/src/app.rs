@@ -12,7 +12,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
+    DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
@@ -27,7 +27,7 @@ use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
 use wraith_proto::wire::{ClientMsg, PaneId, ServerMsg};
 
 use crate::chrome::{self, Cursor, Hit, chrome_colors};
-use crate::link::{AttachError, ServerLink, kill_server};
+use crate::link::{AttachError, ServerLink, kill_server, retry_attach};
 use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
@@ -1543,7 +1543,17 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
         let w = wide(text);
         MessageBoxW(Some(hwnd), PCWSTR(w.as_ptr()), windows::core::w!("Wraith"), flags)
     };
-    match ServerLink::connect(pipe, &exe) {
+    // Any other failure offers Retry (spec §8); the error text names the log folder.
+    let connect = || {
+        retry_attach(
+            || ServerLink::connect(pipe, &exe),
+            |e| {
+                tracing::error!("attach: {e}");
+                ask(&format!("{e}\n\nRetry starts the server again."), MB_RETRYCANCEL | MB_ICONERROR) == IDRETRY
+            },
+        )
+    };
+    match connect() {
         Ok(l) => Some(l),
         Err(e @ AttachError::VersionMismatch { .. }) => {
             let q = format!("{e}\n\nRestart the server? Shells running in it will close.");
@@ -1554,19 +1564,16 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
                 ask(&format!("Could not stop the old server: {err}"), MB_OK | MB_ICONERROR);
                 return None;
             }
-            match ServerLink::connect(pipe, &exe) {
+            match connect() {
                 Ok(l) => Some(l),
-                Err(e) => {
+                Err(e @ AttachError::VersionMismatch { .. }) => {
                     ask(&e.to_string(), MB_OK | MB_ICONERROR);
                     None
                 }
+                Err(_) => None,
             }
         }
-        Err(e) => {
-            tracing::error!("attach: {e}");
-            ask(&e.to_string(), MB_OK | MB_ICONERROR);
-            None
-        }
+        Err(_) => None,
     }
 }
 

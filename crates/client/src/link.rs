@@ -38,6 +38,20 @@ impl std::fmt::Display for AttachError {
     }
 }
 
+/// Connect, asking `retry` after each failure whether to try again (spec §8). A version mismatch is
+/// returned at once: restarting the server is a different question, asked by the caller.
+pub fn retry_attach<L>(
+    mut connect: impl FnMut() -> Result<L, AttachError>,
+    mut retry: impl FnMut(&AttachError) -> bool,
+) -> Result<L, AttachError> {
+    loop {
+        match connect() {
+            Err(e) if !matches!(e, AttachError::VersionMismatch { .. }) && retry(&e) => {}
+            r => return r,
+        }
+    }
+}
+
 pub fn log_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from).join("wraith").join("logs")
 }
