@@ -1,0 +1,37 @@
+name: release
+# Push a tag like v0.1.0 (matching Cargo.toml's version) to build the dist zip and publish a GitHub release.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      # No token in .git/config: build scripts download code and must not see a write token.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check tag matches Cargo.toml version
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version" }
+      - id: zig
+        run: '"version=$(./scripts/check-zig.ps1 -Want)" >> $env:GITHUB_OUTPUT'
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig.outputs.version }}
+      - run: ./scripts/check-zig.ps1
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - name: Build dist zip
+        id: dist
+        run: |
+          $out = ./scripts/dist.ps1
+          $out
+          "zip=$($out | Where-Object { $_ -like '*.zip' })" >> $env:GITHUB_OUTPUT
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME "${{ steps.dist.outputs.zip }}" --title "Wraith $env:GITHUB_REF_NAME" --generate-notes --verify-tag

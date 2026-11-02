@@ -9,9 +9,7 @@ Set-Location $root
 
 $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 if (-not $NoBuild) {
-    # libghostty-vt's pinned Ghostty needs Zig 0.17 (vendor/libghostty-rs/VENDORED.md).
-    $zig = (& zig version) 2>$null
-    if ($zig -notlike '0.17*') { throw "Zig 0.17.x must be first on PATH (found '$zig')" }
+    & (Join-Path $PSScriptRoot 'check-zig.ps1') | Out-Null
     cargo build --release -p wraith-client -p wraith-cli
     if ($LASTEXITCODE) { throw "cargo build failed" }
 }

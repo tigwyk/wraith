@@ -5,25 +5,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # The pinned Ghostty decides which Zig builds libghostty-vt: install exactly that one.
+      - id: zig
+        run: '"version=$(./scripts/check-zig.ps1 -Want)" >> $env:GITHUB_OUTPUT'
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0
-      # The pinned Ghostty decides which Zig builds libghostty-vt; fail early if the pin and CI disagree.
-      - name: Check Zig matches the pinned Ghostty
-        shell: pwsh
-        run: |
-          $commit = (Select-String -Path vendor/libghostty-rs/crates/libghostty-vt-sys/build.rs -Pattern 'GHOSTTY_COMMIT: &str = "([0-9a-f]+)"').Matches[0].Groups[1].Value
-          $zon = (Invoke-WebRequest "https://raw.githubusercontent.com/ghostty-org/ghostty/$commit/build.zig.zon").Content
-          $want = [regex]::Match($zon, 'minimum_zig_version = "([^"]+)"').Groups[1].Value
-          $have = (zig version).Trim()
-          "Ghostty $commit wants Zig $want; installed $have"
-          if (-not $want) { throw "no minimum_zig_version in Ghostty $commit build.zig.zon" }
-          if ($have -ne $want) { throw "Zig $have does not match Ghostty's minimum_zig_version $want" }
+          version: ${{ steps.zig.outputs.version }}
+      - run: ./scripts/check-zig.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Builds libghostty-vt from the pinned Ghostty with this Zig, plus the shipped binaries.
-      - run: cargo build --release -p wraith-client -p wraith-cli
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
