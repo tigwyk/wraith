@@ -90,6 +90,18 @@ fn profile_lines_override_wt_appearance() {
 }
 
 #[test]
+fn font_list_merges_and_profile_font_overrides() {
+    let mut wt = wt_with_appearance();
+    wt.as_mut().unwrap().profiles[2].font = Some(vec!["Cascadia Mono".into(), "Consolas".into()]);
+    let m = merge(Some(&wt), Vec::new, &Config::default());
+    assert_eq!(m.profiles[2].font, Some(vec!["Cascadia Mono".to_string(), "Consolas".to_string()]));
+    let mut c = Config::default();
+    c.profile_extras = vec![("Ubuntu 22.04".into(), ProfileExtra::Font, "JetBrains Mono, Consolas".into())];
+    let m = merge(Some(&wt), Vec::new, &c);
+    assert_eq!(m.profiles[2].font, Some(vec!["JetBrains Mono".to_string(), "Consolas".to_string()]));
+}
+
+#[test]
 fn wt_off_uses_detected() {
     let mut c = Config::default();
     c.windows_terminal_profiles = false;
@@ -201,4 +213,16 @@ fn uninstalled_family_falls_back_to_window_families() {
     let a = appearance(Some(&p), &c, 0.0, &|f| f != "Cascadia Mono");
     assert_eq!(a.families, c.font_family);
     assert_eq!(a.size_pt, 14.0);
+    assert!(a.fell_back, "the app warns about it");
+    assert!(!appearance(Some(&p), &c, 0.0, &|_| true).fell_back);
+    assert!(!appearance(None, &c, 0.0, &|_| false).fell_back, "no profile font, nothing to fall back from");
+}
+
+#[test]
+fn window_appearance_is_normalised() {
+    // The window font's key comes from here too, so a profile that sets nothing shares its font.
+    let mut c = Config::default();
+    (c.font_family, c.font_size) = (vec!["A".into(), "a".into(), "B".into()], 100.0);
+    let a = appearance(None, &c, 0.0, &|_| true);
+    assert_eq!((a.families, a.size_pt), (vec!["A".to_string(), "B".to_string()], 72.0));
 }

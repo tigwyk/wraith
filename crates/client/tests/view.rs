@@ -523,18 +523,21 @@ fn palette_opens_filters_and_runs_an_action() {
     type_all(&mut v, "new tab");
     let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
     assert!(v.palette().is_none(), "accepting closes it");
-    assert!(matches!(out.msgs.as_slice(), [ClientMsg::Model(ModelCmd::NewTab { .. })]), "{out:?}");
+    assert_eq!(out, wraith_client::view::Out { app: Some(Action::NewTab), ..Default::default() });
 }
 
 #[test]
-fn palette_hands_app_level_actions_back() {
-    // Zoom, copy, paste, scroll and the like need the app's fonts, clipboard and config, not the view.
-    let mut v = view();
-    v.on_snapshot(snap(10), &ctx());
-    v.open_palette(Mode::Palette, &ctx());
-    type_all(&mut v, "reset font");
-    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
-    assert_eq!(out.app, Some(Action::ResetFontSize), "{out:?}");
+fn palette_hands_every_action_to_the_app() {
+    // The app runs the ones that need its fonts, clipboard and config, and passes the rest to the view,
+    // so no list of app-level actions has to be kept in step here.
+    for (query, action) in [("reset font", Action::ResetFontSize), ("copy", Action::Copy), ("reload config", Action::ReloadConfig), ("equalize", Action::EqualizeSplits)] {
+        let mut v = view();
+        v.on_snapshot(snap(10), &ctx());
+        v.open_palette(Mode::Palette, &ctx());
+        type_all(&mut v, query);
+        let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+        assert_eq!((out.app, out.msgs), (Some(action), vec![]), "{query}");
+    }
 }
 
 #[test]
@@ -824,7 +827,7 @@ fn click_on_palette_row_runs_it() {
     assert_eq!(hit, Hit::PaletteRow(i));
     let out = v.palette_click(&hit, &ctx()).unwrap();
     assert!(v.palette().is_none(), "running a row closes the palette");
-    assert!(matches!(out.msgs.as_slice(), [ClientMsg::Model(ModelCmd::NewTab { .. })]), "the clicked row, not the selected one: {out:?}");
+    assert_eq!(out.app, Some(Action::NewTab), "the clicked row, not the selected one: {out:?}");
 }
 
 #[test]

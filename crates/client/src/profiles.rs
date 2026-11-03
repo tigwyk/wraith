@@ -78,12 +78,15 @@ pub struct Appearance {
     pub size_pt: f32,
     pub pad: (u16, u16),
     pub opacity: f32,
+    /// The profile names fonts but none is installed, so only the window's families are used.
+    pub fell_back: bool,
 }
 
 /// `p`'s appearance over the global config, plus a zoom delta; size clamped 4–72. `installed` says
 /// whether a family exists; when none of the profile's does, the window families are used.
 pub fn appearance(p: Option<&Profile>, c: &Config, zoom: f32, installed: &dyn Fn(&str) -> bool) -> Appearance {
-    let own = p.and_then(|p| p.font.as_ref()).filter(|f| f.iter().any(|f| installed(f)));
+    let named = p.and_then(|p| p.font.as_ref());
+    let own = named.filter(|f| f.iter().any(|f| installed(f)));
     let mut families: Vec<String> = own.into_iter().flatten().cloned().collect();
     for f in &c.font_family {
         if !families.iter().any(|g| g.eq_ignore_ascii_case(f)) {
@@ -95,5 +98,6 @@ pub fn appearance(p: Option<&Profile>, c: &Config, zoom: f32, installed: &dyn Fn
         size_pt: crate::app::clamp_font_size(p.and_then(|p| p.font_size).unwrap_or(c.font_size) + zoom),
         pad: p.and_then(|p| p.padding).unwrap_or((c.window_padding_x, c.window_padding_y)),
         opacity: p.and_then(|p| p.opacity).unwrap_or(c.background_opacity),
+        fell_back: named.is_some() && own.is_none(),
     }
 }

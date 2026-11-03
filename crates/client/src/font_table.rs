@@ -23,11 +23,14 @@ impl<F> FontTable<F> {
         Self { entries: vec![(0, window, font)], next: 1 }
     }
 
+    /// Once ids run out (`exhausted`), new keys get the window font until the table and atlas are rebuilt.
     pub fn get_or_load<E>(&mut self, key: &FontKey, load: impl FnOnce(&FontKey) -> Result<F, E>) -> Result<FontId, E> {
         if let Some((id, ..)) = self.entries.iter().find(|e| e.1 == *key) {
             return Ok(*id);
         }
-        debug_assert!(!self.exhausted(), "rebuild the table (and atlas) before loading more fonts");
+        if self.exhausted() {
+            return Ok(0);
+        }
         let font = load(key)?;
         let id = self.next;
         self.next += 1;

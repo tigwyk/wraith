@@ -43,3 +43,18 @@ fn load_error_is_returned_and_nothing_inserted() {
     assert_eq!(t.get_or_load(&key("a"), |_| Err("boom")), Err("boom"));
     assert_eq!(t.get_or_load(&key("a"), ok("a")).unwrap(), 1);
 }
+
+#[test]
+fn an_exhausted_table_hands_out_the_window_font() {
+    // Ids never repeat until the table and atlas are rebuilt; past the last id the window font is the safe answer.
+    let mut t = FontTable::new(key("win"), "w");
+    let mut i = 0u32;
+    while !t.exhausted() {
+        t.get_or_load(&key(&i.to_string()), ok("x")).unwrap();
+        t.retain(&HashSet::new());
+        i += 1;
+    }
+    let mut loaded = false;
+    let id = t.get_or_load(&key("late"), |_| { loaded = true; Ok::<_, ()>("late") }).unwrap();
+    assert_eq!((id, *t.get(id), loaded), (0, "w", false));
+}
