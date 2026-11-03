@@ -223,14 +223,19 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
         app.resend_colors();
     }
     // shortcut: `command` changes apply on the next app start, not on pane restart (pane keeps its options).
-    let opacities = |c: &Config, ps: &[Profile]| (c.background_opacity, ps.iter().map(|p| p.opacity).collect::<Vec<_>>());
     if fonts_changed(&old, &app.config, &old_profiles, &app.spawn_ctx.profiles) {
         app.rebuild_fonts();
-    } else if opacities(&old, &old_profiles) != opacities(&app.config, &app.spawn_ctx.profiles) {
+    } else if opacity_changed(&old, &app.config, &old_profiles, &app.spawn_ctx.profiles) {
         app.rebuild_looks();
     }
     app.sync_swapchain(crate::app::needs_transparency(&old, &old_profiles));
     app.request_redraw();
+}
+
+/// Whether only the looks need rebuilding (no new fonts): the global or any profile's opacity changed.
+pub fn opacity_changed(old: &Config, new: &Config, old_p: &[Profile], new_p: &[Profile]) -> bool {
+    let opacities = |c: &Config, ps: &[Profile]| (c.background_opacity, ps.iter().map(|p| p.opacity).collect::<Vec<_>>());
+    opacities(old, old_p) != opacities(new, new_p)
 }
 
 /// Whether a reload needs a new font table and atlas: the window font, padding, or any profile's

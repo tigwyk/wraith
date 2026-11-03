@@ -26,6 +26,7 @@ fn reload_with_bad_key_keeps_previous_good_values() {
     assert_eq!(c.font_size, 14.0);
     let toast = toast.unwrap();
     assert!(toast.contains(":2:") && toast.contains("bogus"), "{toast}");
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -69,6 +70,7 @@ fn row_states_match_diagnostics_by_line() {
     assert_eq!(rows[i].origin, Origin::Here { line: 1 });
     assert_eq!(rows[i].warning.as_deref(), Some("invalid value `abc`"));
     assert!(rows.iter().enumerate().all(|(j, r)| j == i || r.warning.is_none()));
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -87,4 +89,31 @@ fn profile_font_change_rebuilds() {
     let (old_p, new_p) = (merge(None, detected, &old).profiles, merge(None, detected, &new).profiles);
     assert!(!fonts_changed(&old, &old, &old_p, &old_p));
     assert!(fonts_changed(&old, &new, &old_p, &new_p));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn opacity_only_change_rebuilds_looks_not_fonts() {
+    use wraith_client::profiles::merge;
+    use wraith_client::reload::opacity_changed;
+    use wraith_server::profile::{Profile, ShellKind};
+    let dir = std::env::temp_dir().join(format!("wraith-reload-op-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config");
+    let detected = || vec![Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into(), ..Profile::default() }];
+    std::fs::write(&path, "profile-detect = true
+").unwrap();
+    let (old, _) = reload_file(&path, &themes());
+    for line in ["profile-opacity = pwsh:0.8", "background-opacity = 0.9"] {
+        std::fs::write(&path, format!("profile-detect = true
+{line}
+")).unwrap();
+        let (new, toast) = reload_file(&path, &themes());
+        assert_eq!(toast, None, "{line}");
+        let (old_p, new_p) = (merge(None, detected, &old).profiles, merge(None, detected, &new).profiles);
+        assert!(!fonts_changed(&old, &new, &old_p, &new_p), "{line}");
+        assert!(opacity_changed(&old, &new, &old_p, &new_p), "{line}");
+        assert!(!opacity_changed(&new, &new, &new_p, &new_p), "{line}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }

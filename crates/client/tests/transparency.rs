@@ -39,4 +39,7 @@ fn pane_opacity_is_premultiplied() {
     pipe.submit(&gpu, off.rtv(), (200, 100), &atlas, &[Batch { quads: q, texture: None }], [0.0; 4]);
     let px = off.read_pixel(&gpu, 5, 5);
     assert!(px.iter().all(|&c| c.abs_diff(128) <= 1), "padding pixel {px:?}");
+    // Inside the grid (4×2 empty cells from (20, 20)): the default background is see-through too.
+    let px = off.read_pixel(&gpu, 22, 22);
+    assert!(px.iter().all(|&c| c.abs_diff(128) <= 1), "cell pixel {px:?}");
 }

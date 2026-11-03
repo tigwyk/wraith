@@ -90,6 +90,18 @@ fn profile_lines_override_wt_appearance() {
 }
 
 #[test]
+fn font_list_merges_and_profile_font_overrides() {
+    let mut wt = wt_with_appearance();
+    wt.as_mut().unwrap().profiles[2].font = Some(vec!["Cascadia Mono".into(), "Consolas".into()]);
+    let m = merge(Some(&wt), Vec::new, &Config::default());
+    assert_eq!(m.profiles[2].font, Some(vec!["Cascadia Mono".to_string(), "Consolas".to_string()]));
+    let mut c = Config::default();
+    c.profile_extras = vec![("Ubuntu 22.04".into(), ProfileExtra::Font, "JetBrains Mono, Consolas".into())];
+    let m = merge(Some(&wt), Vec::new, &c);
+    assert_eq!(m.profiles[2].font, Some(vec!["JetBrains Mono".to_string(), "Consolas".to_string()]));
+}
+
+#[test]
 fn wt_off_uses_detected() {
     let mut c = Config::default();
     c.windows_terminal_profiles = false;
