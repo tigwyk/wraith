@@ -38,32 +38,31 @@ fn split_bom(src: &str) -> (&str, &str, &'static str) {
 
 /// Rewrite the winning `key = …` line to `key = value`, or append one.
 pub fn set(src: &str, key: &str, value: &str, which: Which) -> String {
-    let (bom, body, nl) = split_bom(src);
+    let (bom, body, _) = split_bom(src);
     let mut lines: Vec<&str> = body.split_inclusive('\n').collect();
     let mut matches = (0..lines.len()).filter(|&i| is_key(lines[i], key));
     let hit = match which {
         Which::First => matches.next(),
         Which::Last => matches.next_back(),
     };
-    let new = format!("{key} = {value}");
+    let Some(i) = hit else { return append(src, key, value) };
+    let old = lines[i];
+    let ending = &old[old.trim_end_matches(['\r', '\n']).len()..];
+    let line = format!("{key} = {value}{ending}");
+    lines[i] = &line;
     let mut out = String::from(bom);
-    match hit {
-        Some(i) => {
-            let old = lines[i];
-            let ending = &old[old.trim_end_matches(['\r', '\n']).len()..];
-            let line = format!("{new}{ending}");
-            lines[i] = &line;
-            out.extend(lines);
-        }
-        None => {
-            out.push_str(body);
-            if !body.is_empty() && !body.ends_with('\n') {
-                out.push_str(nl);
-            }
-            out.push_str(&new);
-            out.push_str(nl);
-        }
+    out.extend(lines);
+    out
+}
+
+/// Append a `key = value` line, whatever lines the key already has.
+pub fn append(src: &str, key: &str, value: &str) -> String {
+    let (_, body, nl) = split_bom(src);
+    let mut out = String::from(src);
+    if !body.is_empty() && !body.ends_with('\n') {
+        out.push_str(nl);
     }
+    out.push_str(&format!("{key} = {value}{nl}"));
     out
 }
 

@@ -1,7 +1,7 @@
 //! The M1 app: one window, one pane. Window messages are always handled before frame work (spec §6.3).
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
+use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
@@ -33,6 +34,7 @@ use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
+use crate::new_tab_menu::{MenuDo, MenuHit, MenuOutcome, MenuRow, letter_tile, menu_action};
 use crate::palette::Mode;
 use crate::view::{ExitOut, Geometry, Out, SpawnCtx, Ui, WindowView};
 use crate::settings::{Edit, SettingsHit, SettingsView, Sources};
@@ -257,9 +259,11 @@ pub(crate) struct App {
     grids: HashMap<PaneId, GridRenderer>,
     /// Inline image textures, per pane.
     images: ImageStore,
+    /// Profile icon textures by file; `None` when the file could not be drawn (the letter tile shows).
+    icons: HashMap<PathBuf, Option<Icon>>,
     link: ServerLink,
     pub(crate) view: WindowView,
-    spawn_ctx: SpawnCtx,
+    pub(crate) spawn_ctx: SpawnCtx,
     pipe_name: String,
     /// Set by the wake thread when the server's pipe closes (spec §8).
     server_lost: Arc<AtomicBool>,
@@ -419,6 +423,9 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.view.menu().is_some() {
+            return self.menu_key(ev);
+        }
         if self.view.settings().is_some() {
             return self.settings_key(ev);
         }
@@ -434,6 +441,40 @@ impl App {
             Match::Action(a) => self.action(a),
             Match::Pending => {}
             Match::None(keys) => keys.into_iter().for_each(|k| self.send_key(k)),
+        }
+    }
+
+    /// While the new-tab menu is open it takes every key. A bound Ctrl chord closes it and runs (its own
+    /// binding just closes it).
+    fn menu_key(&mut self, ev: KeyEvent) {
+        self.dirty = true;
+        if ev.action != wraith_proto::KeyAction::Release && ev.mods.has(Mods::CTRL) {
+            match self.matcher.feed(&ev, Instant::now()) {
+                Match::Action(a) => {
+                    self.view.close_menu();
+                    if a != Action::OpenNewTabMenu {
+                        self.action(a);
+                    }
+                }
+                _ => self.matcher.reset(),
+            }
+            return;
+        }
+        if let Some(o) = self.view.menu_mut().and_then(|m| m.key(&ev)) {
+            self.menu_outcome(o);
+        }
+    }
+
+    fn menu_outcome(&mut self, o: MenuOutcome) {
+        self.view.close_menu();
+        self.dirty = true;
+        match menu_action(o) {
+            Some(MenuDo::Action(a)) => self.action(a),
+            Some(MenuDo::Split(i)) => {
+                let out = self.view.split_profile(i, &self.spawn_ctx);
+                self.run_out(out);
+            }
+            None => {}
         }
     }
 
@@ -542,6 +583,15 @@ impl App {
         }
     }
 
+    fn toggle_menu(&mut self) {
+        if self.view.menu().is_some() {
+            self.view.close_menu();
+        } else {
+            self.view.open_menu(&self.spawn_ctx);
+        }
+        self.request_redraw();
+    }
+
     pub(crate) fn action(&mut self, a: Action) {
         match a {
             Action::Copy => self.send_focused(PaneCmd::CopySelection),
@@ -555,6 +605,18 @@ impl App {
             Action::ScrollToBottom => self.scroll(ScrollTo::Bottom),
             Action::ClearScreen => self.send_focused(PaneCmd::Text("\x0c".into())),
             Action::ReloadConfig | Action::ToggleFrameOverlay | Action::Unbind => crate::reload::action(self, a),
+            Action::ImportWtProfiles => {
+                // The config watcher reloads the written file.
+                let text = match wraith_config::wt::load() {
+                    None => "Couldn't import: Windows Terminal's settings.json was not found".to_string(),
+                    Some(Err(e)) => format!("Couldn't import: {e}"),
+                    Some(Ok(wt)) => match wraith_config::wt::import(crate::reload::path(self),&themes_dir(), &wt) {
+                        Ok(r) => format!("Imported {} Windows Terminal profiles", r.imported()),
+                        Err(e) => format!("Couldn't import: {e}"),
+                    },
+                };
+                crate::reload::toast_text(self, "import", text);
+            }
             _ => {
                 let out = self.view.action(a, &self.spawn_ctx);
                 self.run_out(out);
@@ -584,6 +646,7 @@ impl App {
             Some(Ui::Picker) => self.view.open_palette(Mode::Picker, &self.spawn_ctx),
             Some(Ui::MoveTab) => self.view.open_palette(Mode::MoveTab, &self.spawn_ctx),
             Some(Ui::Settings) => self.toggle_settings(),
+            Some(Ui::NewTabMenu) => self.toggle_menu(),
             None => {}
         }
     }
@@ -678,6 +741,7 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                Hit::Menu(_) => return,
                 _ => {}
             }
             let pane = match self.view.hit(pt.x, pt.y) {
@@ -732,6 +796,21 @@ impl App {
         {
             self.dirty = true;
             return self.run_out(out);
+        }
+        // A press while the new-tab menu is open: a row acts; anywhere else, its button included, closes
+        // it (and the press goes no further).
+        if matches!(msg, WM_LBUTTONDOWN | WM_RBUTTONDOWN) && self.view.menu().is_some() {
+            self.dirty = true;
+            match hit {
+                Hit::Menu(h) if msg == WM_LBUTTONDOWN => {
+                    if let Some(o) = self.view.menu_mut().and_then(|m| m.click(&h, alt)) {
+                        self.menu_outcome(o);
+                    }
+                }
+                Hit::Menu(_) => {}
+                _ => self.view.close_menu(),
+            }
+            return;
         }
         // A press while the settings panel is open: its parts act; anywhere else, the gear included,
         // closes it (and the press goes no further).
@@ -789,6 +868,7 @@ impl App {
                 }
                 Hit::TabClose(t) => return self.close_tab(t),
                 Hit::NewTab => return self.action(Action::NewTab),
+                Hit::NewTabMenu => return self.toggle_menu(),
                 Hit::Pane(p) => {
                     let msgs = self.view.pane_click(p);
                     self.send_all(msgs);
@@ -970,6 +1050,8 @@ impl App {
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
+                        } else if self.view.menu().is_some() {
+                            // The menu has no text field; typed text must not reach the shell behind it.
                         } else if let Some(s) = self.view.settings_mut() {
                             s.text(&t);
                         } else if let Some(out) = self.view.find_text(&t) {
@@ -1317,12 +1399,12 @@ impl App {
         self.view.set_dim_opacity(self.config.unfocused_split_opacity);
     }
 
-    /// Send the configured colors to every pane in view (after a config reload).
+    /// Send each pane in view its profile's colors (after a config reload).
     pub(crate) fn resend_colors(&mut self) {
-        let c = &self.config;
-        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
         for (p, _) in self.view.visible() {
-            self.send_pane(p, PaneCmd::SetColors { fg: rgb(c.foreground), bg: rgb(c.background), palette: c.palette.iter().copied().map(rgb).collect() });
+            let profile = self.view.snapshot().pane(p).map_or("", |m| m.profile.as_str());
+            let cmd = self.spawn_ctx.set_colors(profile);
+            self.send_pane(p, cmd);
         }
     }
 
@@ -1493,6 +1575,12 @@ impl App {
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        let chevron = chrome::chevron_rect(plus, m.w as i32);
+        if let Some(c) = wash(&Hit::NewTabMenu) {
+            p.rect(chevron, c, 1.0);
+        }
+        let cc = if self.view.menu().is_some() { accent } else { col.bar_fg_dim };
+        p.text(&self.gpu, &mut self.atlas, &self.fonts, chevron.x + (chevron.w - m.w as i32) / 2, ty, "⌄", cc, 1.0);
         let gear = self.view.gear_rect();
         if let Some(c) = wash(&Hit::Gear) {
             p.rect(gear, c, 1.0);
@@ -1735,6 +1823,88 @@ impl App {
         }
         let n = p.q.len();
         crate::paint::shift(&mut p.q[set_start..n], 0.0, (8.0 * (1.0 - set_a)).round(), set_a);
+        // The new-tab menu, under its button. It fades in like the palette.
+        let menu_start = p.q.len();
+        let menu_a = self.motion.overlay(|m| &mut m.menu, self.view.menu().is_some(), now);
+        // Image icons are separate texture batches, drawn after the chrome.
+        let mut icon_quads: Vec<(ID3D11ShaderResourceView, crate::grid::Quad)> = Vec::new();
+        if let (Some(menu), Some(l)) = (self.view.menu(), self.view.menu_layout()) {
+            let (cw, panel) = (m.w as i32, l.panel);
+            p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, col.divider, 1.0);
+            p.rect(panel, col.bar_bg, 1.0);
+            let hovered = match self.view.hovered() {
+                Some(Hit::Menu(MenuHit::Row(i))) => Some(*i),
+                _ => None,
+            };
+            for &(i, r) in &l.rows {
+                let row = &menu.rows[i];
+                if *row == MenuRow::Separator {
+                    p.rect(Rect { x: r.x + pad_x, y: r.y + r.h / 2, w: r.w - 2 * pad_x, h: 1 }, col.divider, 1.0);
+                    continue;
+                }
+                if i == menu.selected || hovered == Some(i) {
+                    p.rect(r, col.tab_active_bg, 1.0);
+                }
+                if i == menu.selected {
+                    p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                }
+                let ty = r.y + (r.h - m.h as i32) / 2;
+                let ix = r.x + pad_x;
+                let (label, binding, lc) = match row {
+                    MenuRow::Profile { name, icon, binding, default, .. } => {
+                        let side = (m.h as i32).min(2 * cw);
+                        let image = icon.as_deref().and_then(|i| wraith_config::wt::resolve_icon(i, None)).and_then(|f| {
+                            let gpu = &self.gpu;
+                            self.icons.entry(f).or_insert_with_key(|f| icon_texture(gpu, f)).clone()
+                        });
+                        match (icon.as_deref().filter(|t| t.chars().count() <= 2), image) {
+                            (Some(t), _) => {
+                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, t, col.bar_fg, 1.0);
+                            }
+                            (None, Some((srv, _))) => {
+                                let quad = crate::grid::Quad {
+                                    pos: [ix as f32, (ty + (m.h as i32 - side) / 2) as f32],
+                                    size: [side as f32, side as f32],
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                    kind: crate::images::KIND_IMAGE,
+                                };
+                                icon_quads.push((srv, quad));
+                            }
+                            (None, None) => {
+                                let (c, tile) = letter_tile(name);
+                                p.rect(Rect { x: ix, y: ty, w: side, h: m.h as i32 }, tile, 1.0);
+                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + (side - cw) / 2, ty, &c.to_string(), (255, 255, 255), 1.0);
+                            }
+                        }
+                        // The default profile's name is in the accent colour (the UI font has no bold).
+                        (name.as_str(), binding.as_deref(), if *default { accent } else { col.bar_fg })
+                    }
+                    MenuRow::Settings(b) => {
+                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "⚙", col.bar_fg_dim, 1.0);
+                        ("Settings", b.as_deref(), col.bar_fg)
+                    }
+                    MenuRow::Palette(b) => {
+                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "›", col.bar_fg_dim, 1.0);
+                        ("Command palette", b.as_deref(), col.bar_fg)
+                    }
+                    MenuRow::Separator => continue,
+                };
+                let bw = binding.map_or(0, |b| crate::paint::text_width(&self.fonts, b));
+                let room = ((r.w - 3 * cw - bw - 3 * pad_x) / cw).max(0) as usize;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + 3 * cw, ty, &truncate_cells(label, room), lc, 1.0);
+                if let Some(b) = binding {
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - bw, ty, b, col.bar_fg_dim, 1.0);
+                }
+            }
+        }
+        let n = p.q.len();
+        let menu_dy = (8.0 * (1.0 - menu_a)).round();
+        crate::paint::shift(&mut p.q[menu_start..n], 0.0, menu_dy, menu_a);
+        for (_, q) in &mut icon_quads {
+            q.pos[1] += menu_dy;
+            q.color[3] = menu_a;
+        }
         // Command palette / picker, centered over everything. It fades in, rising 8 px.
         let pal_start = p.q.len();
         let pal_a = self.motion.overlay(|m| &mut m.palette, self.view.palette().is_some(), now);
@@ -1803,6 +1973,7 @@ impl App {
                 let text = chrome::tooltip_for(h, &self.config.keybinds)?;
                 let r = match h {
                     Hit::NewTab => plus,
+                    Hit::NewTabMenu => chrome::chevron_rect(plus, m.w as i32),
                     Hit::TabClose(t) => chrome::close_rect(tabs.iter().find(|(id, _)| id == t)?.1, m.w as i32),
                     Hit::NewWorkspace => self.view.workspace_rects().1,
                     Hit::Gear => self.view.gear_rect(),
@@ -1830,6 +2001,8 @@ impl App {
         }
         self.motion.end(now);
         batches.push(Batch { quads: q, texture: None });
+        // shortcut: icons draw above every chrome quad, toasts included; fine while nothing else overlaps the menu.
+        batches.extend(icon_quads.into_iter().map(|(srv, quad)| Batch { quads: vec![quad], texture: Some(srv) }));
         self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
@@ -1950,14 +2123,90 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
     }
 }
 
-/// Detected profiles plus the configured ones; `-e <command>` or `command =` becomes the default.
+/// The installed folder of the package family `family` (Windows Terminal's, for its icons).
+fn package_dir(family: &str) -> Option<PathBuf> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::Storage::Packaging::Appx::{GetPackagePathByFullName, GetPackagesByPackageFamily};
+    use windows::core::PWSTR;
+    let fam = wide(family);
+    let (mut count, mut len) = (0u32, 0u32);
+    unsafe {
+        let _ = GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, None, &mut len, None);
+        if count == 0 || len == 0 {
+            return None;
+        }
+        let mut names = vec![PWSTR::null(); count as usize];
+        let mut buf = vec![0u16; len as usize];
+        if GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, Some(names.as_mut_ptr()), &mut len, Some(PWSTR(buf.as_mut_ptr()))) != ERROR_SUCCESS {
+            return None;
+        }
+        let full = PCWSTR(names.first()?.0);
+        let mut plen = 0u32;
+        let _ = GetPackagePathByFullName(full, &mut plen, None);
+        let mut path = vec![0u16; plen as usize];
+        if plen == 0 || GetPackagePathByFullName(full, &mut plen, Some(PWSTR(path.as_mut_ptr()))) != ERROR_SUCCESS {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf16_lossy(&path[..(plen as usize).saturating_sub(1)])))
+    }
+}
+
+/// `p`, or the scaled variant a package ships instead (`x.scale-100.png` for `x.png`), if one exists.
+fn existing_icon(p: PathBuf) -> Option<PathBuf> {
+    if p.is_file() {
+        return Some(p);
+    }
+    let stem = p.file_stem()?.to_string_lossy().into_owned();
+    ["scale-100", "scale-200", "scale-150", "scale-125"].iter().map(|s| p.with_file_name(format!("{stem}.{s}.png"))).find(|c| c.is_file())
+}
+
+/// A profile icon's texture and its pixel size.
+type Icon = (ID3D11ShaderResourceView, (u32, u32));
+
+/// A PNG icon file as a texture; files over 1 MiB are not read.
+fn icon_texture(gpu: &Gpu, path: &Path) -> Option<Icon> {
+    if std::fs::metadata(path).ok()?.len() > 1 << 20 {
+        return None;
+    }
+    let (w, h, rgba) = crate::new_tab_menu::decode_icon(&std::fs::read(path).ok()?)?;
+    Some((crate::images::texture(gpu, w, h, &rgba).ok()?, (w, h)))
+}
+
+/// Windows Terminal's or the detected profiles, plus the configured ones (wt-profiles spec §3);
+/// `-e <command>` or `command =` becomes the default.
 fn build_spawn_ctx(config: &Config) -> SpawnCtx {
-    let mut profiles = wraith_server::profile::detect();
-    for (name, cmd) in &config.profiles {
-        profiles.retain(|p| &p.name != name);
-        profiles.push(wraith_server::profile::from_config(name, cmd));
+    let wt = if config.windows_terminal_profiles { wraith_config::wt::load() } else { None };
+    let merged = crate::profiles::merge(wt.as_ref(), wraith_server::profile::detect, config);
+    for w in &merged.warnings {
+        tracing::warn!("{w}");
+    }
+    let mut profiles = merged.profiles;
+    // WT's own icons (`ms-appx:///…`) live in its package folder; point them at the file there.
+    let package = match &wt {
+        Some(Ok(s)) => s.family.as_deref().and_then(package_dir),
+        _ => None,
+    };
+    for p in &mut profiles {
+        if let Some(i) = p.icon.as_deref().filter(|i| i.starts_with("ms-appx:")) {
+            p.icon = wraith_config::wt::resolve_icon(i, package.as_deref()).and_then(existing_icon).map(|f| f.display().to_string());
+        }
+    }
+    let themes = themes_dir();
+    let mut schemes = HashMap::new();
+    for name in profiles.iter().filter_map(|p| p.scheme.clone()) {
+        let found = match &wt {
+            Some(Ok(s)) => s.scheme(&name, &themes),
+            _ => wraith_config::wt::scheme_from_theme(&themes, &name),
+        };
+        match found {
+            Some(s) => {
+                schemes.insert(name, s);
+            }
+            None => tracing::warn!("colour scheme `{name}` not found; the profile uses the theme"),
+        }
     }
     let mut config = config.clone();
+    config.default_profile = merged.default;
     if let Some(cmd) = command_from_args(&std::env::args().collect::<Vec<_>>()).or_else(|| config.command.clone()) {
         profiles.retain(|p| p.name != "command");
         profiles.push(wraith_server::profile::from_config("command", &cmd));
@@ -1967,7 +2216,7 @@ fn build_spawn_ctx(config: &Config) -> SpawnCtx {
         tracing::warn!("shell integration scripts: {e}");
         PathBuf::new()
     });
-    SpawnCtx { config, profiles, scripts, env: spawn_env() }
+    SpawnCtx { config, profiles, schemes, scripts, env: spawn_env() }
 }
 
 pub fn run() -> Result<()> {
@@ -2021,6 +2270,7 @@ pub fn run() -> Result<()> {
         pipe,
         grids: HashMap::new(),
         images: ImageStore::default(),
+        icons: HashMap::new(),
         link,
         view,
         spawn_ctx,

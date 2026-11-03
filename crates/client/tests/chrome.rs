@@ -1,4 +1,4 @@
-use wraith_client::chrome::{Hit, HitCtx, close_rect, gear_rect, hit, regions, tab_rects, tooltip_for};
+use wraith_client::chrome::{Hit, HitCtx, chevron_rect, close_rect, gear_rect, hit, regions, tab_rects, tooltip_for};
 use wraith_proto::model::{Axis, Divider, Rect};
 
 const CELL: (i32, i32) = (8, 16);
@@ -53,7 +53,7 @@ fn tab_rects_fit_bar_with_new_tab_button() {
 static WS: [(u64, Rect); 1] = [(7, Rect { x: 0, y: 40, w: 192, h: 20 })];
 
 fn ctx<'a>(g: &'a wraith_client::chrome::Regions, tabs: &'a [(u64, Rect)], panes: &'a [(u64, Rect)], divs: &'a [Divider]) -> HitCtx<'a> {
-    HitCtx { regions: g, tabs, new_tab: r(392, 0, 24, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), agents: &[], sidebar_tabs: &[], panes, dividers: divs, gear: r(950, 0, 24, 26), cell_w: 8 }
+    HitCtx { regions: g, tabs, new_tab: r(392, 0, 16, 26), new_tab_menu: r(408, 0, 16, 26), workspaces: &WS, new_workspace: r(0, 560, 192, 20), agents: &[], sidebar_tabs: &[], panes, dividers: divs, gear: r(950, 0, 24, 26), cell_w: 8 }
 }
 
 #[test]
@@ -213,4 +213,29 @@ fn gear_sits_left_of_the_captions_and_is_hit() {
 fn gear_tooltip_names_the_binding() {
     let binds = wraith_config::Config::default().keybinds;
     assert_eq!(tooltip_for(&Hit::Gear, &binds).as_deref(), Some("Settings  Ctrl+,"));
+}
+
+#[test]
+fn tab_rects_split_button() {
+    let bar = r(0, 0, 800, 26);
+    let (_, plus) = tab_rects(3, bar, 8, 0);
+    let chevron = chevron_rect(plus, 8);
+    assert_eq!((plus.w, chevron.w), (16, 16), "two cells each");
+    assert_eq!(chevron.x, plus.x + plus.w, "side by side");
+    let (_, plus) = tab_rects(2, bar, 8, 140);
+    assert!(chevron_rect(plus, 8).x + 16 <= 800 - 140, "the chevron keeps clear of the caption buttons");
+}
+
+#[test]
+fn hit_chevron_is_new_tab_menu() {
+    let g = regions((1000, 600), CELL, Some(24), 26);
+    let c = ctx(&g, &[], &[], &[]);
+    assert_eq!(hit(&c, 395, 10), Hit::NewTab);
+    assert_eq!(hit(&c, 410, 10), Hit::NewTabMenu);
+}
+
+#[test]
+fn tooltip_for_chevron() {
+    let binds = wraith_config::Config::default().keybinds;
+    assert_eq!(tooltip_for(&Hit::NewTabMenu, &binds).as_deref(), Some("Open a profile  Ctrl+Shift+Space"));
 }

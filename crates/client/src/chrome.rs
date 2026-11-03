@@ -26,14 +26,20 @@ pub fn regions(client: (i32, i32), cell: (i32, i32), sidebar_cols: Option<u16>, 
     }
 }
 
-/// `count` equal tabs along `bar`, then the new-tab button. Tabs are at most 24 cells wide and shrink
-/// (rather than overflow) when crowded. `reserved_right` keeps room for the caption buttons.
+/// `count` equal tabs along `bar`, then the new-tab button (`+`, with the `⌄` of `chevron_rect` after
+/// it). Tabs are at most 24 cells wide and shrink (rather than overflow) when crowded. `reserved_right`
+/// keeps room for the caption buttons.
 pub fn tab_rects(count: usize, bar: Rect, cell_w: i32, reserved_right: i32) -> (Vec<Rect>, Rect) {
-    let button = 3 * cell_w;
-    let avail = (bar.w - reserved_right - button).max(0);
+    let button = 2 * cell_w;
+    let avail = (bar.w - reserved_right - 2 * button).max(0);
     let w = if count == 0 { 0 } else { (avail / count as i32).min(24 * cell_w) };
     let tabs: Vec<Rect> = (0..count as i32).map(|i| Rect { x: bar.x + i * w, y: bar.y, w, h: bar.h }).collect();
     (tabs, Rect { x: bar.x + count as i32 * w, y: bar.y, w: button.min(bar.w), h: bar.h })
+}
+
+/// The new-tab menu button, right of the new-tab button `plus`.
+pub fn chevron_rect(plus: Rect, cell_w: i32) -> Rect {
+    Rect { x: plus.x + plus.w, y: plus.y, w: 2 * cell_w, h: plus.h }
 }
 
 /// The settings button: 3 cells wide, against the caption buttons' left edge.
@@ -53,6 +59,10 @@ pub enum Hit {
     Tab(TabId),
     TabClose(TabId),
     NewTab,
+    /// The `⌄` beside the new-tab button.
+    NewTabMenu,
+    /// A part of the open new-tab menu.
+    Menu(crate::new_tab_menu::MenuHit),
     /// The settings button left of the caption buttons.
     Gear,
     Workspace(WorkspaceId),
@@ -81,6 +91,7 @@ pub struct HitCtx<'a> {
     pub regions: &'a Regions,
     pub tabs: &'a [(TabId, Rect)],
     pub new_tab: Rect,
+    pub new_tab_menu: Rect,
     pub workspaces: &'a [(WorkspaceId, Rect)],
     pub new_workspace: Rect,
     pub agents: &'a [(PaneId, Rect)],
@@ -111,7 +122,13 @@ pub fn hit(c: &HitCtx, x: i32, y: i32) -> Hit {
         if let Some((id, r)) = c.tabs.iter().find(|(_, r)| r.contains(x, y)) {
             return if close_rect(*r, c.cell_w).contains(x, y) { Hit::TabClose(*id) } else { Hit::Tab(*id) };
         }
-        return if c.new_tab.contains(x, y) { Hit::NewTab } else { Hit::Bar };
+        return if c.new_tab.contains(x, y) {
+            Hit::NewTab
+        } else if c.new_tab_menu.contains(x, y) {
+            Hit::NewTabMenu
+        } else {
+            Hit::Bar
+        };
     }
     if c.regions.content.contains(x, y) {
         if let Some(i) = c.dividers.iter().position(|d| {
@@ -157,6 +174,7 @@ pub fn tooltip_for(hit: &Hit, keybinds: &[wraith_config::Keybind]) -> Option<Str
         Hit::TabClose(_) => ("Close tab", Action::CloseTab),
         Hit::NewWorkspace => ("New workspace", Action::NewWorkspace),
         Hit::Gear => ("Settings", Action::OpenSettings),
+        Hit::NewTabMenu => ("Open a profile", Action::OpenNewTabMenu),
         _ => return None,
     };
     Some(match keybinds.iter().find(|k| k.action == action) {

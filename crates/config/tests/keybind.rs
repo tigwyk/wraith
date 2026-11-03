@@ -161,3 +161,25 @@ fn ctrl_comma_opens_settings() {
     assert_eq!(kb.trigger, parse_keybind("ctrl+comma=open_settings").unwrap().trigger);
     assert!(wraith_config::all_actions().iter().any(|(a, n)| *a == Action::OpenSettings && *n == "open_settings"));
 }
+
+#[test]
+fn new_tab_profile_parses() {
+    let act = |s: &str| parse_keybind(&format!("ctrl+shift+x={s}")).map(|k| k.action);
+    assert_eq!(act("new_tab_profile:3"), Ok(Action::NewTabProfile(3)));
+    assert!(act("new_tab_profile:0").is_err());
+    assert!(act("new_tab_profile").is_err());
+    assert_eq!(act("open_new_tab_menu"), Ok(Action::OpenNewTabMenu));
+    assert_eq!(act("import_windows_terminal_profiles"), Ok(Action::ImportWtProfiles));
+}
+
+#[test]
+fn new_defaults_bound() {
+    let (c, _) = parse_str("", p(), &themes());
+    let bound = |t: &str| c.keybinds.iter().find(|k| k.trigger == parse_keybind(&format!("{t}=new_tab")).unwrap().trigger).map(|k| k.action);
+    assert_eq!(bound("ctrl+shift+space"), Some(Action::OpenNewTabMenu));
+    for n in 1..=9u8 {
+        assert_eq!(bound(&format!("ctrl+shift+{n}")), Some(Action::NewTabProfile(n)));
+    }
+    let names: Vec<&str> = all_actions().into_iter().map(|(_, s)| s).collect();
+    assert!(names.contains(&"open_new_tab_menu") && names.contains(&"import_windows_terminal_profiles"));
+}

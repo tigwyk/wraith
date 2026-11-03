@@ -167,7 +167,7 @@ fn group_of(a: Action) -> (usize, &'static str) {
     use Action::*;
     match a {
         NewWorkspace | CloseWorkspace | NextWorkspace | PreviousWorkspace | WorkspacePicker => (0, "Workspaces"),
-        NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace => (1, "Tabs"),
+        NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace | NewTabProfile(_) | OpenNewTabMenu => (1, "Tabs"),
         NewSplit(_) | GotoSplit(_) | ToggleSplitZoom | ResizeSplit(..) | EqualizeSplits | CloseSurface | Find => (2, "Panes"),
         _ => (3, "Window"),
     }
@@ -191,6 +191,19 @@ pub fn palette_items(binds: &[Keybind]) -> Vec<Item> {
         .collect();
     items.sort_by_key(|(rank, _)| *rank);
     items.into_iter().map(|(_, i)| i).collect()
+}
+
+/// One "New tab: <profile>" row per profile, with the binding of its `new_tab_profile:N`.
+pub fn profile_items(profiles: &[String], binds: &[Keybind]) -> Vec<Item> {
+    profiles
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            let a = Action::NewTabProfile(u8::try_from(i + 1).ok()?);
+            let detail = binds.iter().find(|k| k.action == a).map(trigger_text).unwrap_or_default();
+            Some(Item { label: format!("New tab: {name}"), detail, group: "Tabs", choice: Choice::Action(a) })
+        })
+        .collect()
 }
 
 fn last_component(path: &str) -> String {

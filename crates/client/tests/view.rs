@@ -20,9 +20,10 @@ fn ctx() -> SpawnCtx {
     SpawnCtx {
         config: Config::default(),
         profiles: vec![
-            Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into() },
-            Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: "cmd.exe".into() },
+            Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into(), ..Profile::default() },
+            Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: "cmd.exe".into(), ..Profile::default() },
         ],
+        schemes: Default::default(),
         scripts: PathBuf::from(r"C:\s"),
         env: vec![],
     }
@@ -892,4 +893,106 @@ fn open_settings_panel_takes_hits() {
     assert!(matches!(v.hit(l.panel.x + 1, l.panel.y + 1), Hit::Settings(_)));
     v.close_settings();
     assert!(v.settings().is_none() && v.settings_layout().is_none());
+}
+
+/// `ctx()` with cmd starting in C:\cmdhome under a scheme with background (4, 5, 6).
+fn ctx_profiles() -> SpawnCtx {
+    let mut c = ctx();
+    c.profiles[1].dir = Some(r"C:\cmdhome".into());
+    c.profiles[1].scheme = Some("Mine".into());
+    let rgb = wraith_config::Rgb;
+    c.schemes.insert("Mine".into(), wraith_config::Scheme { fg: rgb(1, 2, 3), bg: rgb(4, 5, 6), cursor: None, palette: [rgb(9, 9, 9); 16] });
+    c
+}
+
+#[test]
+fn new_tab_profile_spawns_nth_with_its_dir() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx_profiles());
+    let out = v.action(Action::NewTabProfile(2), &ctx_profiles());
+    let [ClientMsg::Model(ModelCmd::NewTab { profile, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((profile.as_str(), spawn.cwd.as_deref()), ("cmd", Some(r"C:\cmdhome")));
+    assert_eq!(spawn.default_bg, (4, 5, 6), "the profile's scheme");
+    assert!(v.action(Action::NewTabProfile(9), &ctx_profiles()).msgs.is_empty());
+}
+
+#[test]
+fn split_keeps_focused_cwd_not_profile_dir() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx_profiles());
+    let out = v.action(Action::NewSplit(Dir::Right), &ctx_profiles());
+    let [ClientMsg::Model(ModelCmd::Split { profile, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((profile.as_str(), spawn.cwd.as_deref()), ("cmd", Some(r"C:\work")));
+}
+
+#[test]
+fn subscription_colors_follow_each_panes_profile() {
+    let mut v = view();
+    let msgs = v.on_snapshot(snap(10), &ctx_profiles());
+    let bg = |pane: PaneId| {
+        msgs.iter()
+            .find_map(|m| match m {
+                ClientMsg::Cmd { pane: p, cmd: PaneCmd::SetColors { bg, .. } } if *p == pane => Some(*bg),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let g = Config::default().background;
+    assert_eq!(bg(1), (g.0, g.1, g.2), "pane 1 runs pwsh, which has no scheme");
+    assert_eq!(bg(2), (4, 5, 6), "pane 2 runs cmd");
+}
+
+#[test]
+fn open_menu_closes_palette_and_settings() {
+    use wraith_client::palette::Mode;
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert_eq!(v.action(Action::OpenNewTabMenu, &ctx()).ui, Some(Ui::NewTabMenu));
+    v.open_palette(Mode::Palette, &ctx());
+    v.open_menu(&ctx());
+    assert!(v.menu().is_some() && v.palette().is_none());
+    v.open_palette(Mode::Palette, &ctx());
+    assert!(v.menu().is_none(), "the palette closes the menu");
+    v.open_menu(&ctx());
+    let s = wraith_client::settings::SettingsView::new(
+        wraith_client::settings::Sources { themes: vec![], fonts: vec![], profiles: vec![] },
+        wraith_config::settings::all().iter().map(|_| wraith_client::settings::RowState { origin: wraith_config::edit::Origin::Default, warning: None }).collect(),
+    );
+    v.open_settings(s);
+    assert!(v.menu().is_none(), "settings close the menu");
+    v.open_menu(&ctx());
+    assert!(v.settings().is_none(), "the menu closes settings");
+}
+
+#[test]
+fn hit_prefers_menu_over_tabs() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let (_, plus) = v.tab_layout();
+    assert_eq!(v.hit(plus.x + plus.w + 2, 5), Hit::NewTabMenu);
+    v.open_menu(&ctx());
+    let l = v.menu_layout().unwrap();
+    let (i, r) = l.rows[0];
+    assert_eq!(v.hit(r.x + 2, r.y + 2), Hit::Menu(wraith_client::new_tab_menu::MenuHit::Row(i)));
+    assert_eq!(v.menu().unwrap().rows.len(), 5, "pwsh, cmd, separator, Settings, Command palette");
+}
+
+#[test]
+fn split_profile_uses_chosen_profile_along_longer_side() {
+    let mut v = view();
+    v.on_snapshot(snap(11), &ctx());
+    let out = v.split_profile(1, &ctx());
+    let [ClientMsg::Model(ModelCmd::Split { pane, axis, new_first, profile, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((*pane, *axis, *new_first, profile.as_str()), (3, Axis::Horizontal, false, "cmd"), "pane 3 is wider than tall: split right");
+    assert!(v.split_profile(7, &ctx()).msgs.is_empty());
+}
+
+#[test]
+fn hovering_a_menu_row_selects_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_menu(&ctx());
+    let (i, r) = v.menu_layout().unwrap().rows[1];
+    v.hover_at(r.x + 3, r.y + 3);
+    assert_eq!(v.menu().unwrap().selected, i);
 }

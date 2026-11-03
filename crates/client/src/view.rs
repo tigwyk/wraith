@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use wraith_config::{Action, CloseOnExit, Config, SplitTarget};
+use wraith_config::{Action, CloseOnExit, Config, Scheme, SplitTarget};
 use wraith_proto::model::{AgentInfo, AgentState, Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
 use wraith_proto::pane::{PaneCmd, SearchCmd, SpawnOpts};
 use wraith_proto::wire::{ClientMsg, PaneId};
@@ -13,7 +13,8 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
-use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
+use crate::new_tab_menu::{MenuLayout, NewTabMenu};
+use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items, profile_items};
 use crate::selection::Selection;
 use crate::settings::{SettingsLayout, SettingsView};
 
@@ -29,10 +30,14 @@ pub struct Geometry {
     pub caption_w: i32,
 }
 
+type Rgb8 = (u8, u8, u8);
+
 /// What a new pane needs: its profile's command line, colors and environment.
 pub struct SpawnCtx {
     pub config: Config,
     pub profiles: Vec<Profile>,
+    /// The colour schemes the profiles name, by name.
+    pub schemes: HashMap<String, Scheme>,
     /// Folder of the shell integration scripts.
     pub scripts: PathBuf,
     pub env: Vec<(String, String)>,
@@ -43,9 +48,31 @@ impl SpawnCtx {
         resolve(&self.profiles, name.filter(|n| !n.is_empty()).or(self.config.default_profile.as_deref()))
     }
 
-    pub fn spawn(&self, p: &Profile, cwd: Option<&str>, cells: (u16, u16), cell_px: (u32, u32)) -> SpawnOpts {
+    /// Foreground, background and 256-colour palette for a pane of `profile`: its scheme over the
+    /// global colours, or the global colours when it has none (or no longer exists).
+    pub fn colors(&self, profile: &str) -> (Rgb8, Rgb8, Vec<Rgb8>) {
         let c = &self.config;
         let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
+        let mut palette = c.palette;
+        let scheme = self.profiles.iter().find(|p| p.name == profile).and_then(|p| self.schemes.get(p.scheme.as_deref()?));
+        let (fg, bg) = match scheme {
+            Some(s) => {
+                palette[..16].copy_from_slice(&s.palette);
+                (s.fg, s.bg)
+            }
+            None => (c.foreground, c.background),
+        };
+        (rgb(fg), rgb(bg), palette.iter().copied().map(rgb).collect())
+    }
+
+    pub fn set_colors(&self, profile: &str) -> PaneCmd {
+        let (fg, bg, palette) = self.colors(profile);
+        PaneCmd::SetColors { fg, bg, palette }
+    }
+
+    pub fn spawn(&self, p: &Profile, cwd: Option<&str>, cells: (u16, u16), cell_px: (u32, u32)) -> SpawnOpts {
+        let c = &self.config;
+        let (default_fg, default_bg, palette) = self.colors(&p.name);
         SpawnOpts {
             cmdline: spawn_command(p, cwd, &self.scripts, c.shell_integration),
             cwd: process_cwd(p, cwd),
@@ -55,12 +82,22 @@ impl SpawnCtx {
             cell_w_px: cell_px.0,
             cell_h_px: cell_px.1,
             scrollback_lines: c.scrollback_lines(cells.0),
-            default_fg: rgb(c.foreground),
-            default_bg: rgb(c.background),
-            palette: c.palette.iter().copied().map(rgb).collect(),
+            default_fg,
+            default_bg,
+            palette,
             image_storage_limit: c.image_storage_limit,
             agent_detect: c.agent_detect.clone(),
         }
+    }
+}
+
+/// Where a new tab of `p` starts: its `dir`, with a leading `~` meaning the Windows profile folder for
+/// native shells (WSL resolves `~` itself).
+fn profile_dir(p: &Profile) -> Option<String> {
+    let d = p.dir.as_deref()?;
+    match (&p.kind, d.strip_prefix('~')) {
+        (wraith_server::profile::ShellKind::Wsl { .. }, _) | (_, None) => Some(d.to_string()),
+        (_, Some(rest)) => std::env::var("USERPROFILE").ok().map(|h| format!("{h}{}", rest.replace('/', "\\"))),
     }
 }
 
@@ -72,6 +109,7 @@ pub enum Ui {
     MoveTab,
     NewWindow,
     Settings,
+    NewTabMenu,
 }
 
 /// What a shell exit does (see `WindowView::on_exit`).
@@ -189,6 +227,7 @@ pub struct WindowView {
     configured_done: bool,
     palette: Option<Palette>,
     settings: Option<SettingsView>,
+    menu: Option<NewTabMenu>,
     /// The open find bar (scrollback search), if any.
     find: Option<Find>,
     /// The pointer's last position in the client area, and what is under it.
@@ -224,6 +263,7 @@ impl WindowView {
             configured_done: false,
             palette: None,
             settings: None,
+            menu: None,
             find: None,
             pointer: None,
             hovered: None,
@@ -242,6 +282,7 @@ impl WindowView {
     }
 
     pub fn open_settings(&mut self, s: SettingsView) {
+        self.menu = None;
         self.settings = Some(s);
         self.rehover();
     }
@@ -255,16 +296,49 @@ impl WindowView {
         self.settings.as_ref().map(|s| s.layout(self.geom.client, (self.geom.cell.0 as i32, self.geom.cell.1 as i32), self.geom.bar_h))
     }
 
+    pub fn menu(&self) -> Option<&NewTabMenu> {
+        self.menu.as_ref()
+    }
+
+    pub fn menu_mut(&mut self) -> Option<&mut NewTabMenu> {
+        self.menu.as_mut()
+    }
+
+    /// Open the new-tab menu over everything else; the palette and settings close.
+    pub fn open_menu(&mut self, ctx: &SpawnCtx) {
+        self.palette = None;
+        self.settings = None;
+        self.menu = Some(NewTabMenu::new(&ctx.profiles, &ctx.profile(None).name, &ctx.config.keybinds));
+        self.rehover();
+    }
+
+    pub fn close_menu(&mut self) {
+        self.menu = None;
+        self.rehover();
+    }
+
+    pub fn menu_layout(&self) -> Option<MenuLayout> {
+        let (_, plus) = self.tab_layout();
+        self.menu.as_ref().map(|m| m.layout(plus, self.geom.client, (self.geom.cell.0 as i32, self.geom.cell.1 as i32), self.geom.bar_h))
+    }
+
     pub fn palette(&self) -> Option<&Palette> {
         self.palette.as_ref()
     }
 
     pub fn open_palette(&mut self, mode: Mode, ctx: &SpawnCtx) {
         let items = match mode {
-            Mode::Palette => palette_items(&ctx.config.keybinds),
+            Mode::Palette => {
+                let mut items = palette_items(&ctx.config.keybinds);
+                let names: Vec<String> = ctx.profiles.iter().map(|p| p.name.clone()).collect();
+                let at = items.iter().rposition(|i| i.group == "Tabs").map_or(items.len(), |i| i + 1);
+                items.splice(at..at, profile_items(&names, &ctx.config.keybinds));
+                items
+            }
             Mode::Picker => picker_items(&self.snap, &ctx.config.workspaces),
             Mode::MoveTab => self.workspace.map(|w| move_tab_items(&self.snap, w)).unwrap_or_default(),
         };
+        self.menu = None;
         self.palette = Some(Palette::new(mode, items));
     }
 
@@ -458,6 +532,11 @@ impl WindowView {
             && let (Some(Hit::PaletteRow(i)), Some(p)) = (&self.hovered, &mut self.palette)
         {
             p.select(*i);
+        }
+        if changed
+            && let (Some(Hit::Menu(crate::new_tab_menu::MenuHit::Row(i))), Some(m)) = (&self.hovered, &mut self.menu)
+        {
+            m.hover(*i);
         }
         changed
     }
@@ -783,14 +862,10 @@ impl WindowView {
         let mut visible: Vec<PaneId> = self.visible().iter().map(|(p, _)| *p).collect();
         visible.sort_unstable();
         let mut msgs = Vec::new();
-        let c = &ctx.config;
-        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
         for &p in &visible {
             if self.colored.insert(p) {
-                msgs.push(ClientMsg::Cmd {
-                    pane: p,
-                    cmd: PaneCmd::SetColors { fg: rgb(c.foreground), bg: rgb(c.background), palette: c.palette.iter().copied().map(rgb).collect() },
-                });
+                let profile = self.snap.pane(p).map_or("", |m| m.profile.as_str());
+                msgs.push(ClientMsg::Cmd { pane: p, cmd: ctx.set_colors(profile) });
             }
         }
         msgs.extend(resizes);
@@ -840,7 +915,7 @@ impl WindowView {
         {
             if self.requested_tab_for != Some(ws.id) {
                 self.requested_tab_for = Some(ws.id);
-                msgs.push(self.new_tab_msg(ws.id, ctx));
+                msgs.push(self.new_tab_msg(ws.id, ctx, None));
             }
         } else {
             self.requested_tab_for = None;
@@ -858,17 +933,54 @@ impl WindowView {
         self.geom.cell
     }
 
-    fn new_tab_msg(&self, ws: WorkspaceId, ctx: &SpawnCtx) -> ClientMsg {
+    /// Split the focused pane toward `dir`, running `prof`, else the focused pane's profile, in its directory.
+    fn split_msg(&self, dir: Dir, prof: Option<&Profile>, ctx: &SpawnCtx) -> Out {
+        let Some(t) = self.active_tab() else { return Out::default() };
+        let meta = self.snap.pane(t.focused);
+        let prof = prof.unwrap_or_else(|| ctx.profile(meta.map(|m| m.profile.as_str())));
+        let cwd = meta.and_then(|m| m.cwd.clone());
+        let (axis, new_first) = match dir {
+            Dir::Right => (Axis::Horizontal, false),
+            Dir::Left => (Axis::Horizontal, true),
+            Dir::Down => (Axis::Vertical, false),
+            Dir::Up => (Axis::Vertical, true),
+        };
+        let cells = self.panes.get(&t.focused).map_or_else(|| self.est_cells(), |p| p.cells);
+        let cells = if axis == Axis::Horizontal { (cells.0 / 2, cells.1) } else { (cells.0, cells.1 / 2) };
+        Out::model(ModelCmd::Split {
+            pane: t.focused,
+            axis,
+            new_first,
+            profile: prof.name.clone(),
+            spawn: ctx.spawn(prof, cwd.as_deref(), (cells.0.max(2), cells.1.max(1)), self.cell_px()),
+        })
+    }
+
+    /// Split the focused pane with profile `i`, along its longer side (the menu's Alt+click).
+    pub fn split_profile(&self, i: usize, ctx: &SpawnCtx) -> Out {
+        let Some(p) = ctx.profiles.get(i) else { return Out::default() };
+        let wide = self.focused().and_then(|f| self.panes.get(&f)).is_none_or(|v| v.rect.w >= v.rect.h);
+        self.split_msg(if wide { Dir::Right } else { Dir::Down }, Some(p), ctx)
+    }
+
+    /// A new tab in `ws` running `prof`, else the workspace's profile.
+    fn new_tab_msg(&self, ws: WorkspaceId, ctx: &SpawnCtx, prof: Option<&Profile>) -> ClientMsg {
         let w = self.snap.workspace(ws);
+        let prof = prof.unwrap_or_else(|| ctx.profile(w.map(|w| w.profile.as_str())));
         let focused_cwd = self.focused().and_then(|p| self.snap.pane(p)).and_then(|p| p.cwd.clone());
-        let cwd = w.and_then(|w| w.root_dir.clone()).or(focused_cwd).or_else(|| std::env::var("USERPROFILE").ok());
-        let prof = ctx.profile(w.map(|w| w.profile.as_str()));
+        let cwd = profile_dir(prof)
+            .or_else(|| w.and_then(|w| w.root_dir.clone()))
+            .or(focused_cwd)
+            .or_else(|| std::env::var("USERPROFILE").ok());
         ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: prof.name.clone(), spawn: ctx.spawn(prof, cwd.as_deref(), self.est_cells(), self.cell_px()) })
     }
 
     pub fn action(&mut self, a: Action, ctx: &SpawnCtx) -> Out {
         if a == Action::OpenSettings {
             return Out { ui: Some(Ui::Settings), ..Out::default() };
+        }
+        if a == Action::OpenNewTabMenu {
+            return Out { ui: Some(Ui::NewTabMenu), ..Out::default() };
         }
         if a == Action::ToggleSidebar {
             let visible = !self.sidebar_visible;
@@ -880,34 +992,18 @@ impl WindowView {
         let active_idx = tab.as_ref().and_then(|t| tabs.iter().position(|&x| x == t.id));
         let select = |i: usize| Out::model(ModelCmd::SelectTab(tabs[i]));
         match a {
-            Action::NewTab => Out::msgs(vec![self.new_tab_msg(ws, ctx)]),
+            Action::NewTab => Out::msgs(vec![self.new_tab_msg(ws, ctx, None)]),
+            Action::NewTabProfile(n) => match ctx.profiles.get(usize::from(n).saturating_sub(1)) {
+                Some(p) => Out::msgs(vec![self.new_tab_msg(ws, ctx, Some(p))]),
+                None => Out::default(),
+            },
             Action::CloseTab => tab.map_or_else(Out::default, |t| Out::model(ModelCmd::CloseTab(t.id))),
             Action::NextTab | Action::PreviousTab if tabs.len() > 1 => {
                 let i = active_idx.unwrap_or(0);
                 select(if a == Action::NextTab { (i + 1) % tabs.len() } else { (i + tabs.len() - 1) % tabs.len() })
             }
             Action::GotoTab(n) if (1..=tabs.len()).contains(&usize::from(n)) => select(usize::from(n) - 1),
-            Action::NewSplit(dir) => {
-                let Some(t) = tab else { return Out::default() };
-                let meta = self.snap.pane(t.focused);
-                let prof = ctx.profile(meta.map(|m| m.profile.as_str()));
-                let cwd = meta.and_then(|m| m.cwd.clone());
-                let (axis, new_first) = match dir {
-                    Dir::Right => (Axis::Horizontal, false),
-                    Dir::Left => (Axis::Horizontal, true),
-                    Dir::Down => (Axis::Vertical, false),
-                    Dir::Up => (Axis::Vertical, true),
-                };
-                let cells = self.panes.get(&t.focused).map_or_else(|| self.est_cells(), |p| p.cells);
-                let cells = if axis == Axis::Horizontal { (cells.0 / 2, cells.1) } else { (cells.0, cells.1 / 2) };
-                Out::model(ModelCmd::Split {
-                    pane: t.focused,
-                    axis,
-                    new_first,
-                    profile: prof.name.clone(),
-                    spawn: ctx.spawn(prof, cwd.as_deref(), (cells.0.max(2), cells.1.max(1)), self.cell_px()),
-                })
-            }
+            Action::NewSplit(dir) => self.split_msg(dir, None, ctx),
             Action::GotoSplit(target) => {
                 let Some(t) = tab else { return Out::default() };
                 let rects = self.visible();
@@ -1038,6 +1134,9 @@ impl WindowView {
         {
             return l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(Hit::Palette, |(i, _)| Hit::PaletteRow(*i));
         }
+        if let Some(h) = self.menu_layout().and_then(|l| NewTabMenu::hit(&l, x, y)) {
+            return Hit::Menu(h);
+        }
         if let Some(h) = self.settings_layout().and_then(|l| SettingsView::hit(&l, x, y)) {
             return Hit::Settings(h);
         }
@@ -1051,6 +1150,7 @@ impl WindowView {
             regions: &regions,
             tabs: &tabs,
             new_tab,
+            new_tab_menu: chrome::chevron_rect(new_tab, self.geom.cell.0 as i32),
             workspaces: &workspaces,
             new_workspace,
             agents: &self.agent_rects(),

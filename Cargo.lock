@@ -1159,6 +1159,7 @@ dependencies = [
  "crossbeam-channel",
  "embed-resource",
  "notify",
+ "png",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -1174,6 +1175,7 @@ dependencies = [
 name = "wraith-config"
 version = "0.3.0"
 dependencies = [
+ "serde_json",
  "wraith-proto",
 ]
 

@@ -213,10 +213,13 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
     if app.config.keybinds != old.keybinds {
         app.matcher = KeybindMatcher::new(&app.config.keybinds);
     }
-    if (app.config.foreground, app.config.background, app.config.palette) != (old.foreground, old.background, old.palette) {
+    let schemes = |a: &App| (a.spawn_ctx.profiles.iter().map(|p| (p.name.clone(), p.scheme.clone())).collect::<Vec<_>>(), a.spawn_ctx.schemes.clone());
+    let old_schemes = schemes(app);
+    // Rebuilt first: resend_colors reads each pane's colours from it.
+    app.rebuild_spawn_ctx();
+    if (app.config.foreground, app.config.background, app.config.palette) != (old.foreground, old.background, old.palette) || schemes(app) != old_schemes {
         app.resend_colors();
     }
-    app.rebuild_spawn_ctx();
     let c = &app.config;
     // shortcut: `command` changes apply on the next app start, not on pane restart (pane keeps its options).
     let fonts_changed = (&c.font_family, &c.font_feature) != (&old.font_family, &old.font_feature)
