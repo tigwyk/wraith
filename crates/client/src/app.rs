@@ -56,6 +56,12 @@ pub fn needs_transparency(c: &Config, profiles: &[Profile]) -> bool {
     c.background_opacity < 1.0 || profiles.iter().any(|p| p.opacity.is_some_and(|o| o < 1.0))
 }
 
+/// The opacity a pane is drawn at: an HWND swap chain ignores alpha, so below 1 it would only
+/// darken the pane (kept after a reload, spec §4.2).
+pub fn drawn_opacity(composition: bool, look_opacity: f32) -> f32 {
+    if composition { look_opacity } else { 1.0 }
+}
+
 /// What a reload does to the swap chain (spec §4.2).
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScChange {
@@ -1571,15 +1577,16 @@ impl App {
         for &(id, rect) in &panes {
             let exit = self.view.pane_exit(id).map(|code| format!("[process exited {code}] Enter: restart · ctrl+shift+w: close"));
             let look = self.view.look(id);
+            let opacity = drawn_opacity(self.sc.is_composition(), look.opacity);
             let fonts = self.fonts.get(look.font);
-            let opts = DrawOpts { font: look.font, selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity: look.opacity };
+            let opts = DrawOpts { font: look.font, selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
             match self.grids.get_mut(&id) {
                 Some(g) => {
                     g.set_overlay(Overlay::Exit, exit.as_deref(), fonts);
                     let origin = ((rect.x + look.pad.0) as f32, (rect.y + look.pad.1) as f32);
                     g.push_layers(&mut batches, &mut q, &self.images, id, &self.gpu, &mut self.atlas, fonts, origin, &fonts.metrics(), &opts, rect);
                 }
-                None => Painter { q: &mut q }.rect(rect, bg, look.opacity),
+                None => Painter { q: &mut q }.rect(rect, bg, opacity),
             }
             let dim = self.view.dim_alpha(id);
             if dim > 0.0 {

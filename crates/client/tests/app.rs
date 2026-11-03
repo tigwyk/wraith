@@ -1,7 +1,7 @@
 #![cfg(windows)]
 use std::time::{Duration, Instant};
 
-use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, needs_transparency, pixel_to_cell, ScChange, swapchain_change};
+use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, needs_transparency, pixel_to_cell, ScChange, drawn_opacity, swapchain_change};
 use wraith_client::font::CellMetrics;
 use wraith_config::{Action, parse_keybind};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
@@ -195,4 +195,10 @@ fn swapchain_change_on_reload() {
     assert_eq!(swapchain_change(true, true, false), ScChange::Switch, "composition to HWND switches live");
     assert_eq!(swapchain_change(false, false, true), ScChange::KeepAndNotify, "HWND to composition waits for a new window");
     assert_eq!(swapchain_change(false, true, true), ScChange::Keep, "told once per crossing");
+}
+
+#[test]
+fn hwnd_swap_chain_draws_panes_opaque() {
+    assert_eq!(drawn_opacity(true, 0.7), 0.7);
+    assert_eq!(drawn_opacity(false, 0.7), 1.0, "alpha is ignored there: 0.7 would only darken");
 }
