@@ -795,6 +795,14 @@ impl<'alloc> RenderState<'alloc> {
         Ok(Snapshot(self))
     }
 
+    /// A snapshot of what the last update captured, without updating.
+    ///
+    /// Lets an embedder keep reading the captured frame during a
+    /// [render hold](crate::Terminal::on_render_hold).
+    pub fn snapshot(&mut self) -> Snapshot<'alloc, '_> {
+        Snapshot(self)
+    }
+
     /// Begin an update of a render state instance from a terminal.
     ///
     /// Every begin must be completed with [`Update::end`] before the render

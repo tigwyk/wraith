@@ -122,14 +122,21 @@ struct Outbox {
     clipboard: Option<String>,
     /// Agent signals seen in the output (spec §5.2).
     agent: Vec<AgentSignal>,
+    /// Synchronized output (mode 2026): when the program's hold began, and whether the render state
+    /// holds a captured frame not yet sent.
+    hold: Option<Instant>,
+    captured: bool,
 }
+
+/// A program that never ends its synchronized-output hold must not freeze the pane (Ghostty's limit).
+const HOLD_MAX: Duration = Duration::from_secs(1);
 
 struct Pane {
     opts: PaneOptions,
     pty: Pty,
     chunks: Receiver<Vec<u8>>,
     term: Terminal<'static, 'static>,
-    rs: RenderState<'static>,
+    rs: Rc<RefCell<RenderState<'static>>>,
     keys: key::Encoder<'static>,
     key_ev: key::Event<'static>,
     mice: mouse::Encoder<'static>,
@@ -197,14 +204,15 @@ impl Pane {
         }
         term.set_kitty_image_storage_limit(opts.image_storage_limit).map_err(io_err)?;
         let outbox = Rc::new(RefCell::new(Outbox::default()));
-        install_callbacks(&mut term, &outbox).map_err(io_err)?;
+        let rs = Rc::new(RefCell::new(RenderState::new().map_err(io_err)?));
+        install_callbacks(&mut term, &outbox, &rs).map_err(io_err)?;
         let mut pane = Pane {
             size: (cols, rows, opts.cell_w_px, opts.cell_h_px),
             opts,
             pty,
             chunks,
             term,
-            rs: RenderState::new().map_err(io_err)?,
+            rs,
             keys: key::Encoder::new().map_err(io_err)?,
             key_ev: key::Event::new().map_err(io_err)?,
             mice: mouse::Encoder::new().map_err(io_err)?,
@@ -562,12 +570,30 @@ impl Pane {
     }
 
     fn maybe_send_frame(&mut self) {
+        let mut ob = self.outbox.borrow_mut();
+        if ob.hold.is_some_and(|t| t.elapsed() >= HOLD_MAX) {
+            ob.hold = None;
+            let _ = self.term.set_mode(Mode::SYNC_OUTPUT, false);
+            self.changed = true;
+        }
         if self.outstanding || !self.changed {
             return;
         }
+        // During a hold the screen is mid-redraw: send only the frame captured when it began.
+        let held = ob.hold.is_some();
+        if !std::mem::take(&mut ob.captured) && held {
+            return;
+        }
+        drop(ob);
         self.changed = false;
         // Sent even with no dirty rows: the cursor or colors may have changed.
-        let frame = self.rs.update(&self.term).and_then(|snap| build_frame(&snap, self.seq + 1, self.force_full));
+        let mut rs = self.rs.borrow_mut();
+        let frame = if held {
+            build_frame(&rs.snapshot(), self.seq + 1, self.force_full)
+        } else {
+            rs.update(&self.term).and_then(|snap| build_frame(&snap, self.seq + 1, self.force_full))
+        };
+        drop(rs);
         let Ok(mut frame) = frame else { return };
         if let Ok(sb) = self.term.scrollbar() {
             frame.scrollbar = wraith_proto::Scrollbar { total: sb.total, offset: sb.offset, len: sb.len };
@@ -646,7 +672,22 @@ fn start_pty(opts: &PaneOptions, cols: u16, rows: u16) -> io::Result<(Pty, Recei
     Ok((pty, rx))
 }
 
-fn install_callbacks(term: &mut Terminal<'static, 'static>, outbox: &Rc<RefCell<Outbox>>) -> libghostty_vt::error::Result<()> {
+fn install_callbacks(
+    term: &mut Terminal<'static, 'static>,
+    outbox: &Rc<RefCell<Outbox>>,
+    rs: &Rc<RefCell<RenderState<'static>>>,
+) -> libghostty_vt::error::Result<()> {
+    let (ob, rs) = (outbox.clone(), rs.clone());
+    term.on_render_hold(move |t, held| {
+        let mut ob = ob.borrow_mut();
+        if held {
+            // The screen now holds the program's finished frame; capture it before the next is drawn.
+            ob.captured |= rs.try_borrow_mut().is_ok_and(|mut s| s.update(t).is_ok());
+            ob.hold = Some(Instant::now());
+        } else {
+            ob.hold = None;
+        }
+    })?;
     let ob = outbox.clone();
     term.on_pty_write(move |_t, data| ob.borrow_mut().pty.extend_from_slice(data))?;
     let ob = outbox.clone();

@@ -40,6 +40,29 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
             }
         }
+        Some("sync-split") => {
+            // `sync-split <frames>`: synchronized redraws flushed in two halves, so any frame sent
+            // mid-redraw shows two frame numbers.
+            let n: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20);
+            for i in 0..n {
+                let _ = write!(out, "\x1b[?2026h\x1b[H");
+                for r in 0..20 {
+                    let _ = write!(out, "row {r:>2} frame-{i}\x1b[K\r\n");
+                    if r == 9 {
+                        let _ = out.flush();
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
+                }
+                let _ = write!(out, "\x1b[?2026l");
+                let _ = out.flush();
+            }
+        }
+        Some("sync-hang") => {
+            // Starts a hold and never ends it: the terminal must give up and show the text.
+            let _ = write!(out, "\x1b[?2026hheld-text");
+            let _ = out.flush();
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
         Some("print") => out.write_all(args[1..].join(" ").as_bytes()).unwrap(),
         Some("title") => out.write_all(b"\x1b]0;wraith-title\x07").unwrap(),
         Some(name) => match wraith_server::testseq::get(name) {

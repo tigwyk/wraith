@@ -545,3 +545,25 @@ fn scrollback_keeps_the_configured_lines_not_a_byte_default() {
     let top = pump(&h, &mut m, secs(5), |m, _| m.rows.get(&0).is_some_and(|r| r.starts_with("line-1 "))).0;
     assert!(top, "line-1 is still the oldest line; top is {:?}", m.rows.get(&0));
 }
+
+#[test]
+fn synchronized_redraws_are_never_sent_half_drawn() {
+    let h = spawn_pane(opts(&emit("sync-split 20"))).unwrap();
+    let mut torn = None;
+    let (done, _) = pump(&h, &mut Mirror::default(), secs(10), |m, _| {
+        let frames: std::collections::BTreeSet<&str> =
+            m.rows.values().filter_map(|r| r.split_whitespace().find(|w| w.starts_with("frame-"))).collect();
+        if frames.len() > 1 {
+            torn.get_or_insert_with(|| format!("{frames:?}"));
+        }
+        m.rows.values().filter(|r| r.contains("frame-19")).count() == 20
+    });
+    assert!(done, "last redraw never arrived");
+    assert_eq!(torn, None, "a frame mixed two redraws");
+}
+
+#[test]
+fn a_hold_that_never_ends_times_out() {
+    let h = spawn_pane(opts(&emit("sync-hang"))).unwrap();
+    assert!(wait_text(&h, "held-text", secs(4)));
+}
