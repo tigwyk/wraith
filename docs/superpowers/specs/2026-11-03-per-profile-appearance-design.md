@@ -79,7 +79,7 @@ Values are checked when parsed: a size from 4 to 72, padding from 0 to 32 per ax
 `App.fonts` becomes a table of `FontStack`s, indexed by a `FontId` (`u16`), keyed by (family list, size in points, features), all at the window's DPI.
 - **Entry 0** is the window font (`font-family`, `font-size`). All chrome draws with entry 0, and only entry 0.
 - **Loading.** An entry loads when a pane that needs it first gets a look (§3.3), when the pane appears or is spawned. Nothing loads on a keystroke or a frame. The same key always gives the same id.
-- **Pruning.** At relayout, entries that no visible pane uses are dropped, except entry 0. Their glyphs stay in the atlas until its next clear.
+- **Pruning.** After looks or zooms change, entries that no look uses (the window look, each profile's look, each zoomed pane's look) are dropped, except entry 0. Their glyphs stay in the atlas until its next clear. Ids are never reused until the table and atlas are rebuilt together, so a stale glyph can never be returned for another font.
 - **Rebuild.** A DPI change, or a reload that changes `font-family`, `font-feature`, `font-size` or any `profile-font`/`profile-font-size`, rebuilds the table and the atlas (as `rebuild_fonts` does today), then re-sends every visible pane (`PaneCmd::Redraw`).
 
 ### 3.2 Atlas
@@ -147,7 +147,7 @@ The first implementation task is a throwaway probe. It draws a composition swap 
   - `pixel_to_cell` uses the pane's look;
   - zoom changes only the focused pane, `Ctrl+0` resets it, and chrome geometry is unchanged;
   - a pane without profile appearance gets exactly today's numbers.
-- **Font table:** the same key gives the same id; unused entries are dropped at relayout, but entry 0 never is; an uninstalled family falls back to the window families at the profile's size. Two fonts' `GlyphKey`s with the same face index and glyph do not collide.
+- **Font table:** the same key gives the same id; entries no look uses are dropped, but entry 0 never is; ids are not reused after a drop; an uninstalled family falls back to the window families at the profile's size. Two fonts' `GlyphKey`s with the same face index and glyph do not collide.
 - **Swap chain choice:** all opacities at 1 → HWND; any below 1 → composition; crossing on reload → recreate.
 - **Live check** (`docs/per-profile-appearance-acceptance.md`). The setup is spec 1's: a debug build, a private `WRAITH_PIPE_NAME` and `WRAITH_LAYOUT_PATH`, a fake `APPDATA` and `LOCALAPPDATA` holding a copy of the WT settings (the originals are only read), the window shown without activation, and only posted input. `PrintWindow` captures fonts and padding. For transparency, a solid-colour helper window is placed behind Wraith without activation, and the screen region is captured. `scripts/keys.ps1` and `scripts/shot.ps1` are not used. The real `%APPDATA%\wraith\config` and `target\release` are not touched. Checks:
   - a split of two profiles shows two cell sizes, and each shell reports its own size (`tput cols`/`lines` or `$Host.UI.RawUI.WindowSize`);
