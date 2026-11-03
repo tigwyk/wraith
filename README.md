@@ -127,6 +127,7 @@ Any other tool or script can report its state with
 | `wr ctl kill <pane>` / `wr ctl server-stop` | Close a pane / stop the server and its shells |
 | `wr events --json` | Stream workspace, pane and agent changes as JSON lines |
 | `wr config check [path]` | Check a config file |
+| `wr update` | Install the latest GitHub release, restarting Wraith with your tabs and history (shells restart) |
 
 The full design lives in the
 [spec](docs/superpowers/specs/2026-11-01-wraith-terminal-design.md).
