@@ -1,10 +1,10 @@
 name: pages
 
-# Publishes site/ (plus the mascot from assets/icon) to GitHub Pages.
+# Publishes site/ (plus the mascot from assets/icon and the remote installer) to GitHub Pages.
 on:
   push:
     branches: [main]
-    paths: [site/**, assets/icon/**, .github/workflows/pages.yml]
+    paths: [site/**, assets/icon/**, packaging/install.ps1, .github/workflows/pages.yml]
   workflow_dispatch:
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
         run: |
           mkdir -p _site
           cp -r site/. _site/
-          cp assets/icon/wraith.svg assets/icon/wraith-256.png _site/
+          cp assets/icon/wraith.svg assets/icon/wraith-256.png packaging/install.ps1 _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

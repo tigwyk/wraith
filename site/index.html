@@ -282,8 +282,8 @@
     <div>
       <div class="kicker">Install</div>
       <h2>Two minutes, no admin.</h2>
-      <p class="sub" style="margin-bottom:20px">Grab the zip from the <a href="https://github.com/tigwyk/wraith/releases/latest">latest release</a>, unpack it, and run the installer. It copies Wraith to <code>%LOCALAPPDATA%\Programs\Wraith</code>, puts <code>wr</code> on your <code>PATH</code>, and adds the Start Menu shortcut toasts need.</p>
-      <pre class="code"><button class="copy" data-copy=".\install.ps1">Copy</button><span class="p">PS&gt;</span> .\install.ps1            <span class="d"># or -DryRun to see what it does</span>
+      <p class="sub" style="margin-bottom:20px">One line in PowerShell installs the <a href="https://github.com/tigwyk/wraith/releases/latest">latest release</a>. It copies Wraith to <code>%LOCALAPPDATA%\Programs\Wraith</code>, puts <code>wr</code> on your <code>PATH</code>, and adds the Start Menu shortcut toasts need. Prefer the zip? Unpack it and run <code>.\install.ps1</code>.</p>
+      <pre class="code"><button class="copy" data-copy="irm https://tigwyk.github.io/wraith/install.ps1 | iex">Copy</button><span class="p">PS&gt;</span> irm https://tigwyk.github.io/wraith/install.ps1 | iex
 <span class="p">PS&gt;</span> wr config check          <span class="d"># %APPDATA%\wraith\config</span></pre>
     </div>
     <div>

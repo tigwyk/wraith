@@ -1,4 +1,5 @@
-# Install Wraith for the current user (no admin): run from the unpacked release folder.
+# Install Wraith for the current user (no admin): run from the unpacked release folder, or remotely:
+#   irm https://tigwyk.github.io/wraith/install.ps1 | iex
 #   install.ps1 [-Prefix <dir>] [-DryRun]
 # Copies the files to <Prefix> (default %LOCALAPPDATA%\Programs\Wraith), puts wr.exe on the user PATH,
 # creates the Start Menu shortcut (with the app id toasts need) and an "Apps & features" entry.
@@ -6,6 +7,29 @@
 param([string]$Prefix = (Join-Path $env:LOCALAPPDATA 'Programs\Wraith'), [switch]$DryRun)
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
+
+# Run remotely (no release files alongside): fetch the latest release and run the installer it ships.
+# A separate process, since the default execution policy blocks running a downloaded .ps1 file.
+if (-not $src -or -not (Test-Path (Join-Path $src 'wraith.exe'))) {
+    $rel = Invoke-RestMethod 'https://api.github.com/repos/tigwyk/wraith/releases/latest'
+    $asset = $rel.assets | Where-Object name -Like 'wraith-*-x64.zip' | Select-Object -First 1
+    if (-not $asset) { throw "release $($rel.tag_name) has no x64 zip" }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "wraith-install-$([guid]::NewGuid())"
+    New-Item -ItemType Directory $tmp | Out-Null
+    try {
+        "downloading Wraith $($rel.tag_name)"
+        $zip = Join-Path $tmp $asset.name
+        Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing
+        Expand-Archive $zip (Join-Path $tmp 'files')
+        $run = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $tmp 'files\install.ps1'), '-Prefix', $Prefix
+        if ($DryRun) { $run += '-DryRun' }
+        & powershell.exe @run
+        if ($LASTEXITCODE) { throw "the installer failed (exit $LASTEXITCODE)" }
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+    return
+}
 $files = 'wraith.exe', 'wr.exe', 'OpenConsole.exe', 'conpty.dll', 'install.ps1', 'uninstall.ps1', 'THIRD-PARTY-NOTICES.txt', 'LICENSE-libghostty-rs.txt'
 foreach ($f in $files) { if (-not (Test-Path (Join-Path $src $f))) { throw "missing $f next to install.ps1" } }
 
