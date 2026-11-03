@@ -22,6 +22,7 @@ use wraith_proto::wire::PaneId;
 use wraith_proto::{Color, CursorShape, CursorState, FrameDelta, ImagePlacement, SearchView, SelRange, StyleFlags};
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
+use crate::font_table::FontId;
 use crate::font::{CellMetrics, FaceId, FontStack};
 use crate::gpu::Gpu;
 use crate::images::{ImageStore, image_quad};
@@ -38,6 +39,7 @@ pub enum Overlay {
 }
 
 pub struct DrawOpts {
+    pub font: FontId,
     pub selection: Option<SelRange>,
     pub selection_color: (u8, u8, u8),
     pub cursor_blink_on: bool,
@@ -533,7 +535,7 @@ impl GridRenderer {
         let block_at = self.block_cursor(opts);
         for (y, row) in self.rows.iter().enumerate() {
             for g in &row.glyphs {
-                let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
+                let e = atlas.get(gpu, fonts, GlyphKey { font: opts.font, face: g.face, glyph: g.glyph, subpx: 0 });
                 if e.w == 0 {
                     continue;
                 }
@@ -599,7 +601,7 @@ impl GridRenderer {
             let (px, py) = cell_xy(x, y as usize);
             solid(q, px, py, cw * f32::from(*width), ch, self.fg);
             for g in &row.glyphs {
-                let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
+                let e = atlas.get(gpu, fonts, GlyphKey { font: opts.font, face: g.face, glyph: g.glyph, subpx: 0 });
                 if e.w == 0 {
                     continue;
                 }

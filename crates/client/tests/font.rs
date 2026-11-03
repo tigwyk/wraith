@@ -72,7 +72,7 @@ fn atlas_returns_same_entry_for_same_key() {
     let fonts = stack("Cascadia Mono", 96);
     let mut atlas = GlyphAtlas::new(&gpu, 512).unwrap();
     let g = fonts.shape("A", StyleFlags(0))[0];
-    let key = GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 };
+    let key = GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 };
     let a = atlas.get(&gpu, &fonts, key);
     let b = atlas.get(&gpu, &fonts, key);
     assert_eq!(a, b);
@@ -88,7 +88,7 @@ fn atlas_survives_overflow() {
     let mut atlas = GlyphAtlas::new(&gpu, 64).unwrap(); // tiny: forces resets
     for c in ('!'..='~').chain('À'..='ÿ') {
         let g = fonts.shape(&c.to_string(), StyleFlags(0))[0];
-        let e = atlas.get(&gpu, &fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
+        let e = atlas.get(&gpu, &fonts, GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 });
         assert!(e.uv[2] <= 1.0 && e.uv[3] <= 1.0);
     }
 }
@@ -114,4 +114,17 @@ fn monospace_families_lists_installed_monospace_only() {
     assert!(f.iter().any(|n| n == "Consolas"), "{f:?}");
     assert!(!f.iter().any(|n| n == "Arial"), "{f:?}");
     assert!(f.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+}
+
+#[test]
+fn two_fonts_same_glyph_do_not_collide() {
+    let gpu = Gpu::new().unwrap();
+    let small = FontStack::new(&["Cascadia Mono".to_string()], 12.0, 96, &[]).unwrap();
+    let big = FontStack::new(&["Cascadia Mono".to_string()], 24.0, 96, &[]).unwrap();
+    let mut atlas = GlyphAtlas::new(&gpu, 512).unwrap();
+    let g = small.shape("A", StyleFlags(0))[0];
+    let k = GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 };
+    let a = atlas.get(&gpu, &small, k);
+    let b = atlas.get(&gpu, &big, GlyphKey { font: 1, ..k });
+    assert_ne!(a.h, b.h);
 }

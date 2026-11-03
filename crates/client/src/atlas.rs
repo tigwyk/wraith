@@ -15,10 +15,12 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SA
 use windows::core::Result;
 
 use crate::font::{FaceId, FontStack};
+use crate::font_table::FontId;
 use crate::gpu::Gpu;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
+    pub font: FontId,
     pub face: FaceId,
     pub glyph: u16,
     /// Subpixel x offset in quarter pixels (0..4).

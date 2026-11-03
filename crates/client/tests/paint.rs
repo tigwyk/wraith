@@ -27,7 +27,7 @@ fn frame(bg: (u8, u8, u8)) -> FrameDelta {
 }
 
 fn opts() -> DrawOpts {
-    DrawOpts { selection: None, selection_color: (1, 1, 1), cursor_blink_on: true, focused: true, opacity: 1.0 }
+    DrawOpts { font: 0, selection: None, selection_color: (1, 1, 1), cursor_blink_on: true, focused: true, opacity: 1.0 }
 }
 
 const CLEAR: [f32; 4] = [50.0 / 255.0, 60.0 / 255.0, 70.0 / 255.0, 1.0];

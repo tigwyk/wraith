@@ -1450,7 +1450,7 @@ impl App {
         // Pane grids first, then chrome over and around them.
         for &(id, rect) in &panes {
             let exit = self.view.pane_exit(id).map(|code| format!("[process exited {code}] Enter: restart · ctrl+shift+w: close"));
-            let opts = DrawOpts { selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
+            let opts = DrawOpts { font: 0, selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
             match self.grids.get_mut(&id) {
                 Some(g) => {
                     g.set_overlay(Overlay::Exit, exit.as_deref(), &self.fonts);

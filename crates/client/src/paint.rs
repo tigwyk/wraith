@@ -38,7 +38,7 @@ impl Painter<'_> {
         let m = fonts.metrics();
         if s.chars().any(|c| c != ' ') {
             for g in fonts.shape(s, StyleFlags(0)) {
-                let e = atlas.get(gpu, fonts, GlyphKey { face: g.face, glyph: g.glyph, subpx: 0 });
+                let e = atlas.get(gpu, fonts, GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 });
                 if e.w == 0 {
                     continue;
                 }

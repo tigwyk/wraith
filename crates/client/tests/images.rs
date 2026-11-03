@@ -88,7 +88,7 @@ fn solid(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {
 impl Rig {
     fn draw(&mut self) {
         let m = self.fonts.metrics();
-        let opts = DrawOpts { selection: None, selection_color: (0, 0, 0), cursor_blink_on: true, focused: true, opacity: 1.0 };
+        let opts = DrawOpts { font: 0, selection: None, selection_color: (0, 0, 0), cursor_blink_on: true, focused: true, opacity: 1.0 };
         let (mut out, mut q): (Vec<Batch>, Vec<Quad>) = (Vec::new(), Vec::new());
         self.grid.push_layers(&mut out, &mut q, &self.store, 1, &self.gpu, &mut self.atlas, &self.fonts, (0.0, 0.0), &m, &opts, Rect { x: 0, y: 0, w: 200, h: 100 });
         out.push(Batch { quads: q, texture: None });
