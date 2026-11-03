@@ -86,7 +86,8 @@ impl GlyphAtlas {
         if let Some(e) = self.map.get(&key) {
             return *e;
         }
-        let (face, color) = fonts.face(key.face);
+        // Not cached: the face may be added later, and this key must then rasterize.
+        let Some((face, color)) = fonts.face(key.face) else { return AtlasEntry { uv: [0.0; 4], w: 0, h: 0, bearing: (0, 0), color: false } };
         let bmp = rasterize(fonts, &face, color, key).unwrap_or_default();
         let e = self.insert(gpu, &bmp);
         self.map.insert(key, e);

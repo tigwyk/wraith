@@ -1075,6 +1075,21 @@ fn zoom_changes_only_that_pane() {
 }
 
 #[test]
+fn fractional_zoom_steps_return_to_zero() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    for _ in 0..10 {
+        v.set_zoom(2, v.zoom(2) + 0.1, look(1, (12, 24), 4));
+    }
+    assert_eq!(v.zoom(2), 1.0);
+    for _ in 0..10 {
+        v.set_zoom(2, v.zoom(2) - 0.1, look(1, (12, 24), 4));
+    }
+    assert_eq!(v.zoom(2), 0.0);
+    assert!(v.zoomed_panes().is_empty(), "{:?}", v.zoomed_panes());
+}
+
+#[test]
 fn zoom_past_min_size_keeps_at_least_2x1() {
     let mut v = looked_view();
     v.on_snapshot(snap(10), &ctx());

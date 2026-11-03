@@ -110,7 +110,7 @@ pub struct Look { pub font: FontId, pub cell: (u32, u32), pub pad: (i32, i32), p
 
 ### 3.5 Reload
 
-`reload::apply_config` treats a change to any `profile-font`, `profile-font-size`, `profile-padding` or `profile-opacity` line, or to a WT value behind them, the way it treats `font-*` and `window-padding-*` today. It rebuilds what §3.1 says, recomputes every look, runs relayout and redraws. An opacity-only change recomputes looks and redraws, and may switch the swap chain (§4.2).
+`reload::apply_config` treats a change to any `profile-font`, `profile-font-size`, `profile-padding` or `profile-opacity` line, or to a WT value behind them, the way it treats `font-*` and `window-padding-*` today. It rebuilds what §3.1 says, recomputes every look, runs relayout and redraws. An opacity-only change recomputes looks and redraws; the swap chain kind does not change (§4.2).
 
 ## 4. Transparency
 
@@ -123,7 +123,7 @@ The swap chain is a flip-model swap chain on the HWND (`CreateSwapChainForHwnd`)
 - **When.** The window needs transparency when `background-opacity`, or the opacity of any profile in the list, is below 1. It is a pure function of the config and the profile list, unit tested.
 - **With transparency:** `CreateSwapChainForComposition` with `DXGI_ALPHA_MODE_PREMULTIPLIED`, the same format, flip-discard and the frame-latency waitable flag, with `SetMaximumFrameLatency(1)`. It is shown through a DirectComposition device, a target for the HWND, and one visual whose content is the swap chain. The window keeps `WS_EX_NOREDIRECTIONBITMAP`.
 - **Without:** the HWND swap chain stays exactly as today, so the common case takes no latency risk (parent §6.3).
-- **Switching.** A reload or WT change that makes every opacity 1 while the window has a composition swap chain recreates it as the HWND swap chain at the current size. A change that makes transparency needed while the window has an HWND swap chain keeps the HWND swap chain and shows the toast `Transparency applies to new windows`, once per crossing, because DWM keeps the released HWND swap chain's last frame under the new visual. The `DWMSBT_MAINWINDOW` (Mica) call is removed in both cases.
+- **Switching.** A window keeps the swap chain kind it has. One started opaque keeps the HWND swap chain when a reload or WT change asks for transparency and shows the toast `Transparency applies to new windows`, once per crossing, because DWM keeps the released HWND swap chain's last frame under the new visual. One started transparent stays on the composition swap chain when every opacity returns to 1, drawn opaque at opacity 1: the Task 1 probe measured no latency cost for it, and a slider touching 1.0 must not cost the window its transparency. The `DWMSBT_MAINWINDOW` (Mica) call is removed in both cases.
 
 ### 4.3 What is see-through
 
@@ -148,7 +148,7 @@ The first implementation task is a throwaway probe. It draws a composition swap 
   - zoom changes only the focused pane, `Ctrl+0` resets it, and chrome geometry is unchanged;
   - a pane without profile appearance gets exactly today's numbers.
 - **Font table:** the same key gives the same id; entries no look uses are dropped, but entry 0 never is; ids are not reused after a drop; an uninstalled family falls back to the window families at the profile's size. Two fonts' `GlyphKey`s with the same face index and glyph do not collide.
-- **Swap chain choice:** all opacities at 1 → HWND; any below 1 → composition; on reload, composition → HWND recreates, and HWND → composition keeps the HWND swap chain and notifies once.
+- **Swap chain choice:** all opacities at 1 → HWND; any below 1 → composition; on reload, a window keeps its swap chain kind: composition stays composition (drawn opaque at opacity 1), and HWND → composition keeps the HWND swap chain and notifies once.
 - **Live check** (`docs/per-profile-appearance-acceptance.md`). The setup is spec 1's: a debug build, a private `WRAITH_PIPE_NAME` and `WRAITH_LAYOUT_PATH`, a fake `APPDATA` and `LOCALAPPDATA` holding a copy of the WT settings (the originals are only read), the window shown without activation, and only posted input. `PrintWindow` captures fonts and padding. For transparency, a solid-colour helper window is placed behind Wraith without activation, and the screen region is captured. `scripts/keys.ps1` and `scripts/shot.ps1` are not used. The real `%APPDATA%\wraith\config` and `target\release` are not touched. Checks:
   - a split of two profiles shows two cell sizes, and each shell reports its own size (`tput cols`/`lines` or `$Host.UI.RawUI.WindowSize`);
   - zoom changes one pane, and `Ctrl+0` resets it;

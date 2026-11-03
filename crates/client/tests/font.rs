@@ -140,3 +140,20 @@ fn installed_checks_the_system_not_the_primary() {
     assert!(!s.has_family("Courier New"), "the window stack's primary is not Courier New");
     assert!(s.installed("Courier New"));
 }
+
+#[test]
+fn atlas_skips_a_face_the_stack_does_not_have_yet() {
+    let gpu = Gpu::new().unwrap();
+    let fonts = stack("Cascadia Mono", 96);
+    let mut atlas = GlyphAtlas::new(&gpu, 512).unwrap();
+    // A row shaped with an older stack can name a fallback face this fresh stack (faces 0-3) has not added.
+    let emoji = stack("Cascadia Mono", 96).shape("😀", StyleFlags(0))[0];
+    assert!(emoji.face >= 4, "{emoji:?}");
+    let key = GlyphKey { font: 0, face: emoji.face, glyph: emoji.glyph, subpx: 0 };
+    let e = atlas.get(&gpu, &fonts, key);
+    assert_eq!((e.w, e.h), (0, 0), "an unknown face draws nothing");
+    // Once the stack gains that face, the same key rasterizes: the empty entry was not cached.
+    assert_eq!(fonts.shape("😀", StyleFlags(0))[0].face, emoji.face);
+    let e = atlas.get(&gpu, &fonts, key);
+    assert!(e.w > 0 && e.h > 0, "{e:?}");
+}

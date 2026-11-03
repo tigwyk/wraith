@@ -192,7 +192,7 @@ fn swapchain_change_on_reload() {
     // (is_composition, was_wanted, wanted)
     assert_eq!(swapchain_change(false, false, false), ScChange::Keep);
     assert_eq!(swapchain_change(true, true, true), ScChange::Keep);
-    assert_eq!(swapchain_change(true, true, false), ScChange::Switch, "composition to HWND switches live");
+    assert_eq!(swapchain_change(true, true, false), ScChange::Keep, "a composition window stays one at opacity 1");
     assert_eq!(swapchain_change(false, false, true), ScChange::KeepAndNotify, "HWND to composition waits for a new window");
     assert_eq!(swapchain_change(false, true, true), ScChange::Keep, "told once per crossing");
 }

@@ -224,6 +224,12 @@ struct Hover {
     leave_at: Option<Instant>,
 }
 
+/// A zoom delta to 0.01 pt, so fractional steps return exactly to 0 (and to one font, not near-duplicates).
+pub fn round_zoom(delta: f32) -> f32 {
+    let d = (delta * 100.0).round() / 100.0;
+    if d.abs() < 0.005 { 0.0 } else { d }
+}
+
 pub struct WindowView {
     geom: Geometry,
     snap: ModelSnapshot,
@@ -851,8 +857,10 @@ impl WindowView {
         self.relayout()
     }
 
-    /// A zoomed pane's delta (points) and the look the app built for it; delta 0 clears both.
+    /// A zoomed pane's delta (points, through `round_zoom`) and the look the app built for it; delta 0
+    /// clears both.
     pub fn set_zoom(&mut self, pane: PaneId, delta: f32, look: Look) -> Vec<ClientMsg> {
+        let delta = round_zoom(delta);
         if delta == 0.0 {
             self.zooms.remove(&pane);
         } else {

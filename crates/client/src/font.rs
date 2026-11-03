@@ -165,10 +165,9 @@ impl FontStack {
         find_face(&self.collection, name, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL).is_some()
     }
 
-    pub fn face(&self, id: FaceId) -> (IDWriteFontFace, bool) {
-        let faces = self.faces.borrow();
-        let f = &faces[id as usize];
-        (f.face.clone(), f.color)
+    /// None for an id this stack has not added (a row shaped with an older stack).
+    pub fn face(&self, id: FaceId) -> Option<(IDWriteFontFace, bool)> {
+        self.faces.borrow().get(id as usize).map(|f| (f.face.clone(), f.color))
     }
 
     /// Shape one style run. Each char occupies its Unicode width in cells (combining marks: 0).
@@ -241,7 +240,7 @@ impl FontStack {
     }
 
     fn shape_run(&self, units: &[u16], unit_cells: &[(u16, u8)], face_id: FaceId, features: bool, out: &mut Vec<ShapedGlyph>) {
-        let (face, color) = self.face(face_id);
+        let Some((face, color)) = self.face(face_id) else { return };
         let n = units.len();
         let max = n * 3 / 2 + 16;
         let mut cluster_map = vec![0u16; n];

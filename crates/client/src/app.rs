@@ -66,19 +66,15 @@ pub fn drawn_opacity(composition: bool, look_opacity: f32) -> f32 {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScChange {
     Keep,
-    Switch,
     /// Transparency is wanted but the window has an HWND swap chain: it stays, and the user is told once.
     KeepAndNotify,
 }
 
-/// Composition to HWND switches live; HWND to composition does not, because DWM keeps the released
-/// HWND swap chain's last frame under the new visual. `was_wanted` makes the notice once per crossing.
+/// A window keeps the swap chain kind it has. HWND to composition cannot switch live (DWM keeps the
+/// released HWND swap chain's last frame under the new visual); a composition window drawn at opacity 1
+/// costs nothing measurable, so it stays. `was_wanted` makes the notice once per crossing.
 pub fn swapchain_change(is_composition: bool, was_wanted: bool, wanted: bool) -> ScChange {
-    match (is_composition, wanted) {
-        (true, false) => ScChange::Switch,
-        (false, true) if !was_wanted => ScChange::KeepAndNotify,
-        _ => ScChange::Keep,
-    }
+    if !is_composition && wanted && !was_wanted { ScChange::KeepAndNotify } else { ScChange::Keep }
 }
 
 /// Grid that fits a client area, or `None` for a zero-size (minimized) window. Never below 2×1.
@@ -467,7 +463,9 @@ impl App {
         }
         self.rebuild_looks();
         self.resize(self.size_px.0, self.size_px.1);
-        // Cached rows hold glyph ids from the old fonts; get every row re-sent even if the cell size is unchanged.
+        // Cached rows hold glyph and face ids from the old fonts; drop them and get every row re-sent even if
+        // the cell size is unchanged.
+        self.grids.clear();
         for (p, _) in self.view.visible() {
             self.send_pane(p, PaneCmd::Redraw);
         }
@@ -762,12 +760,14 @@ impl App {
         let p = profile.as_deref().and_then(|n| self.spawn_ctx.profiles.iter().find(|p| p.name == n));
         // Keep the delta inside the clamp, so zooming back from a limit takes effect at once.
         let base = appearance(p, &self.config, 0.0, &|_| true).size_pt;
-        let delta = clamp_font_size(base + delta(self.view.zoom(pane))) - base;
+        let delta = crate::view::round_zoom(clamp_font_size(base + delta(self.view.zoom(pane))) - base);
         let look = self.look_for(profile.as_deref(), delta);
         let msgs = self.view.set_zoom(pane, delta, look);
         self.send_all(msgs);
         self.fonts.retain(&self.view.used_fonts());
-        // Cached rows hold the old font's glyph ids, even if the cell size is unchanged.
+        // Cached rows hold the old font's glyph and face ids, even if the cell size is unchanged; the
+        // pane shows its fill until the redraw arrives.
+        self.grids.remove(&pane);
         self.send_pane(pane, PaneCmd::Redraw);
     }
 
@@ -1503,30 +1503,10 @@ impl App {
     }
 
     /// Apply a reload's swap chain decision (spec §4.2); `was_wanted` is the answer before it.
-    /// Called between frames. A failed switch keeps the current swap chain.
     pub(crate) fn sync_swapchain(&mut self, was_wanted: bool) {
         let want = needs_transparency(&self.config, &self.spawn_ctx.profiles);
-        match swapchain_change(self.sc.is_composition(), was_wanted, want) {
-            ScChange::Keep => {}
-            ScChange::KeepAndNotify => crate::reload::toast_text(self, "transparency", "Transparency applies to new windows".into()),
-            ScChange::Switch => {
-                let (w, h) = self.size_px;
-                // Made before the old one goes: on failure the window keeps what it has.
-                match self.gpu.create_swapchain(self.win.hwnd(), w, h, want) {
-                    Ok(sc) => {
-                        self.sc = sc;
-                        // D3D11 defers releases; flush them so the old swap chain lets go now.
-                        unsafe {
-                            self.gpu.ctx.ClearState();
-                            self.gpu.ctx.Flush();
-                        }
-                        // A token taken from the old waitable is not one of the new chain's.
-                        self.present_token = false;
-                        self.dirty = true;
-                    }
-                    Err(e) => tracing::warn!("swap chain (composition: {want}): {e}"),
-                }
-            }
+        if swapchain_change(self.sc.is_composition(), was_wanted, want) == ScChange::KeepAndNotify {
+            crate::reload::toast_text(self, "transparency", "Transparency applies to new windows".into());
         }
     }
 
@@ -2370,7 +2350,15 @@ pub fn run() -> Result<()> {
     let pipe = Rc::new(Pipeline::new(&gpu)?);
     let (w, h) = win.client_size();
     let spawn_ctx = build_spawn_ctx(&config);
-    let sc = gpu.create_swapchain(win.hwnd(), w, h, needs_transparency(&config, &spawn_ctx.profiles))?;
+    let transparent = needs_transparency(&config, &spawn_ctx.profiles);
+    let sc = match gpu.create_swapchain(win.hwnd(), w, h, transparent) {
+        Ok(sc) => sc,
+        Err(e) if transparent => {
+            tracing::warn!("composition swap chain: {e}; drawing opaque");
+            gpu.create_swapchain(win.hwnd(), w, h, false)?
+        }
+        Err(e) => return Err(e),
+    };
     let pipe_name = wraith_ipc::pipe_name();
     let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 
