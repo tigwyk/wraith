@@ -172,9 +172,14 @@ fn fill(into: &mut Map<String, Value>, from: &Map<String, Value>) {
 }
 
 /// `c` with an unquoted program path that has spaces (`C:\Program Files\x.exe -a`, which WT accepts)
-/// quoted, so the program is the whole path and not its first word.
+/// quoted, so the program is the whole path and not its first word. Only an absolute path whose first
+/// word has no extension is taken for one; `wsl -- x y.exe` and `C:\run.cmd C:\a b.exe` stay as written.
 fn quote_exe(c: String) -> String {
-    if c.starts_with('"') {
+    let b = c.as_bytes();
+    let absolute = (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':') || c.starts_with("\\\\");
+    let first = c.split(' ').next().unwrap_or("");
+    let first_has_ext = first.rsplit(['\\', '/']).next().is_some_and(|f| f.contains('.'));
+    if c.starts_with('"') || !absolute || first_has_ext {
         return c;
     }
     let lower = c.to_ascii_lowercase();
@@ -199,6 +204,7 @@ fn command(m: &Map<String, Value>, env: &dyn Fn(&str) -> Option<String>) -> Resu
     match (guid(m, "guid").as_deref(), text(m, "source").as_deref()) {
         (Some(WINDOWS_POWERSHELL), _) => Ok(expand(r"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe", env)),
         (Some(CMD), _) => Ok(expand(r"%SystemRoot%\System32\cmd.exe", env)),
+        (_, Some("Windows.Terminal.Wsl")) if name.contains(' ') => Ok(format!("wsl.exe -d \"{name}\"")),
         (_, Some("Windows.Terminal.Wsl")) => Ok(format!("wsl.exe -d {name}")),
         (_, Some("Windows.Terminal.PowershellCore")) => Ok("pwsh.exe".into()),
         (_, Some(src)) => Err(format!("only Windows Terminal can start `{src}` profiles")),
@@ -238,12 +244,15 @@ pub fn parse(settings: &str, fragments: &[(String, String)], env: &dyn Fn(&str) 
         }
     }
 
+    // Sources the user turned off in WT (e.g. `Windows.Terminal.Wsl`) list nothing.
+    let disabled: Vec<&str> = root.get("disabledProfileSources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let mut out = WtSettings::default();
     for e in &entries {
         let mut m = e.clone();
         fill(&mut m, &defaults);
         let Some(name) = text(&m, "name") else { continue };
-        if m.get("hidden").and_then(Value::as_bool) == Some(true) || out.profiles.iter().any(|p| p.name == name) {
+        let off = text(&m, "source").is_some_and(|s| disabled.contains(&s.as_str()));
+        if off || m.get("hidden").and_then(Value::as_bool) == Some(true) || out.profiles.iter().any(|p| p.name == name) {
             continue;
         }
         match command(&m, env) {
@@ -392,7 +401,7 @@ pub fn plan_import(src: &str, wt: &WtSettings, themes_dir: &Path) -> (String, Im
         };
         if outcome != ImportOutcome::Unsupported("name contains ':'".into())
             && let Some(name) = &p.scheme
-            && !name.contains(['/', '\\']) && !name.contains("..")
+            && !name.contains(['/', '\\', '<', '>', ':', '"', '|', '?', '*']) && !name.contains("..")
             && !themes.iter().any(|(n, _)| n == name)
             && scheme_from_theme(themes_dir, name).is_none()
             && let Some((_, s)) = wt.schemes.iter().find(|(n, _)| n == name)

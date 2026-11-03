@@ -127,3 +127,12 @@ fn import_writes_new_theme_beside_config() {
     assert_eq!(report.themes_written, ["Mine"]);
     assert!(std::fs::read_to_string(dir.join("themes").join("Mine")).unwrap().contains("background = #000007"));
 }
+
+#[test]
+fn scheme_names_that_are_not_file_names_are_not_written() {
+    let mut w = wt();
+    w.profiles[0].scheme = Some("Bad: Name?".into());
+    w.schemes.push(("Bad: Name?".into(), scheme(3)));
+    let (_, _, files) = plan_import("", &w, &themes());
+    assert!(files.iter().all(|(n, _)| n != "Bad: Name?"), "{files:?}");
+}

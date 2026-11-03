@@ -206,3 +206,30 @@ fn profiles_without_icon_get_wts_default_by_guid() {
     assert_eq!(icon("Custom").as_deref(), Some("🦀"), "a profile's own icon wins");
     assert_eq!(icon("From Fragment").as_deref(), Some("ms-appx:///ProfileIcons/{11111111-0000-0000-0000-000000000001}.png"));
 }
+
+#[test]
+fn disabled_profile_sources_are_left_out() {
+    let src = r#"{"disabledProfileSources":["Windows.Terminal.Wsl","Vendor.App"],
+        "profiles":{"list":[{"name":"Ubuntu","source":"Windows.Terminal.Wsl"},{"name":"cmd","commandline":"cmd.exe"}]}}"#;
+    let frag = r#"{"profiles":[{"name":"Frag","commandline":"f.exe"}]}"#.to_string();
+    let s = parse(src, &[("Vendor.App".into(), frag)], &env).unwrap();
+    let names: Vec<&str> = s.profiles.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["cmd"]);
+}
+
+#[test]
+fn quote_exe_leaves_later_exe_arguments_alone() {
+    let cmd = |c: &str| {
+        let src = format!(r#"{{"profiles":{{"list":[{{"name":"A","commandline":{}}}]}}}}"#, serde_json::to_string(c).unwrap());
+        parse(&src, &[], &env).unwrap().profiles[0].command.clone()
+    };
+    assert_eq!(cmd("wsl -d Ubuntu -- /mnt/c/x y/foo.exe"), "wsl -d Ubuntu -- /mnt/c/x y/foo.exe");
+    assert_eq!(cmd(r"C:\tools\run.cmd C:\a b\x.exe"), r"C:\tools\run.cmd C:\a b\x.exe");
+    assert_eq!(cmd(r"C:\Program Files\x.exe -a"), r#""C:\Program Files\x.exe" -a"#);
+}
+
+#[test]
+fn wsl_distro_name_with_spaces_is_quoted() {
+    let src = r#"{"profiles":{"list":[{"name":"My Distro","source":"Windows.Terminal.Wsl"}]}}"#;
+    assert_eq!(parse(src, &[], &env).unwrap().profiles[0].command, r#"wsl.exe -d "My Distro""#);
+}
