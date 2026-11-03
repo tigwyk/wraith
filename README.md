@@ -49,12 +49,14 @@ Alacritty, as faithful as Ghostty, and native to Windows.
 
 ## Download
 
-Get the zip from the [latest release](https://github.com/tigwyk/wraith/releases/latest),
-unpack it, and install for your user (no admin needed):
+Install the latest release for your user (no admin needed) from PowerShell:
 
 ```powershell
-.\install.ps1
+irm https://tigwyk.github.io/wraith/install.ps1 | iex
 ```
+
+Or get the zip from the [latest release](https://github.com/tigwyk/wraith/releases/latest),
+unpack it, and run `.\install.ps1`.
 
 This copies Wraith to `%LOCALAPPDATA%\Programs\Wraith`, puts `wr` on your
 `PATH`, and adds a Start Menu shortcut (which Windows needs for toasts).
