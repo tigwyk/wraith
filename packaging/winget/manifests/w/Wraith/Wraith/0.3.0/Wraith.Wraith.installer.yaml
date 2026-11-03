@@ -1,5 +1,5 @@
 PackageIdentifier: Wraith.Wraith
-PackageVersion: 0.2.0
+PackageVersion: 0.3.0
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -10,7 +10,7 @@ NestedInstallerFiles:
 Installers:
   - Architecture: x64
     # No release host yet: replace with the published zip's URL. scripts\dist.ps1 fills in the hash.
-    InstallerUrl: https://example.invalid/wraith/releases/0.2.0/wraith-0.2.0-x64.zip
+    InstallerUrl: https://example.invalid/wraith/releases/0.3.0/wraith-0.3.0-x64.zip
     InstallerSha256: B6EAF3627ADCCED6294E5882D70B38E162C155AF8091ECE78B6271135E02ED9A
 ManifestType: installer
 ManifestVersion: 1.6.0
