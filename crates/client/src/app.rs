@@ -555,6 +555,18 @@ impl App {
             Action::ScrollToBottom => self.scroll(ScrollTo::Bottom),
             Action::ClearScreen => self.send_focused(PaneCmd::Text("\x0c".into())),
             Action::ReloadConfig | Action::ToggleFrameOverlay | Action::Unbind => crate::reload::action(self, a),
+            Action::ImportWtProfiles => {
+                // The config watcher reloads the written file.
+                let text = match wraith_config::wt::load() {
+                    None => "Couldn't import: Windows Terminal's settings.json was not found".to_string(),
+                    Some(Err(e)) => format!("Couldn't import: {e}"),
+                    Some(Ok(wt)) => match wraith_config::wt::import(crate::reload::path(self),&themes_dir(), &wt) {
+                        Ok(r) => format!("Imported {} Windows Terminal profiles", r.imported()),
+                        Err(e) => format!("Couldn't import: {e}"),
+                    },
+                };
+                crate::reload::toast_text(self, "import", text);
+            }
             _ => {
                 let out = self.view.action(a, &self.spawn_ctx);
                 self.run_out(out);

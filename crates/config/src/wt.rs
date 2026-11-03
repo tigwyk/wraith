@@ -304,3 +304,113 @@ pub fn load() -> Option<Result<WtSettings, String>> {
     let pd = std::env::var_os("ProgramData").map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
     load_from(&local, &pd)
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportOutcome {
+    Imported,
+    /// The config already has a `profile` line with this name.
+    Exists,
+    /// Not written, and why.
+    Unsupported(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    pub rows: Vec<(String, ImportOutcome)>,
+    pub themes_written: Vec<String>,
+}
+
+impl ImportReport {
+    pub fn imported(&self) -> usize {
+        self.rows.iter().filter(|(_, o)| *o == ImportOutcome::Imported).count()
+    }
+}
+
+/// An icon worth keeping in the config: an emoji or glyph, or a file path (not a WT package URI).
+fn portable_icon(icon: &str) -> bool {
+    icon.chars().count() <= 2 || (icon.contains(['\\', '/']) && !icon.contains("://"))
+}
+
+/// `scheme` as a Ghostty theme file.
+fn theme_text(s: &Scheme) -> String {
+    let h = |c: Rgb| format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2);
+    let mut out: String = s.palette.iter().enumerate().map(|(i, &c)| format!("palette = {i}={}\n", h(c))).collect();
+    out.push_str(&format!("foreground = {}\nbackground = {}\n", h(s.fg), h(s.bg)));
+    if let Some(c) = s.cursor {
+        out.push_str(&format!("cursor-color = {}\n", h(c)));
+    }
+    out
+}
+
+/// The config `src` with `wt`'s profiles added (wt-profiles spec §4), the report, and the theme files
+/// (name, text) for schemes only WT has. Running it on its own output changes nothing.
+pub fn plan_import(src: &str, wt: &WtSettings, themes_dir: &Path) -> (String, ImportReport, Vec<(String, String)>) {
+    use crate::edit::{Which, append, set};
+    let (cfg, _) = crate::parse_str(src, Path::new("config"), themes_dir);
+    let mut out = src.to_string();
+    let mut report = ImportReport::default();
+    let mut themes: Vec<(String, String)> = Vec::new();
+    let mut known: Vec<String> = cfg.profiles.iter().map(|(n, _)| n.to_lowercase()).collect();
+    for p in &wt.profiles {
+        let outcome = if p.name.contains(':') {
+            ImportOutcome::Unsupported("name contains ':'".into())
+        } else if known.contains(&p.name.to_lowercase()) {
+            ImportOutcome::Exists
+        } else {
+            out = append(&out, "profile", &format!("{}:{}", p.name, p.command));
+            if let Some(d) = &p.dir {
+                out = append(&out, "profile-dir", &format!("{}:{d}", p.name));
+            }
+            if let Some(s) = &p.scheme {
+                out = append(&out, "profile-theme", &format!("{}:{s}", p.name));
+            }
+            if let Some(i) = p.icon.as_deref().filter(|i| portable_icon(i)) {
+                out = append(&out, "profile-icon", &format!("{}:{i}", p.name));
+            }
+            known.push(p.name.to_lowercase());
+            ImportOutcome::Imported
+        };
+        if outcome != ImportOutcome::Unsupported("name contains ':'".into())
+            && let Some(name) = &p.scheme
+            && !name.contains(['/', '\\']) && !name.contains("..")
+            && !themes.iter().any(|(n, _)| n == name)
+            && scheme_from_theme(themes_dir, name).is_none()
+            && let Some((_, s)) = wt.schemes.iter().find(|(n, _)| n == name)
+        {
+            themes.push((name.clone(), theme_text(s)));
+        }
+        report.rows.push((p.name.clone(), outcome));
+    }
+    for (name, why) in &wt.skipped {
+        report.rows.push((name.clone(), ImportOutcome::Unsupported(why.clone())));
+    }
+    if cfg.default_profile.is_none()
+        && let Some(d) = wt.default.as_ref().filter(|d| known.contains(&d.to_lowercase()))
+    {
+        out = set(&out, "default-profile", d, Which::Last);
+    }
+    out = set(&out, "windows-terminal-profiles", "false", Which::Last);
+    (out, report, themes)
+}
+
+/// Import `wt` into the config at `config`, writing new theme files to the `themes` folder beside it.
+/// An existing theme file is never replaced.
+pub fn import(config: &Path, themes_dir: &Path, wt: &WtSettings) -> std::io::Result<ImportReport> {
+    let mut result = None;
+    crate::edit::write(config, |src| {
+        let (out, report, themes) = plan_import(src, wt, themes_dir);
+        result = Some((report, themes));
+        out
+    })?;
+    let (mut report, themes) = result.expect("write calls the edit");
+    let dir = config.parent().unwrap_or(Path::new(".")).join("themes");
+    for (name, text) in themes {
+        let path = dir.join(&name);
+        if !path.exists() {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(&path, text)?;
+            report.themes_written.push(name);
+        }
+    }
+    Ok(report)
+}

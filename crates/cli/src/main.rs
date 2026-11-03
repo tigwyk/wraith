@@ -5,6 +5,7 @@
 //!   wr config check [path]
 //!   wr events [--json]                          (JSON lines until the server stops)
 //!   wr update                                   (install the latest GitHub release over this one)
+//!   wr import-wt                                (copy Windows Terminal's profiles into the config)
 //! Exit codes: 0 ok, 1 usage error / server error / unknown pane / config error, 2 no server running (never starts one).
 mod check;
 mod hook;
@@ -23,7 +24,8 @@ const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> 
        wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
        wr config check [path]
        wr events [--json]
-       wr update";
+       wr update
+       wr import-wt";
 
 enum Fail {
     Usage(String),
@@ -54,6 +56,7 @@ fn run(args: &[String]) -> Result<(), Fail> {
         ["uninstall-hooks", rest @ ..] => return install::run(false, rest).map_err(Fail::Usage),
         ["config", "check", rest @ ..] => return check::run(rest).map_err(Fail::Usage),
         ["update"] => return update::run().map_err(Fail::Server),
+        ["import-wt"] => return import_wt().map_err(Fail::Usage),
         _ => {}
     }
     let pane = |s: &str| s.parse::<PaneId>().map_err(|_| Fail::Usage(format!("not a pane id: {s}")));
@@ -98,6 +101,27 @@ fn run(args: &[String]) -> Result<(), Fail> {
         }
         _ => Err(Fail::Usage(USAGE.into())),
     }
+}
+
+/// Write Windows Terminal's profiles into the Wraith config, one line of output per profile.
+fn import_wt() -> Result<(), String> {
+    use wraith_config::wt::ImportOutcome;
+    let wt = wraith_config::wt::load().ok_or("Windows Terminal's settings.json was not found under %LOCALAPPDATA%")??;
+    let report = wraith_config::wt::import(&wraith_config::default_path(), &check::themes_dir(), &wt).map_err(|e| e.to_string())?;
+    let mut out = io::stdout().lock();
+    for (name, o) in &report.rows {
+        let what = match o {
+            ImportOutcome::Imported => "imported".to_string(),
+            ImportOutcome::Exists => "exists".to_string(),
+            ImportOutcome::Unsupported(why) => format!("skipped ({why})"),
+        };
+        let _ = writeln!(out, "{what}\t{name}");
+    }
+    for t in &report.themes_written {
+        let _ = writeln!(out, "theme\t{t}");
+    }
+    let _ = writeln!(out, "{} profiles imported", report.imported());
+    Ok(())
 }
 
 /// Connect and say hello as a CLI client.

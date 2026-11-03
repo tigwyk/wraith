@@ -215,3 +215,50 @@ fn server_stop_stops_it() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(wr(&pipe, &["ctl", "list"]).status.code(), Some(2));
 }
+
+fn import_dirs(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let root = std::env::temp_dir().join(format!("wraith-cli-import-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (local, appdata, pd) = (root.join("local"), root.join("appdata"), root.join("pd"));
+    for d in [&local, &appdata, &pd] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    (local, appdata, pd)
+}
+
+fn wr_import(local: &std::path::Path, appdata: &std::path::Path, pd: &std::path::Path) -> Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_wr"))
+        .arg("import-wt")
+        .env("LOCALAPPDATA", local)
+        .env("APPDATA", appdata)
+        .env("ProgramData", pd)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn import_wt_with_fake_appdata() {
+    let (local, appdata, pd) = import_dirs("ok");
+    let wt = local.join(r"Microsoft\Windows Terminal");
+    std::fs::create_dir_all(&wt).unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../config/tests/fixtures/wt/settings.json");
+    std::fs::copy(fixture, wt.join("settings.json")).unwrap();
+    let out = wr_import(&local, &appdata, &pd);
+    assert!(out.status.success(), "{out:?}");
+    let text = stdout(&out);
+    assert!(text.trim_end().ends_with("profiles imported"), "{text}");
+    assert!(text.contains("Azure Cloud Shell"), "skipped profiles are listed: {text}");
+    let config = std::fs::read_to_string(appdata.join(r"wraith\config")).unwrap();
+    assert!(config.contains("profile = cmd:") && config.contains("windows-terminal-profiles = false"), "{config}");
+    let again = wr_import(&local, &appdata, &pd);
+    assert!(stdout(&again).trim_end().ends_with("0 profiles imported"), "{}", stdout(&again));
+}
+
+#[test]
+fn import_wt_without_wt_fails() {
+    let (local, appdata, pd) = import_dirs("none");
+    let out = wr_import(&local, &appdata, &pd);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("settings.json"), "{out:?}");
+    assert!(!appdata.join(r"wraith\config").exists());
+}

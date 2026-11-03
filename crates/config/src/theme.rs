@@ -27,7 +27,12 @@ pub fn apply(c: &mut Config, dir: &Path, name: &str) -> Result<(), String> {
     if name.contains(['/', '\\']) || name.contains("..") {
         return Err(format!("invalid theme name `{name}`"));
     }
-    let src = std::fs::read_to_string(dir.join(name)).map_err(|_| format!("unknown theme `{name}`"))?;
+    // The user's own themes (`wr import-wt` writes there) shadow the bundled ones.
+    let user = std::env::var_os("APPDATA").map(|a| Path::new(&a).join("wraith").join("themes").join(name));
+    let src = user
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .or_else(|| std::fs::read_to_string(dir.join(name)).ok())
+        .ok_or_else(|| format!("unknown theme `{name}`"))?;
     for line in parse::lines(&src).flatten() {
         if COLOR_KEYS.contains(&line.key) {
             keys::apply(c, line.key, line.value)
