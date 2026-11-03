@@ -1,7 +1,7 @@
 //! The profile list a window offers (wt-profiles spec §3): Windows Terminal's profiles when its
 //! settings could be read, else the detected shells; then the config's `profile` and `profile-*` lines.
 use wraith_config::wt::WtSettings;
-use wraith_config::{Config, ProfileExtra};
+use wraith_config::{Config, ProfileExtra, font_list, font_size, opacity, padding};
 use wraith_server::profile::{Profile, from_config};
 
 pub struct Merged {
@@ -23,7 +23,7 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
             let ps = s
                 .profiles
                 .iter()
-                .map(|p| Profile { dir: p.dir.clone(), icon: p.icon.clone(), scheme: p.scheme.clone(), ..from_config(&p.name, &p.command) })
+                .map(|p| Profile { dir: p.dir.clone(), icon: p.icon.clone(), scheme: p.scheme.clone(), font: p.font.clone(), font_size: p.font_size, padding: p.padding, opacity: p.opacity, ..from_config(&p.name, &p.command) })
                 .collect();
             (ps, s.default.clone())
         }
@@ -54,14 +54,16 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
             warnings.push(format!("{key} names `{name}`, which is not a profile"));
             continue;
         };
-        let field = match kind {
-            ProfileExtra::Dir => &mut p.dir,
-            ProfileExtra::Theme => &mut p.scheme,
-            ProfileExtra::Icon => &mut p.icon,
-            // Task 3 fills the appearance fields.
-            _ => continue,
-        };
-        *field = Some(value.clone());
+        // keys.rs already rejected values that do not parse, so a `None` here is ignored.
+        match kind {
+            ProfileExtra::Dir => p.dir = Some(value.clone()),
+            ProfileExtra::Theme => p.scheme = Some(value.clone()),
+            ProfileExtra::Icon => p.icon = Some(value.clone()),
+            ProfileExtra::Font => p.font = font_list(value).or(p.font.take()),
+            ProfileExtra::FontSize => p.font_size = font_size(value).or(p.font_size),
+            ProfileExtra::Padding => p.padding = padding(value).or(p.padding),
+            ProfileExtra::Opacity => p.opacity = opacity(value).or(p.opacity),
+        }
     }
     if profiles.is_empty() {
         // A window always needs a shell to start.

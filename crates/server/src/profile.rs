@@ -13,7 +13,7 @@ pub enum ShellKind {
     Other,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Profile {
     pub name: String,
     pub kind: ShellKind,
@@ -25,6 +25,12 @@ pub struct Profile {
     pub icon: Option<String>,
     /// The colour scheme's name.
     pub scheme: Option<String>,
+    /// Font families, first wins.
+    pub font: Option<Vec<String>>,
+    pub font_size: Option<f32>,
+    /// Left and top padding in pixels.
+    pub padding: Option<(u16, u16)>,
+    pub opacity: Option<f32>,
 }
 
 /// First word of a command line (quoted or not) and the rest.

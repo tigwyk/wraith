@@ -460,6 +460,19 @@ pub fn plan_import(src: &str, wt: &WtSettings, themes_dir: &Path) -> (String, Im
             if let Some(i) = p.icon.as_deref().filter(|i| portable_icon(i)) {
                 out = append(&out, "profile-icon", &format!("{}:{i}", p.name));
             }
+            if let Some(f) = &p.font {
+                out = append(&out, "profile-font", &format!("{}:{}", p.name, f.join(", ")));
+            }
+            if let Some(z) = p.font_size {
+                out = append(&out, "profile-font-size", &format!("{}:{z}", p.name));
+            }
+            if let Some((x, y)) = p.padding {
+                let v = if x == y { x.to_string() } else { format!("{x},{y}") };
+                out = append(&out, "profile-padding", &format!("{}:{v}", p.name));
+            }
+            if let Some(o) = p.opacity {
+                out = append(&out, "profile-opacity", &format!("{}:{o:.2}", p.name));
+            }
             known.push(p.name.to_lowercase());
             ImportOutcome::Imported
         };

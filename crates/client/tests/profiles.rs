@@ -64,6 +64,31 @@ fn extras_apply_and_unknown_warns() {
     assert!(m.warnings.iter().any(|w| w.contains("ghost")), "{:?}", m.warnings);
 }
 
+fn wt_with_appearance() -> Result<WtSettings, String> {
+    let mut s = wt()?;
+    s.profiles[2].font_size = Some(14.0);
+    s.profiles[2].opacity = Some(0.9);
+    Ok(s)
+}
+
+#[test]
+fn wt_appearance_reaches_profile() {
+    let m = merge(Some(&wt_with_appearance()), Vec::new, &Config::default());
+    assert_eq!((m.profiles[2].font_size, m.profiles[2].opacity), (Some(14.0), Some(0.9)));
+}
+
+#[test]
+fn profile_lines_override_wt_appearance() {
+    let mut c = Config::default();
+    c.profile_extras = vec![
+        ("Ubuntu 22.04".into(), ProfileExtra::FontSize, "11".into()),
+        ("Ubuntu 22.04".into(), ProfileExtra::Padding, "3".into()),
+    ];
+    let m = merge(Some(&wt_with_appearance()), Vec::new, &c);
+    let u = &m.profiles[2];
+    assert_eq!((u.font_size, u.padding, u.opacity), (Some(11.0), Some((3, 3)), Some(0.9)));
+}
+
 #[test]
 fn wt_off_uses_detected() {
     let mut c = Config::default();
