@@ -4,10 +4,12 @@
 //!   wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
 //!   wr config check [path]
 //!   wr events [--json]                          (JSON lines until the server stops)
+//!   wr update                                   (install the latest GitHub release over this one)
 //! Exit codes: 0 ok, 1 usage error / server error / unknown pane / config error, 2 no server running (never starts one).
 mod check;
 mod hook;
 mod install;
+mod update;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -20,7 +22,8 @@ use wraith_proto::wire::{ClientKind, ClientMsg, PROTO_VERSION, PaneId, PaneInfo,
 const USAGE: &str = "usage: wr ctl list | send-text <pane> <text> | kill <pane> | server-stop
        wr install-hooks|uninstall-hooks claude|codex [--wsl <distro>] [--file <path>] [--yes]
        wr config check [path]
-       wr events [--json]";
+       wr events [--json]
+       wr update";
 
 enum Fail {
     Usage(String),
@@ -50,6 +53,7 @@ fn run(args: &[String]) -> Result<(), Fail> {
         ["install-hooks", rest @ ..] => return install::run(true, rest).map_err(Fail::Usage),
         ["uninstall-hooks", rest @ ..] => return install::run(false, rest).map_err(Fail::Usage),
         ["config", "check", rest @ ..] => return check::run(rest).map_err(Fail::Usage),
+        ["update"] => return update::run().map_err(Fail::Server),
         _ => {}
     }
     let pane = |s: &str| s.parse::<PaneId>().map_err(|_| Fail::Usage(format!("not a pane id: {s}")));
