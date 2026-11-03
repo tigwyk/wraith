@@ -46,6 +46,10 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
                 ProfileExtra::Dir => "profile-dir",
                 ProfileExtra::Theme => "profile-theme",
                 ProfileExtra::Icon => "profile-icon",
+                ProfileExtra::Font => "profile-font",
+                ProfileExtra::FontSize => "profile-font-size",
+                ProfileExtra::Padding => "profile-padding",
+                ProfileExtra::Opacity => "profile-opacity",
             };
             warnings.push(format!("{key} names `{name}`, which is not a profile"));
             continue;
@@ -54,6 +58,8 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
             ProfileExtra::Dir => &mut p.dir,
             ProfileExtra::Theme => &mut p.scheme,
             ProfileExtra::Icon => &mut p.icon,
+            // Task 3 fills the appearance fields.
+            _ => continue,
         };
         *field = Some(value.clone());
     }

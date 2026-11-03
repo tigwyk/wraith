@@ -9,7 +9,7 @@ fn themes() -> PathBuf {
 }
 
 fn prof(name: &str, command: &str) -> WtProfile {
-    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None }
+    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None, ..WtProfile::default() }
 }
 
 fn scheme(n: u8) -> Scheme {
@@ -30,6 +30,7 @@ fn wt() -> WtSettings {
         schemes: vec![("Mine".into(), scheme(7)), ("Campbell".into(), scheme(8))],
         skipped: vec![("Azure Cloud Shell".into(), "only Windows Terminal can start it".into())],
         family: None,
+        ..WtSettings::default()
     }
 }
 

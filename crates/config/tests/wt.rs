@@ -233,3 +233,41 @@ fn wsl_distro_name_with_spaces_is_quoted() {
     let src = r#"{"profiles":{"list":[{"name":"My Distro","source":"Windows.Terminal.Wsl"}]}}"#;
     assert_eq!(parse(src, &[], &env).unwrap().profiles[0].command, r#"wsl.exe -d "My Distro""#);
 }
+
+fn profile<'a>(s: &'a WtSettings, name: &str) -> &'a wraith_config::wt::WtProfile {
+    s.profiles.iter().find(|p| p.name == name).unwrap()
+}
+
+#[test]
+fn appearance_fields() {
+    let s = settings();
+    let p = profile(&s, "Windows PowerShell");
+    assert_eq!(p.font, Some(vec!["Cascadia Mono".to_string(), "Consolas".to_string()]));
+    assert_eq!((p.font_size, p.padding, p.opacity), (Some(11.0), Some((8, 4)), Some(0.85)));
+    let c = profile(&s, "cmd");
+    assert_eq!(c.font, Some(vec!["Consolas".to_string()]));
+    assert_eq!((c.font_size, c.padding, c.opacity), (Some(13.0), Some((6, 6)), None));
+    assert_eq!(profile(&s, "PowerShell 7").font_size, Some(10.0));
+    assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+}
+
+fn one(extra: &str) -> WtSettings {
+    parse(&format!(r#"{{"profiles":{{"list":[{{"name":"A","commandline":"a.exe",{extra}}}]}}}}"#), &[], &env).unwrap()
+}
+
+#[test]
+fn appearance_ranges() {
+    let s = one(r#""opacity": 150"#);
+    assert_eq!((s.profiles[0].opacity, s.warnings.len()), (None, 1));
+    assert_eq!(one(r#""font": {"size": 200}"#).profiles[0].font_size, Some(72.0));
+    assert_eq!(one(r#""padding": "40""#).profiles[0].padding, Some((32, 32)));
+    assert_eq!(one(r#""opacity": 85.5"#).profiles[0].opacity, None);
+}
+
+#[test]
+fn wrong_typed_appearance_values_are_ignored() {
+    let s = one(r#""opacity": "high", "padding": true"#);
+    assert_eq!((s.profiles.len(), s.profiles[0].opacity, s.profiles[0].padding), (1, None, None));
+    assert_eq!(s.warnings.len(), 2, "{:?}", s.warnings);
+    assert!(s.warnings.contains(&r#"A: opacity "high" is not a number from 0 to 100"#.to_string()), "{:?}", s.warnings);
+}

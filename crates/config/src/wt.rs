@@ -17,7 +17,7 @@ pub struct Scheme {
 }
 
 /// A WT profile Wraith can start.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WtProfile {
     pub name: String,
     pub command: String,
@@ -25,6 +25,13 @@ pub struct WtProfile {
     pub icon: Option<String>,
     /// The colour scheme's name (the dark one of a light/dark pair).
     pub scheme: Option<String>,
+    /// Font families, first choice first.
+    pub font: Option<Vec<String>>,
+    pub font_size: Option<f32>,
+    /// Left and top padding, in pixels.
+    pub padding: Option<(u16, u16)>,
+    /// 0.0 to 1.0.
+    pub opacity: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -37,6 +44,8 @@ pub struct WtSettings {
     pub skipped: Vec<(String, String)>,
     /// The package family of the settings file read; `None` for unpackaged WT.
     pub family: Option<String>,
+    /// Appearance values left out as unusable, as readable lines.
+    pub warnings: Vec<String>,
 }
 
 impl WtSettings {
@@ -195,6 +204,52 @@ fn quote_exe(c: String) -> String {
     c
 }
 
+type Appearance = (Option<Vec<String>>, Option<f32>, Option<(u16, u16)>, Option<f32>);
+
+/// The font, font size, padding and opacity `m` sets itself. Unusable values are left out with a warning;
+/// WT clamps sizes and padding where Wraith's config rejects them (spec §2.1).
+fn appearance(m: &Map<String, Value>, name: &str, warnings: &mut Vec<String>) -> Appearance {
+    let mut bad = |key: &str, v: &Value, want: &str| warnings.push(format!("{name}: {key} {v} is not {want}"));
+    let font = m.get("font").and_then(Value::as_object);
+    let face = font.and_then(|f| f.get("face")).or_else(|| m.get("fontFace"));
+    let size = font.and_then(|f| f.get("size")).or_else(|| m.get("fontSize"));
+    let face = face.and_then(|v| {
+        let r = v.as_str().and_then(crate::font_list);
+        if r.is_none() {
+            bad("font face", v, "a font name");
+        }
+        r
+    });
+    let size = size.and_then(|v| {
+        let r = v.as_f64().map(|n| n.clamp(4.0, 72.0) as f32);
+        if r.is_none() {
+            bad("font size", v, "a number");
+        }
+        r
+    });
+    let padding = m.get("padding").and_then(|v| {
+        let s = match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        };
+        let parts: Option<Vec<String>> = s.split(',').map(|p| p.trim().parse::<f64>().ok().map(|n| (n.clamp(0.0, 32.0) as u16).to_string())).collect();
+        let r = parts.and_then(|p| crate::padding(&p.join(",")));
+        if r.is_none() {
+            bad("padding", v, "one to four numbers");
+        }
+        r
+    });
+    let opacity = m.get("opacity").and_then(|v| {
+        let r = v.as_u64().filter(|n| *n <= 100).map(|n| n as f32 / 100.0);
+        if r.is_none() {
+            bad("opacity", v, "a number from 0 to 100");
+        }
+        r
+    });
+    (face, size, padding, opacity)
+}
+
 /// The command WT would start for profile `m`, or why there is none.
 fn command(m: &Map<String, Value>, env: &dyn Fn(&str) -> Option<String>) -> Result<String, String> {
     if let Some(c) = text(m, "commandline") {
@@ -247,6 +302,7 @@ pub fn parse(settings: &str, fragments: &[(String, String)], env: &dyn Fn(&str) 
     // Sources the user turned off in WT (e.g. `Windows.Terminal.Wsl`) list nothing.
     let disabled: Vec<&str> = root.get("disabledProfileSources").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let mut out = WtSettings::default();
+    let base = appearance(&defaults, "profile defaults", &mut out.warnings);
     for e in &entries {
         let mut m = e.clone();
         fill(&mut m, &defaults);
@@ -256,8 +312,16 @@ pub fn parse(settings: &str, fragments: &[(String, String)], env: &dyn Fn(&str) 
             continue;
         }
         match command(&m, env) {
-            Ok(command) => out.profiles.push(WtProfile {
+            Ok(command) => {
+                // The entry's own values come first, so its `fontSize` beats the defaults' `font.size`.
+                let own = appearance(e, &name, &mut out.warnings);
+                let (font, font_size, padding, opacity) = (own.0.or(base.0.clone()), own.1.or(base.1), own.2.or(base.2), own.3.or(base.3));
+                out.profiles.push(WtProfile {
                 command,
+                font,
+                font_size,
+                padding,
+                opacity,
                 dir: text(&m, "startingDirectory").map(|d| expand(&d, env)),
                 // WT draws a built-in profile's icon from its package by guid when none is set.
                 icon: text(&m, "icon").or_else(|| text(&m, "guid").map(|g| format!("ms-appx:///ProfileIcons/{g}.png"))),
@@ -267,7 +331,7 @@ pub fn parse(settings: &str, fragments: &[(String, String)], env: &dyn Fn(&str) 
                     _ => None,
                 },
                 name,
-            }),
+            })},
             Err(why) => out.skipped.push((name, why)),
         }
     }

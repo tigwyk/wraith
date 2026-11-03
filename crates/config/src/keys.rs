@@ -141,16 +141,31 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
                 c.profiles.push((n.to_string(), cmd.to_string()));
             }
         }
-        "profile-dir" | "profile-theme" | "profile-icon" => {
+        "profile-dir" | "profile-theme" | "profile-icon" | "profile-font" | "profile-font-size" | "profile-padding" | "profile-opacity" => {
+            use crate::ProfileExtra as E;
             let kind = match key {
-                "profile-dir" => crate::ProfileExtra::Dir,
-                "profile-theme" => crate::ProfileExtra::Theme,
-                _ => crate::ProfileExtra::Icon,
+                "profile-dir" => E::Dir,
+                "profile-theme" => E::Theme,
+                "profile-icon" => E::Icon,
+                "profile-font" => E::Font,
+                "profile-font-size" => E::FontSize,
+                "profile-padding" => E::Padding,
+                _ => E::Opacity,
             };
             if value.is_empty() {
                 c.profile_extras.retain(|(_, k, _)| *k != kind);
             } else {
                 let (n, v) = value.split_once(':').filter(|(n, v)| !n.is_empty() && !v.is_empty()).ok_or_else(|| bad(value))?;
+                let ok = match kind {
+                    E::Font => crate::font_list(v).is_some(),
+                    E::FontSize => crate::font_size(v).is_some(),
+                    E::Padding => crate::padding(v).is_some(),
+                    E::Opacity => crate::opacity(v).is_some(),
+                    _ => true,
+                };
+                if !ok {
+                    return Err(bad(v));
+                }
                 c.profile_extras.retain(|(p, k, _)| !(p == n && *k == kind));
                 c.profile_extras.push((n.to_string(), kind, v.to_string()));
             }

@@ -9,7 +9,7 @@ use wraith_config::{Config, ProfileExtra, Rgb, Scheme};
 use wraith_server::profile::{Profile, ShellKind};
 
 fn wt_profile(name: &str, command: &str) -> WtProfile {
-    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None }
+    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None, ..WtProfile::default() }
 }
 
 fn wt() -> Result<WtSettings, String> {
