@@ -59,7 +59,7 @@ impl Rig {
 }
 
 fn opts() -> DrawOpts {
-    DrawOpts { selection: None, selection_color: (100, 100, 200), cursor_blink_on: true, focused: true, opacity: 1.0 }
+    DrawOpts { font: 0, selection: None, selection_color: (100, 100, 200), cursor_blink_on: true, focused: true, opacity: 1.0 }
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn partial_frame_keeps_other_rows() {
 fn selection_highlights_cells() {
     let mut r = rig();
     r.grid.apply(&frame(true, vec![], None), &r.fonts);
-    r.draw(&DrawOpts { selection: Some(SelRange { start: (0, 0), end: (3, 0), rectangle: false }), ..opts() });
+    r.draw(&DrawOpts { font: 0, selection: Some(SelRange { start: (0, 0), end: (3, 0), rectangle: false }), ..opts() });
     assert_eq!(r.cell(1, 0), [100, 100, 200, 255]);
     assert_eq!(r.cell(5, 0), [1, 2, 3, 255]);
 }

@@ -13,6 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
+use crate::font_table::FontId;
 use crate::new_tab_menu::{MenuLayout, NewTabMenu};
 use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items, profile_items};
 use crate::selection::Selection;
@@ -31,6 +32,15 @@ pub struct Geometry {
 }
 
 type Rgb8 = (u8, u8, u8);
+
+/// How a pane is drawn and sized (spec §3.3): its font, cell, padding and background opacity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub font: FontId,
+    pub cell: (u32, u32),
+    pub pad: (i32, i32),
+    pub opacity: f32,
+}
 
 /// What a new pane needs: its profile's command line, colors and environment.
 pub struct SpawnCtx {
@@ -120,6 +130,15 @@ pub enum ExitOut {
     CloseWindow(Vec<ClientMsg>),
 }
 
+/// The actions `App::action` runs itself; `WindowView::action` ignores them.
+fn app_level(a: &Action) -> bool {
+    use Action::*;
+    matches!(
+        a,
+        Copy | Paste | IncreaseFontSize(_) | DecreaseFontSize(_) | ResetFontSize | ScrollPageUp | ScrollPageDown | ScrollToTop | ScrollToBottom | ClearScreen | ReloadConfig | ToggleFrameOverlay | ImportWtProfiles
+    )
+}
+
 /// What an action produced: messages for the server, a close awaiting the user's confirmation, or a UI request.
 #[derive(Debug, Default, PartialEq)]
 pub struct Out {
@@ -127,6 +146,8 @@ pub struct Out {
     pub confirm_close: Option<PaneId>,
     pub confirm_close_workspace: Option<WorkspaceId>,
     pub ui: Option<Ui>,
+    /// An action only the app can run (fonts, clipboard, config), picked from the palette.
+    pub app: Option<Action>,
 }
 
 impl Out {
@@ -203,6 +224,12 @@ struct Hover {
     leave_at: Option<Instant>,
 }
 
+/// A zoom delta to 0.01 pt, so fractional steps return exactly to 0 (and to one font, not near-duplicates).
+pub fn round_zoom(delta: f32) -> f32 {
+    let d = (delta * 100.0).round() / 100.0;
+    if d.abs() < 0.005 { 0.0 } else { d }
+}
+
 pub struct WindowView {
     geom: Geometry,
     snap: ModelSnapshot,
@@ -238,6 +265,12 @@ pub struct WindowView {
     /// When the pointer came to rest on its current target, and whether that target's tooltip is up.
     tip_since: Option<Instant>,
     tip_shown: bool,
+    /// The window look; follows `geom` until `set_looks` is called.
+    window_look: Look,
+    looks_set: bool,
+    profile_looks: HashMap<String, Look>,
+    /// Per-pane zoom delta (points) and the look the app built for it (spec §3.4).
+    zooms: HashMap<PaneId, (f32, Look)>,
 }
 
 impl WindowView {
@@ -270,6 +303,10 @@ impl WindowView {
             pressed: None,
             tip_since: None,
             tip_shown: false,
+            window_look: Look { font: 0, cell: geom.cell, pad: geom.pad, opacity: 1.0 },
+            looks_set: false,
+            profile_looks: HashMap::new(),
+            zooms: HashMap::new(),
         }
     }
 
@@ -459,15 +496,17 @@ impl WindowView {
             this.awaiting_new_ws = true;
             let prof = ctx.profile(None);
             let cwd = dir.clone().or_else(|| std::env::var("USERPROFILE").ok());
+            let est = this.est_size(&prof.name);
             Out::model(ModelCmd::NewWorkspace {
                 name,
                 root_dir: dir,
                 profile: prof.name.clone(),
                 layout,
-                spawn: ctx.spawn(prof, cwd.as_deref(), this.est_cells(), this.cell_px()),
+                spawn: ctx.spawn(prof, cwd.as_deref(), est.0, est.1),
             })
         };
         match choice {
+            Choice::Action(a) if app_level(&a) => Out { app: Some(a), ..Out::default() },
             Choice::Action(a) => self.action(a, ctx),
             Choice::Workspace(id) if mode == Mode::MoveTab => match self.active_tab().map(|t| t.id) {
                 Some(tab) => Out::model(ModelCmd::MoveTab { tab, to: id, index: None }),
@@ -739,6 +778,7 @@ impl WindowView {
         self.requested_tab_for = None;
         self.subscribed.clear();
         self.panes.clear();
+        self.zooms.clear();
         self.drag = None;
         vec![ClientMsg::AttachWindow { workspace: None }]
     }
@@ -762,6 +802,7 @@ impl WindowView {
         self.requested_tab_for = None;
         self.subscribed.clear();
         self.panes.clear();
+        self.zooms.clear();
         self.drag = None;
     }
 
@@ -771,6 +812,7 @@ impl WindowView {
         self.requested_tab_for = None;
         self.subscribed.clear();
         self.sent_size.clear();
+        self.zooms.clear();
         self.colored.clear();
         self.panes.clear();
         self.drag = None;
@@ -801,10 +843,59 @@ impl WindowView {
         self.active_tab().map(|t| t.focused)
     }
 
-    /// Smallest pane: 2x1 cells plus padding (spec §4.1).
+    /// Smallest pane: 2x1 cells plus padding (spec §4.1), of the largest look in the active tab.
     fn min_px(&self) -> (i32, i32) {
-        let g = &self.geom;
-        (2 * g.cell.0 as i32 + 2 * g.pad.0, g.cell.1 as i32 + 2 * g.pad.1)
+        let looks = self.active_tab().map(|t| t.root.leaves()).unwrap_or_default().into_iter().map(|p| self.look(p));
+        looks.fold((0, 0), |(w, h), l| (w.max(2 * l.cell.0 as i32 + 2 * l.pad.0), h.max(l.cell.1 as i32 + 2 * l.pad.1)))
+    }
+
+    /// Window look plus one per profile name (zoom 0); relayout follows.
+    pub fn set_looks(&mut self, window: Look, by_profile: HashMap<String, Look>) -> Vec<ClientMsg> {
+        self.window_look = window;
+        self.looks_set = true;
+        self.profile_looks = by_profile;
+        self.relayout()
+    }
+
+    /// A zoomed pane's delta (points, through `round_zoom`) and the look the app built for it; delta 0
+    /// clears both.
+    pub fn set_zoom(&mut self, pane: PaneId, delta: f32, look: Look) -> Vec<ClientMsg> {
+        let delta = round_zoom(delta);
+        if delta == 0.0 {
+            self.zooms.remove(&pane);
+        } else {
+            self.zooms.insert(pane, (delta, look));
+        }
+        self.relayout()
+    }
+
+    pub fn zoom(&self, pane: PaneId) -> f32 {
+        self.zooms.get(&pane).map_or(0.0, |z| z.0)
+    }
+
+    /// The pane's zoom override, else its profile's look, else the window look.
+    pub fn look(&self, pane: PaneId) -> Look {
+        match self.zooms.get(&pane) {
+            Some(z) => z.1,
+            None => self.profile_look(self.snap.pane(pane).map_or("", |m| m.profile.as_str())),
+        }
+    }
+
+    pub fn profile_look(&self, profile: &str) -> Look {
+        self.profile_looks.get(profile).copied().unwrap_or(self.window_look)
+    }
+
+    /// (pane, profile, delta) of every zoomed pane, for rebuilding their looks.
+    pub fn zoomed_panes(&self) -> Vec<(PaneId, String, f32)> {
+        let mut v: Vec<_> = self.zooms.iter().map(|(&p, z)| (p, self.snap.pane(p).map_or_else(String::new, |m| m.profile.clone()), z.0)).collect();
+        v.sort_by_key(|z| z.0);
+        v
+    }
+
+    /// Every font a look refers to (window, each profile, each zoom): what the font table must keep.
+    pub fn used_fonts(&self) -> HashSet<FontId> {
+        let zooms = self.zooms.values().map(|z| &z.1);
+        [&self.window_look].into_iter().chain(self.profile_looks.values()).chain(zooms).map(|l| l.font).collect()
     }
 
     /// Pixel rectangle of every pane of the active tab (only the zoomed pane when zoomed).
@@ -824,10 +915,9 @@ impl WindowView {
         }
     }
 
-    fn cells_for(&self, r: Rect) -> (u16, u16) {
-        let g = &self.geom;
-        let cols = ((r.w - 2 * g.pad.0) / g.cell.0.max(1) as i32).clamp(2, i32::from(u16::MAX));
-        let rows = ((r.h - 2 * g.pad.1) / g.cell.1.max(1) as i32).clamp(1, i32::from(u16::MAX));
+    fn cells_for(r: Rect, l: &Look) -> (u16, u16) {
+        let cols = ((r.w - 2 * l.pad.0) / l.cell.0.max(1) as i32).clamp(2, i32::from(u16::MAX));
+        let rows = ((r.h - 2 * l.pad.1) / l.cell.1.max(1) as i32).clamp(1, i32::from(u16::MAX));
         (cols as u16, rows as u16)
     }
 
@@ -840,10 +930,11 @@ impl WindowView {
         }
         let rects = self.visible();
         self.panes.retain(|id, _| rects.iter().any(|(p, _)| p == id));
-        let (cw, ch) = self.geom.cell;
         let mut msgs = Vec::new();
         for (id, rect) in rects {
-            let cells = self.cells_for(rect);
+            let look = self.look(id);
+            let (cw, ch) = look.cell;
+            let cells = Self::cells_for(rect, &look);
             let dbl = self.double_click;
             let v = self.panes.entry(id).or_insert_with(|| PaneView { rect, cells, mouse_tracking: false, sel: Selection::new(dbl) });
             v.rect = rect;
@@ -878,6 +969,9 @@ impl WindowView {
 
     pub fn set_geometry(&mut self, g: Geometry) -> Vec<ClientMsg> {
         self.geom = g;
+        if !self.looks_set {
+            (self.window_look.cell, self.window_look.pad) = (g.cell, g.pad);
+        }
         self.relayout()
     }
 
@@ -885,6 +979,7 @@ impl WindowView {
         self.snap = snap;
         let live: HashSet<PaneId> = self.snap.panes.iter().map(|p| p.id).collect();
         self.sent_size.retain(|p, _| live.contains(p));
+        self.zooms.retain(|p, _| live.contains(p));
         self.colored.retain(|p| live.contains(p));
         let mut msgs = Vec::new();
         let ids: HashSet<WorkspaceId> = self.snap.workspaces.iter().map(|w| w.id).collect();
@@ -899,12 +994,13 @@ impl WindowView {
             for def in &ctx.config.workspaces {
                 if !self.snap.workspaces.iter().any(|w| w.name == def.name) {
                     let prof = ctx.profile(None);
+                    let est = self.est_size(&prof.name);
                     msgs.push(ClientMsg::Model(ModelCmd::NewWorkspace {
                         name: Some(def.name.clone()),
                         root_dir: def.dir.clone(),
                         profile: prof.name.clone(),
                         layout: def.layout.clone(),
-                        spawn: ctx.spawn(prof, def.dir.as_deref(), self.est_cells(), self.cell_px()),
+                        spawn: ctx.spawn(prof, def.dir.as_deref(), est.0, est.1),
                     }));
                 }
             }
@@ -925,12 +1021,10 @@ impl WindowView {
         msgs
     }
 
-    fn est_cells(&self) -> (u16, u16) {
-        self.cells_for(self.regions().content)
-    }
-
-    fn cell_px(&self) -> (u32, u32) {
-        self.geom.cell
+    /// Estimated cells and cell size of a new full-content pane of `profile`.
+    fn est_size(&self, profile: &str) -> ((u16, u16), (u32, u32)) {
+        let l = self.profile_look(profile);
+        (Self::cells_for(self.regions().content, &l), l.cell)
     }
 
     /// Split the focused pane toward `dir`, running `prof`, else the focused pane's profile, in its directory.
@@ -945,14 +1039,17 @@ impl WindowView {
             Dir::Down => (Axis::Vertical, false),
             Dir::Up => (Axis::Vertical, true),
         };
-        let cells = self.panes.get(&t.focused).map_or_else(|| self.est_cells(), |p| p.cells);
-        let cells = if axis == Axis::Horizontal { (cells.0 / 2, cells.1) } else { (cells.0, cells.1 / 2) };
+        // Half the focused pane's pixels, in the new profile's cells (cells_for keeps at least 2x1).
+        let r = self.panes.get(&t.focused).map_or_else(|| self.regions().content, |p| p.rect);
+        let half = if axis == Axis::Horizontal { Rect { w: r.w / 2, ..r } } else { Rect { h: r.h / 2, ..r } };
+        let look = self.profile_look(&prof.name);
+        let cells = Self::cells_for(half, &look);
         Out::model(ModelCmd::Split {
             pane: t.focused,
             axis,
             new_first,
             profile: prof.name.clone(),
-            spawn: ctx.spawn(prof, cwd.as_deref(), (cells.0.max(2), cells.1.max(1)), self.cell_px()),
+            spawn: ctx.spawn(prof, cwd.as_deref(), cells, look.cell),
         })
     }
 
@@ -972,7 +1069,8 @@ impl WindowView {
             .or_else(|| w.and_then(|w| w.root_dir.clone()))
             .or(focused_cwd)
             .or_else(|| std::env::var("USERPROFILE").ok());
-        ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: prof.name.clone(), spawn: ctx.spawn(prof, cwd.as_deref(), self.est_cells(), self.cell_px()) })
+        let est = self.est_size(&prof.name);
+        ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: prof.name.clone(), spawn: ctx.spawn(prof, cwd.as_deref(), est.0, est.1) })
     }
 
     pub fn action(&mut self, a: Action, ctx: &SpawnCtx) -> Out {
@@ -1035,12 +1133,13 @@ impl WindowView {
                 self.awaiting_new_ws = true;
                 let prof = ctx.profile(None);
                 let home = std::env::var("USERPROFILE").ok();
+                let est = self.est_size(&prof.name);
                 Out::model(ModelCmd::NewWorkspace {
                     name: None,
                     root_dir: None,
                     profile: prof.name.clone(),
                     layout: "single".into(),
-                    spawn: ctx.spawn(prof, home.as_deref(), self.est_cells(), self.cell_px()),
+                    spawn: ctx.spawn(prof, home.as_deref(), est.0, est.1),
                 })
             }
             Action::CloseWorkspace => {

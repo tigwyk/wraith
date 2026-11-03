@@ -5,10 +5,10 @@
     /* block comment,
        spanning lines */
     "profiles": {
-        "defaults": { "colorScheme": "Campbell", },
+        "defaults": { "colorScheme": "Campbell", "font": {"size": 10}, },
         "list": [
-            { "guid": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}", "name": "Windows PowerShell", "hidden": false },
-            { "guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}", "name": "cmd" },
+            { "guid": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}", "name": "Windows PowerShell", "hidden": false, "font": {"face": "Cascadia Mono, Consolas", "size": 11}, "padding": "8, 4, 8, 4", "opacity": 85 },
+            { "guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}", "name": "cmd", "fontFace": "Consolas", "fontSize": 13, "padding": 6 },
             { "guid": "{b453ae62-4e3d-5e58-b989-0a998ec441b8}", "name": "Azure Cloud Shell", "source": "Windows.Terminal.Azure" },
             { "guid": "{aaaaaaaa-0000-0000-0000-000000000001}", "name": "Ubuntu-22.04", "source": "Windows.Terminal.Wsl" },
             { "guid": "{aaaaaaaa-0000-0000-0000-000000000002}", "name": "Secret", "commandline": "secret.exe", "hidden": true },

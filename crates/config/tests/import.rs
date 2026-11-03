@@ -9,7 +9,7 @@ fn themes() -> PathBuf {
 }
 
 fn prof(name: &str, command: &str) -> WtProfile {
-    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None }
+    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None, ..WtProfile::default() }
 }
 
 fn scheme(n: u8) -> Scheme {
@@ -30,6 +30,7 @@ fn wt() -> WtSettings {
         schemes: vec![("Mine".into(), scheme(7)), ("Campbell".into(), scheme(8))],
         skipped: vec![("Azure Cloud Shell".into(), "only Windows Terminal can start it".into())],
         family: None,
+        ..WtSettings::default()
     }
 }
 
@@ -135,4 +136,30 @@ fn scheme_names_that_are_not_file_names_are_not_written() {
     w.schemes.push(("Bad: Name?".into(), scheme(3)));
     let (_, _, files) = plan_import("", &w, &themes());
     assert!(files.iter().all(|(n, _)| n != "Bad: Name?"), "{files:?}");
+}
+
+#[test]
+fn import_writes_appearance_lines() {
+    let mut p = prof("P", "p.exe");
+    p.font = Some(vec!["A".into(), "B".into()]);
+    p.font_size = Some(14.0);
+    p.padding = Some((8, 4));
+    p.opacity = Some(0.85);
+    let w = WtSettings { profiles: vec![p.clone()], ..WtSettings::default() };
+    let (src, _, _) = plan_import("", &w, &themes());
+    for l in ["profile-font = P:A, B", "profile-font-size = P:14", "profile-padding = P:8,4", "profile-opacity = P:0.85"] {
+        assert!(src.lines().any(|x| x == l), "{l} missing from {src}");
+    }
+    let mut w2 = w.clone();
+    w2.profiles[0].padding = Some((6, 6));
+    assert!(plan_import("", &w2, &themes()).0.contains("profile-padding = P:6
+"));
+    assert_eq!(plan_import(&src, &w, &themes()).0, src);
+}
+
+#[test]
+fn import_skips_unset_appearance() {
+    let w = WtSettings { profiles: vec![prof("P", "p.exe")], ..WtSettings::default() };
+    let (src, _, _) = plan_import("", &w, &themes());
+    assert!(!src.contains("profile-font") && !src.contains("profile-padding") && !src.contains("profile-opacity"), "{src}");
 }

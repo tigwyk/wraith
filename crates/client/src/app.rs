@@ -1,6 +1,6 @@
 //! The M1 app: one window, one pane. Window messages are always handled before frame work (spec §6.3).
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
+use wraith_server::profile::Profile;
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
 use wraith_proto::model::{AgentState, Rect, TabId};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
@@ -36,17 +37,45 @@ use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
 use crate::new_tab_menu::{MenuDo, MenuHit, MenuOutcome, MenuRow, letter_tile, menu_action};
 use crate::palette::Mode;
-use crate::view::{ExitOut, Geometry, Out, SpawnCtx, Ui, WindowView};
+use crate::view::{ExitOut, Geometry, Look, Out, SpawnCtx, Ui, WindowView};
 use crate::settings::{Edit, SettingsHit, SettingsView, Sources};
 
 use crate::atlas::GlyphAtlas;
 use crate::font::{CellMetrics, FontStack};
+use crate::font_table::{FontKey, FontTable};
+use crate::profiles::appearance;
 use crate::gpu::{Gpu, SwapChain};
 use crate::grid::{Batch, DrawOpts, GridRenderer, Overlay, Pipeline, Quad};
 use crate::input::{Ime, ImeUpdate, KeyTranslator};
 pub use crate::selection::{SelAction, Selection};
 use crate::selection::{get_clipboard, set_clipboard};
 use crate::window::{Idle, LoopControl, WinMsg, Window, run_message_loop};
+
+/// Whether the window needs a composition swap chain: any opacity below 1 (spec §4.2).
+pub fn needs_transparency(c: &Config, profiles: &[Profile]) -> bool {
+    c.background_opacity < 1.0 || profiles.iter().any(|p| p.opacity.is_some_and(|o| o < 1.0))
+}
+
+/// The opacity a pane is drawn at: an HWND swap chain ignores alpha, so below 1 it would only
+/// darken the pane (kept after a reload, spec §4.2).
+pub fn drawn_opacity(composition: bool, look_opacity: f32) -> f32 {
+    if composition { look_opacity } else { 1.0 }
+}
+
+/// What a reload does to the swap chain (spec §4.2).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScChange {
+    Keep,
+    /// Transparency is wanted but the window has an HWND swap chain: it stays, and the user is told once.
+    KeepAndNotify,
+}
+
+/// A window keeps the swap chain kind it has. HWND to composition cannot switch live (DWM keeps the
+/// released HWND swap chain's last frame under the new visual); a composition window drawn at opacity 1
+/// costs nothing measurable, so it stays. `was_wanted` makes the notice once per crossing.
+pub fn swapchain_change(is_composition: bool, was_wanted: bool, wanted: bool) -> ScChange {
+    if !is_composition && wanted && !was_wanted { ScChange::KeepAndNotify } else { ScChange::Keep }
+}
 
 /// Grid that fits a client area, or `None` for a zero-size (minimized) window. Never below 2×1.
 pub fn grid_size(client_w: u32, client_h: u32, m: &CellMetrics, pad_x: u16, pad_y: u16) -> Option<(u16, u16)> {
@@ -252,8 +281,11 @@ pub(crate) struct App {
     pub(crate) win: Window,
     pub(crate) gpu: Gpu,
     pub(crate) sc: SwapChain,
-    pub(crate) fonts: FontStack,
+    /// Entry 0 is the window font (chrome and the window look); the rest are profile and zoom fonts.
+    pub(crate) fonts: FontTable<FontStack>,
     pub(crate) atlas: GlyphAtlas,
+    /// Profile font families already warned about as not installed.
+    missing_fonts: HashSet<String>,
     pipe: Rc<Pipeline>,
     /// Row caches of the panes drawn so far; a pane's entry appears with its first frame.
     grids: HashMap<PaneId, GridRenderer>,
@@ -272,7 +304,6 @@ pub(crate) struct App {
     forward_tx: crossbeam_channel::Sender<ServerMsg>,
     pub(crate) woken: Arc<AtomicBool>,
     pub(crate) config: Config,
-    pub(crate) font_size: f32,
     keys: KeyTranslator,
     ime: Ime,
     pub(crate) matcher: KeybindMatcher,
@@ -314,17 +345,18 @@ pub(crate) struct App {
 }
 
 impl App {
-    fn pad_px(&self) -> (i32, i32) {
+    /// Padding in points, as pixels at the window's DPI.
+    fn pad_px(&self, pad: (u16, u16)) -> (i32, i32) {
         let s = self.win.dpi() as f32 / 96.0;
-        ((f32::from(self.config.window_padding_x) * s).round() as i32, (f32::from(self.config.window_padding_y) * s).round() as i32)
+        ((f32::from(pad.0) * s).round() as i32, (f32::from(pad.1) * s).round() as i32)
     }
 
     fn geometry(&self) -> Geometry {
-        let m = self.fonts.metrics();
+        let m = self.fonts.get(0).metrics();
         Geometry {
             client: (self.size_px.0 as i32, self.size_px.1 as i32),
             cell: (m.w, m.h),
-            pad: self.pad_px(),
+            pad: self.pad_px((self.config.window_padding_x, self.config.window_padding_y)),
             bar_h: m.h as i32 + 10,
             sidebar_cols: self.view.geometry().sidebar_cols,
             caption_w: titlebar::caption_width(self.win.dpi()),
@@ -377,16 +409,63 @@ impl App {
         }
     }
 
+    fn window_key(&self) -> FontKey {
+        FontKey { families: self.config.font_family.clone(), size_pt: self.config.font_size, features: self.config.font_feature.clone() }
+    }
+
+    /// The look of a pane of `profile` (the window's for `None`) at `zoom` points, loading its font.
+    fn look_for(&mut self, profile: Option<&str>, zoom: f32) -> Look {
+        let p = profile.and_then(|n| self.spawn_ctx.profiles.iter().find(|p| p.name == n));
+        let window = self.fonts.get(0);
+        let a = appearance(p, &self.config, zoom, &|f| window.installed(f));
+        if let Some(fs) = p.and_then(|p| p.font.as_ref())
+            && !fs.iter().any(|f| window.installed(f))
+        {
+            for f in fs.iter().filter(|f| self.missing_fonts.insert((*f).clone())) {
+                tracing::warn!("font `{f}` of profile `{}` is not installed; using font-family", p.map_or("", |p| p.name.as_str()));
+            }
+        }
+        let (pad, opacity) = (self.pad_px(a.pad), a.opacity);
+        let key = FontKey { families: a.families, size_pt: a.size_pt, features: self.config.font_feature.clone() };
+        let dpi = self.win.dpi();
+        let font = self.fonts.get_or_load(&key, |k| FontStack::new(&k.families, k.size_pt, dpi, &k.features)).unwrap_or_else(|e| {
+            tracing::warn!("font {:?} {}pt: {e}", key.families, key.size_pt);
+            0
+        });
+        let m = self.fonts.get(font).metrics();
+        Look { font, cell: (m.w, m.h), pad, opacity }
+    }
+
+    /// Recompute the window look, every profile's and every zoomed pane's from the config; drop unused fonts.
+    pub(crate) fn rebuild_looks(&mut self) {
+        let window = self.look_for(None, 0.0);
+        let names: Vec<String> = self.spawn_ctx.profiles.iter().map(|p| p.name.clone()).collect();
+        let by_profile = names.into_iter().map(|n| (n.clone(), self.look_for(Some(&n), 0.0))).collect();
+        let msgs = self.view.set_looks(window, by_profile);
+        self.send_all(msgs);
+        for (pane, profile, delta) in self.view.zoomed_panes() {
+            let look = self.look_for(Some(&profile), delta);
+            let msgs = self.view.set_zoom(pane, delta, look);
+            self.send_all(msgs);
+        }
+        self.fonts.retain(&self.view.used_fonts());
+        self.dirty = true;
+    }
+
+    /// New font table and atlas (DPI or font config changed), then every look again.
     pub(crate) fn rebuild_fonts(&mut self) {
-        match FontStack::new(&self.config.font_family, self.font_size, self.win.dpi(), &self.config.font_feature) {
-            Ok(f) => self.fonts = f,
-            Err(e) => tracing::warn!("font: {e}"),
+        let key = self.window_key();
+        // Both or neither: a new table reuses ids, so it must never meet the old atlas.
+        match (FontStack::new(&key.families, key.size_pt, self.win.dpi(), &key.features), GlyphAtlas::new(&self.gpu, 2048)) {
+            (Ok(f), Ok(a)) => (self.fonts, self.atlas) = (FontTable::new(key, f), a),
+            (Err(e), _) => tracing::warn!("font: {e}"),
+            (_, Err(e)) => tracing::warn!("atlas: {e}"),
         }
-        if let Ok(a) = GlyphAtlas::new(&self.gpu, 2048) {
-            self.atlas = a;
-        }
+        self.rebuild_looks();
         self.resize(self.size_px.0, self.size_px.1);
-        // Cached rows hold glyph ids from the old fonts; get every row re-sent even if the cell size is unchanged.
+        // Cached rows hold glyph and face ids from the old fonts; drop them and get every row re-sent even if
+        // the cell size is unchanged.
+        self.grids.clear();
         for (p, _) in self.view.visible() {
             self.send_pane(p, PaneCmd::Redraw);
         }
@@ -596,9 +675,9 @@ impl App {
         match a {
             Action::Copy => self.send_focused(PaneCmd::CopySelection),
             Action::Paste => self.paste(),
-            Action::IncreaseFontSize(d) => self.set_font_size(self.font_size + d),
-            Action::DecreaseFontSize(d) => self.set_font_size(self.font_size - d),
-            Action::ResetFontSize => self.set_font_size(self.config.font_size),
+            Action::IncreaseFontSize(d) => self.zoom(|z| z + d),
+            Action::DecreaseFontSize(d) => self.zoom(|z| z - d),
+            Action::ResetFontSize => self.zoom(|_| 0.0),
             Action::ScrollPageUp => self.scroll(ScrollTo::PageUp),
             Action::ScrollPageDown => self.scroll(ScrollTo::PageDown),
             Action::ScrollToTop => self.scroll(ScrollTo::Top),
@@ -628,6 +707,9 @@ impl App {
     /// Carry out what a view action asked for: messages, confirmations, UI.
     fn run_out(&mut self, out: Out) {
         self.send_all(out.msgs);
+        if let Some(a) = out.app {
+            self.action(a);
+        }
         if let Some(pane) = out.confirm_close
             && self.confirm("A process is still running in this terminal. End it?")
         {
@@ -665,9 +747,28 @@ impl App {
         }
     }
 
-    pub(crate) fn set_font_size(&mut self, pt: f32) {
-        self.font_size = clamp_font_size(pt);
-        self.rebuild_fonts();
+    /// Change the focused pane's zoom delta (spec §3.4); chrome keeps the window font.
+    fn zoom(&mut self, delta: impl FnOnce(f32) -> f32) {
+        let Some(pane) = self.view.focused() else { return };
+        if self.fonts.exhausted() {
+            self.rebuild_fonts();
+            if self.fonts.exhausted() {
+                return;
+            }
+        }
+        let profile = self.view.snapshot().pane(pane).map(|m| m.profile.clone());
+        let p = profile.as_deref().and_then(|n| self.spawn_ctx.profiles.iter().find(|p| p.name == n));
+        // Keep the delta inside the clamp, so zooming back from a limit takes effect at once.
+        let base = appearance(p, &self.config, 0.0, &|_| true).size_pt;
+        let delta = crate::view::round_zoom(clamp_font_size(base + delta(self.view.zoom(pane))) - base);
+        let look = self.look_for(profile.as_deref(), delta);
+        let msgs = self.view.set_zoom(pane, delta, look);
+        self.send_all(msgs);
+        self.fonts.retain(&self.view.used_fonts());
+        // Cached rows hold the old font's glyph and face ids, even if the cell size is unchanged; the
+        // pane shows its fill until the redraw arrives.
+        self.grids.remove(&pane);
+        self.send_pane(pane, PaneCmd::Redraw);
     }
 
     fn scroll(&mut self, s: ScrollTo) {
@@ -719,8 +820,6 @@ impl App {
         let mut y = i32::from(((lparam.0 >> 16) & 0xffff) as i16);
         let shift = unsafe { GetKeyState(i32::from(VK_SHIFT.0)) } < 0;
         let alt = unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
-        let pad = self.pad_px();
-        let m = self.fonts.metrics();
         if msg == WM_MOUSEWHEEL {
             let n = wheel_notches(&mut self.wheel_acc, ((wparam.0 >> 16) & 0xffff) as i16);
             // Wheel coordinates are screen-relative.
@@ -750,6 +849,7 @@ impl App {
             };
             let Some((pane, rect)) = pane.and_then(|p| self.view.panes.get(&p).map(|v| (p, v.rect))) else { return };
             let button = if n > 0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+            let pad = self.view.look(pane).pad;
             for _ in 0..n.unsigned_abs() {
                 let ev = MouseEvent { x_px: (pt.x - rect.x - pad.0) as f32, y_px: (pt.y - rect.y - pad.1) as f32, button: Some(button), action: MouseAction::Press, mods: Mods(0) };
                 self.send_pane(pane, PaneCmd::Mouse(ev));
@@ -881,6 +981,8 @@ impl App {
         let (copy_on_select, right_paste) = (self.config.copy_on_select, self.config.right_click_action == RightClick::Paste);
         let right_menu = self.config.right_click_action == RightClick::Menu;
         let mut open_menu = false;
+        let look = self.view.look(pane);
+        let (m, pad) = (self.fonts.get(look.font).metrics(), look.pad);
         let Some(pv) = self.view.panes.get_mut(&pane) else { return };
         let (ox, oy) = (pv.rect.x + pad.0, pv.rect.y + pad.1);
         if pv.mouse_tracking && !shift {
@@ -1025,8 +1127,8 @@ impl App {
                         && let Some(c) = self.grids.get(&p).and_then(GridRenderer::cursor_pos)
                         && let Some(v) = self.view.panes.get(&p)
                     {
-                        let m = self.fonts.metrics();
-                        let pad = self.pad_px();
+                        let look = self.view.look(p);
+                        let (m, pad) = (self.fonts.get(look.font).metrics(), look.pad);
                         Ime::set_candidate_pos(hwnd, v.rect.x + pad.0 + (u32::from(c.0) * m.w) as i32, v.rect.y + pad.1 + (u32::from(c.1) * m.h) as i32, m.h as i32);
                     }
                 }
@@ -1232,7 +1334,8 @@ impl App {
             PaneEvent::Frame(f) => {
                 let t = Instant::now();
                 let pipe = self.pipe.clone();
-                self.grids.entry(pane).or_insert_with(|| GridRenderer::with_pipeline(pipe)).apply(&f, &self.fonts);
+                let fonts = self.fonts.get(self.view.look(pane).font);
+                self.grids.entry(pane).or_insert_with(|| GridRenderer::with_pipeline(pipe)).apply(&f, fonts);
                 tracing::debug!(seq = f.seq, rows = f.dirty_rows.len(), apply_us = t.elapsed().as_micros() as u64, "frame arrived");
                 // Ack on apply, not on present: the pane can send the newest state while we wait for
                 // vsync, so what we draw is fresh. One frame in flight still bounds the queue.
@@ -1399,6 +1502,14 @@ impl App {
         self.view.set_dim_opacity(self.config.unfocused_split_opacity);
     }
 
+    /// Apply a reload's swap chain decision (spec §4.2); `was_wanted` is the answer before it.
+    pub(crate) fn sync_swapchain(&mut self, was_wanted: bool) {
+        let want = needs_transparency(&self.config, &self.spawn_ctx.profiles);
+        if swapchain_change(self.sc.is_composition(), was_wanted, want) == ScChange::KeepAndNotify {
+            crate::reload::toast_text(self, "transparency", "Transparency applies to new windows".into());
+        }
+    }
+
     /// Send each pane in view its profile's colors (after a config reload).
     pub(crate) fn resend_colors(&mut self) {
         for (p, _) in self.view.visible() {
@@ -1412,7 +1523,7 @@ impl App {
         self.dirty = false;
         crate::reload::render_start(self);
         let t0 = Instant::now();
-        let m = self.fonts.metrics();
+        let m = self.fonts.get(0).metrics();
         let c = &self.config;
         let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
         let (bg, fg) = (rgb(c.background), rgb(c.foreground));
@@ -1421,9 +1532,7 @@ impl App {
         // Where this window's focus is: accent while it is the active window, dimmed otherwise.
         let cue = if self.focused { accent } else { col.bar_fg_dim };
         let sel = c.selection_background.map_or((0x3e, 0x44, 0x51), rgb);
-        let opacity = c.background_opacity;
         let blink = self.blink_on || !c.cursor_style_blink;
-        let pad = self.pad_px();
         let regions = self.view.regions();
         let now = Instant::now();
         let g = self.view.geometry();
@@ -1450,12 +1559,15 @@ impl App {
         // Pane grids first, then chrome over and around them.
         for &(id, rect) in &panes {
             let exit = self.view.pane_exit(id).map(|code| format!("[process exited {code}] Enter: restart · ctrl+shift+w: close"));
-            let opts = DrawOpts { selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
+            let look = self.view.look(id);
+            let opacity = drawn_opacity(self.sc.is_composition(), look.opacity);
+            let fonts = self.fonts.get(look.font);
+            let opts = DrawOpts { font: look.font, selection: None, selection_color: sel, cursor_blink_on: blink, focused: self.focused && focused_pane == Some(id), opacity };
             match self.grids.get_mut(&id) {
                 Some(g) => {
-                    g.set_overlay(Overlay::Exit, exit.as_deref(), &self.fonts);
-                    let origin = ((rect.x + pad.0) as f32, (rect.y + pad.1) as f32);
-                    g.push_layers(&mut batches, &mut q, &self.images, id, &self.gpu, &mut self.atlas, &self.fonts, origin, &m, &opts, rect);
+                    g.set_overlay(Overlay::Exit, exit.as_deref(), fonts);
+                    let origin = ((rect.x + look.pad.0) as f32, (rect.y + look.pad.1) as f32);
+                    g.push_layers(&mut batches, &mut q, &self.images, id, &self.gpu, &mut self.atlas, fonts, origin, &fonts.metrics(), &opts, rect);
                 }
                 None => Painter { q: &mut q }.rect(rect, bg, opacity),
             }
@@ -1474,6 +1586,9 @@ impl App {
             && let Some((_, rect)) = panes.iter().find(|(p, _)| *p == id)
             && let Some(v) = self.view.panes.get(&id)
         {
+            let look = self.view.look(id);
+            let (fonts, pad) = (self.fonts.get(look.font), look.pad);
+            let m = fonts.metrics();
             let width = unicode_width::UnicodeWidthStr::width(preedit.as_str()) as u16;
             let cursor = self.grids.get(&id).and_then(GridRenderer::cursor_pos);
             let (cx, cy) = crate::input::preedit_origin(cursor, v.cells.0, v.cells.1, width);
@@ -1481,7 +1596,7 @@ impl App {
             let w = (i32::from(width) * m.w as i32).min(rect.x + rect.w - x);
             let mut p = Painter { q: &mut q };
             p.rect(Rect { x, y, w, h: m.h as i32 }, bg, 1.0);
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, x, y, &preedit, fg, 1.0);
+            p.text_in(&self.gpu, &mut self.atlas, fonts, look.font, x, y, &preedit, fg, 1.0);
             p.rect(Rect { x, y: y + m.h as i32 - 1, w, h: 1 }, fg, 1.0);
         }
         // Hover and press washes for clickable chrome.
@@ -1546,7 +1661,7 @@ impl App {
             let title = truncate_cells(&agent.map_or(title.clone(), |(icon, ..)| format!("{icon} {title}")), cells);
             let ty = r.y + (r.h - m.h as i32) / 2;
             let tc = if is_active { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, tab_lit) };
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &title, tc, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, ty, &title, tc, 1.0);
             let x = chrome::close_rect(*r, m.w as i32);
             let close_wash = wash(&Hit::TabClose(*id));
             if let Some(c) = close_wash {
@@ -1561,10 +1676,10 @@ impl App {
                         p.rect(Rect { x: x.x - m.w as i32 / 2 - halo / 2, y: r.y + (r.h - halo) / 2, w: halo, h: halo }, accent, 0.35 * v);
                     }
                 }
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x - m.w as i32, ty, b, accent, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), x.x - m.w as i32, ty, b, accent, 1.0);
             }
             let xc = chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::TabClose(*id)));
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, x.x + (x.w - m.w as i32) / 2, ty, "×", xc, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), x.x + (x.w - m.w as i32) / 2, ty, "×", xc, 1.0);
         }
         let under = tabs.iter().find(|(t, _)| Some(*t) == active).map(|(_, r)| Rect { x: r.x, y: r.y + r.h - 2, w: r.w, h: 2 });
         if let Some(u) = self.motion.slide(SlideSlot::Underline, under, None, now) {
@@ -1574,19 +1689,19 @@ impl App {
             p.rect(plus, c, 1.0);
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
-        p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
         let chevron = chrome::chevron_rect(plus, m.w as i32);
         if let Some(c) = wash(&Hit::NewTabMenu) {
             p.rect(chevron, c, 1.0);
         }
         let cc = if self.view.menu().is_some() { accent } else { col.bar_fg_dim };
-        p.text(&self.gpu, &mut self.atlas, &self.fonts, chevron.x + (chevron.w - m.w as i32) / 2, ty, "⌄", cc, 1.0);
+        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), chevron.x + (chevron.w - m.w as i32) / 2, ty, "⌄", cc, 1.0);
         let gear = self.view.gear_rect();
         if let Some(c) = wash(&Hit::Gear) {
             p.rect(gear, c, 1.0);
         }
         let gc = if self.view.settings().is_some() { accent } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::Gear)) };
-        p.text(&self.gpu, &mut self.atlas, &self.fonts, gear.x + (gear.w - m.w as i32) / 2, ty, "⚙", gc, 1.0);
+        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), gear.x + (gear.w - m.w as i32) / 2, ty, "⚙", gc, 1.0);
         // Caption buttons, drawn like Windows 11's: a light wash on hover, red behind close.
         let glyph = (10 * self.win.dpi() / 96) as i32;
         let maximized = self.win.is_maximized();
@@ -1613,7 +1728,7 @@ impl App {
                 }
                 Caption::Maximize => outline(&mut p, gx, gy),
                 Caption::Close => {
-                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + (r.w - m.w as i32) / 2, r.y + (r.h - m.h as i32) / 2, "✕", fg, 1.0);
+                    p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + (r.w - m.w as i32) / 2, r.y + (r.h - m.h as i32) / 2, "✕", fg, 1.0);
                 }
             }
         }
@@ -1627,7 +1742,7 @@ impl App {
             if self.view.floating_sidebar().is_some() {
                 p.rect(Rect { x: s.x + s.w - 1, y: s.y, w: 1, h: s.h }, col.divider, 1.0);
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, s.x + pad_x, 6, "WORKSPACES", col.bar_fg_dim, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), s.x + pad_x, 6, "WORKSPACES", col.bar_fg_dim, 1.0);
             let (rects, new_row) = self.view.workspace_rects();
             let rows = self.view.sidebar_rows();
             let chip = m.h as i32 / 2;
@@ -1643,7 +1758,7 @@ impl App {
                 let cells = ((r.w - (tx - r.x) - pad_x) / m.w as i32).max(0) as usize;
                 let tc = if row.current { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::Workspace(row.id))) };
                 let name = truncate_cells(&row.name, cells);
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, tx, r.y + (r.h - m.h as i32) / 2, &name, tc, if row.elsewhere { 0.6 } else { 1.0 });
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), tx, r.y + (r.h - m.h as i32) / 2, &name, tc, if row.elsewhere { 0.6 } else { 1.0 });
                 if row.attention {
                     let v = self.motion.dot(Dot::Workspace(row.id), now);
                     attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
@@ -1668,7 +1783,7 @@ impl App {
                 let label = agent.map_or(title.clone(), |(icon, _)| format!("{icon} {title}"));
                 let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
                 let tc = if current { col.bar_fg } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::SidebarTab(t))) };
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &truncate_cells(&label, cells), tc, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &truncate_cells(&label, cells), tc, 1.0);
                 if agent.is_some_and(|(_, attention)| attention) {
                     let v = self.motion.dot(Dot::Tab(t), now);
                     attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
@@ -1679,12 +1794,12 @@ impl App {
                 p.rect(new_row, c, 1.0);
             }
             let nc = chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::NewWorkspace));
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", nc, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), new_row.x + pad_x, new_row.y + (new_row.h - m.h as i32) / 2, "+ New workspace", nc, 1.0);
             // Agents: waiting first (oldest first), then working, then idle (spec §4.2).
             let agents = self.view.agent_rects();
             if !agents.is_empty() {
                 let hy = agents[0].1.y - new_row.h + (new_row.h - m.h as i32) / 2;
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, s.x + pad_x, hy, "AGENTS", col.bar_fg_dim, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), s.x + pad_x, hy, "AGENTS", col.bar_fg_dim, 1.0);
             }
             let rows = self.view.agent_rows();
             let snap = self.view.snapshot();
@@ -1702,7 +1817,7 @@ impl App {
                 let ws = snap.workspace(row.workspace).map_or("", |w| w.name.as_str());
                 let cells = ((r.w - 2 * pad_x - chip - pad_x) / m.w as i32).max(0) as usize;
                 let text = truncate_cells(&format!("{} {} · {state} · {ws}", a.icon, a.name), cells);
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &text, color, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, r.y + (r.h - m.h as i32) / 2, &text, color, 1.0);
                 if a.attention {
                     let v = self.motion.dot(Dot::Agent(row.pane), now);
                     attention_dot(&mut p, Rect { x: r.x + r.w - pad_x - chip, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, accent, v);
@@ -1729,10 +1844,10 @@ impl App {
             p.rect(Rect { x: bar.x - 1, y: bar.y - 1, w: bar.w + 2, h: bar.h + 2 }, accent, 1.0);
             p.rect(bar, col.bar_bg, 1.0);
             let ty = bar.y + (bar.h - m.h as i32) / 2;
-            let count_w = crate::paint::text_width(&self.fonts, &count);
+            let count_w = crate::paint::text_width(self.fonts.get(0), &count);
             let room = ((bar.w - count_w - 3 * pad_x) / cw).max(0) as usize;
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}{}▏", f.query, preedit), room), col.bar_fg, 1.0);
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), bar.x + pad_x, ty, &truncate_cells(&format!("Find: {}{}▏", f.query, preedit), room), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), bar.x + bar.w - pad_x - count_w, ty, &count, col.bar_fg_dim, 1.0);
         }
         let n = p.q.len();
         crate::paint::shift(&mut p.q[find_start..n], 0.0, (8.0 * (1.0 - find_a)).round(), find_a);
@@ -1755,7 +1870,7 @@ impl App {
                 } else if let Some(w) = wash(&Hit::Settings(SettingsHit::Page(pg))) {
                     p.rect(r, w, 1.0);
                 }
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, mid(r), pg.label(), if on { col.bar_fg } else { col.bar_fg_dim }, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, mid(r), pg.label(), if on { col.bar_fg } else { col.bar_fg_dim }, 1.0);
             }
             for &(i, r) in &l.rows {
                 let st = &all()[i];
@@ -1773,7 +1888,7 @@ impl App {
                 let ctl_x = r.x + r.w - reset_w - ctl_w;
                 // Long labels give way to the control (and its warning mark).
                 let label_room = ((ctl_x - r.x - pad_x - 2 * cw) / cw).max(0) as usize;
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &truncate_cells(st.label, label_room), col.bar_fg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, ty, &truncate_cells(st.label, label_room), col.bar_fg, 1.0);
                 let cur = (st.get)(c);
                 let text = match (&row.origin, s.list().filter(|l| l.row == i)) {
                     (Origin::Included { file, .. }, _) => {
@@ -1783,7 +1898,7 @@ impl App {
                     _ => crate::settings::control_text(st, &cur, s.time().filter(|t| t.row == i)),
                 };
                 let room = (ctl_w / cw).max(0) as usize;
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, ctl_x, ty, &truncate_cells(&text, room), if ro { col.bar_fg_dim } else { col.bar_fg }, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ctl_x, ty, &truncate_cells(&text, room), if ro { col.bar_fg_dim } else { col.bar_fg }, 1.0);
                 if let Kind::Slider { min, max, .. } = st.kind
                     && !ro
                     && let Ok(v) = cur.parse::<f32>()
@@ -1794,17 +1909,17 @@ impl App {
                 }
                 if !ro && cur != (st.get)(&defaults) {
                     let dot = if wash(&Hit::Settings(SettingsHit::Reset(i))).is_some() { col.bar_fg } else { accent };
-                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - reset_w + (reset_w - cw) / 2, ty, "●", dot, 1.0);
+                    p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + r.w - reset_w + (reset_w - cw) / 2, ty, "●", dot, 1.0);
                 }
                 if row.warning.is_some() {
-                    p.text(&self.gpu, &mut self.atlas, &self.fonts, ctl_x - 2 * cw, ty, "⚠", (0xe5, 0xc0, 0x7b), 1.0);
+                    p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ctl_x - 2 * cw, ty, "⚠", (0xe5, 0xc0, 0x7b), 1.0);
                 }
             }
             let f = l.open_file;
             if let Some(w) = wash(&Hit::Settings(SettingsHit::OpenFile)) {
                 p.rect(f, w, 1.0);
             }
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, f.x + pad_x, mid(f), "Open config file", col.bar_fg_dim, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), f.x + pad_x, mid(f), "Open config file", col.bar_fg_dim, 1.0);
             if let (Some(list), Some((drop, items))) = (s.list(), &l.list) {
                 let names = list.items();
                 p.rect(Rect { x: drop.x - 1, y: drop.y - 1, w: drop.w + 2, h: drop.h + 2 }, accent, 1.0);
@@ -1817,7 +1932,7 @@ impl App {
                         p.rect(r, w, 1.0);
                     }
                     let name = names.get(k).copied().unwrap_or_default();
-                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, mid(r), &truncate_cells(name, ((r.w - 2 * pad_x) / cw).max(0) as usize), col.bar_fg, 1.0);
+                    p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, mid(r), &truncate_cells(name, ((r.w - 2 * pad_x) / cw).max(0) as usize), col.bar_fg, 1.0);
                 }
             }
         }
@@ -1859,7 +1974,7 @@ impl App {
                         });
                         match (icon.as_deref().filter(|t| t.chars().count() <= 2), image) {
                             (Some(t), _) => {
-                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, t, col.bar_fg, 1.0);
+                                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ix, ty, t, col.bar_fg, 1.0);
                             }
                             (None, Some((srv, _))) => {
                                 let quad = crate::grid::Quad {
@@ -1874,27 +1989,27 @@ impl App {
                             (None, None) => {
                                 let (c, tile) = letter_tile(name);
                                 p.rect(Rect { x: ix, y: ty, w: side, h: m.h as i32 }, tile, 1.0);
-                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + (side - cw) / 2, ty, &c.to_string(), (255, 255, 255), 1.0);
+                                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ix + (side - cw) / 2, ty, &c.to_string(), (255, 255, 255), 1.0);
                             }
                         }
                         // The default profile's name is in the accent colour (the UI font has no bold).
                         (name.as_str(), binding.as_deref(), if *default { accent } else { col.bar_fg })
                     }
                     MenuRow::Settings(b) => {
-                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "⚙", col.bar_fg_dim, 1.0);
+                        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ix, ty, "⚙", col.bar_fg_dim, 1.0);
                         ("Settings", b.as_deref(), col.bar_fg)
                     }
                     MenuRow::Palette(b) => {
-                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "›", col.bar_fg_dim, 1.0);
+                        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ix, ty, "›", col.bar_fg_dim, 1.0);
                         ("Command palette", b.as_deref(), col.bar_fg)
                     }
                     MenuRow::Separator => continue,
                 };
-                let bw = binding.map_or(0, |b| crate::paint::text_width(&self.fonts, b));
+                let bw = binding.map_or(0, |b| crate::paint::text_width(self.fonts.get(0), b));
                 let room = ((r.w - 3 * cw - bw - 3 * pad_x) / cw).max(0) as usize;
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + 3 * cw, ty, &truncate_cells(label, room), lc, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), ix + 3 * cw, ty, &truncate_cells(label, room), lc, 1.0);
                 if let Some(b) = binding {
-                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - bw, ty, b, col.bar_fg_dim, 1.0);
+                    p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + r.w - pad_x - bw, ty, b, col.bar_fg_dim, 1.0);
                 }
             }
         }
@@ -1918,7 +2033,7 @@ impl App {
                 Mode::Picker => "Workspace › ",
                 Mode::MoveTab => "Move tab to › ",
             };
-            p.text(&self.gpu, &mut self.atlas, &self.fonts, panel.x + pad_x, panel.y + 5, &format!("{title}{}{preedit}▏", pal.query), col.bar_fg, 1.0);
+            p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), panel.x + pad_x, panel.y + 5, &format!("{title}{}{preedit}▏", pal.query), col.bar_fg, 1.0);
             for &(i, r) in &layout.rows {
                 let Some(item) = items.get(i) else { continue };
                 if i == pal.selected {
@@ -1927,11 +2042,11 @@ impl App {
                 }
                 let ty = r.y + (r.h - m.h as i32) / 2;
                 let group = format!("{} › ", item.group);
-                let gw = p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x, ty, &group, col.bar_fg_dim, 1.0);
-                let detail_w = crate::paint::text_width(&self.fonts, &item.detail);
+                let gw = p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x, ty, &group, col.bar_fg_dim, 1.0);
+                let detail_w = crate::paint::text_width(self.fonts.get(0), &item.detail);
                 let room = ((r.w - gw - detail_w - 3 * pad_x) / cw).max(0) as usize;
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + pad_x + gw, ty, &truncate_cells(&item.label, room), col.bar_fg, 1.0);
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - detail_w, ty, &item.detail, col.bar_fg_dim, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + pad_x + gw, ty, &truncate_cells(&item.label, room), col.bar_fg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), r.x + r.w - pad_x - detail_w, ty, &item.detail, col.bar_fg_dim, 1.0);
             }
         }
         let n = p.q.len();
@@ -1946,17 +2061,17 @@ impl App {
             p.text(gpu, atlas, fonts, x, y, text, bg, 1.0);
         };
         if self.server_stopped {
-            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, "[server stopped] Enter: reconnect", true, true);
+            notice(&mut p, &self.gpu, &mut self.atlas, self.fonts.get(0), "[server stopped] Enter: reconnect", true, true);
         }
         let toast_a = self.motion.overlay(|m| &mut m.toast, self.toast.is_some(), now);
         if let Some(t) = &self.toast {
             let start = p.q.len();
-            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, true, false);
+            notice(&mut p, &self.gpu, &mut self.atlas, self.fonts.get(0), t, true, false);
             let n = p.q.len();
             crate::paint::shift(&mut p.q[start..n], 0.0, 0.0, toast_a);
         }
         if let Some(t) = &self.stats {
-            notice(&mut p, &self.gpu, &mut self.atlas, &self.fonts, t, false, false);
+            notice(&mut p, &self.gpu, &mut self.atlas, self.fonts.get(0), t, false, false);
         }
         // Tooltip for an icon-only button the pointer rests on, below it and inside the window.
         if self.view.tooltip_due(now) {
@@ -1990,13 +2105,13 @@ impl App {
             };
             let button = button.or(warning);
             if let Some((text, r)) = caption.or(button) {
-                let w = crate::paint::text_width(&self.fonts, &text) + 2 * pad_x;
+                let w = crate::paint::text_width(self.fonts.get(0), &text) + 2 * pad_x;
                 let h = m.h as i32 + 6;
                 let x = (r.x + r.w / 2 - w / 2).clamp(0, (self.size_px.0 as i32 - w).max(0));
                 let tip = Rect { x, y: r.y + r.h + 4, w, h };
                 p.rect(Rect { x: tip.x - 1, y: tip.y - 1, w: tip.w + 2, h: tip.h + 2 }, col.divider, 1.0);
                 p.rect(tip, col.bar_bg, 1.0);
-                p.text(&self.gpu, &mut self.atlas, &self.fonts, tip.x + pad_x, tip.y + 3, &text, col.bar_fg, 1.0);
+                p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), tip.x + pad_x, tip.y + 3, &text, col.bar_fg, 1.0);
             }
         }
         self.motion.end(now);
@@ -2227,14 +2342,23 @@ pub fn run() -> Result<()> {
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
     }
     crate::notify::set_app_id();
-    let win = Window::create("Wraith", 1000, 640, config.background_opacity < 1.0)?;
+    let win = Window::create("Wraith", 1000, 640)?;
     let notifier = crate::notify::Notifier::new(win.hwnd());
     let gpu = Gpu::new()?;
-    let fonts = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
+    let font = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
     let atlas = GlyphAtlas::new(&gpu, 2048)?;
     let pipe = Rc::new(Pipeline::new(&gpu)?);
     let (w, h) = win.client_size();
-    let sc = gpu.create_swapchain(win.hwnd(), w, h)?;
+    let spawn_ctx = build_spawn_ctx(&config);
+    let transparent = needs_transparency(&config, &spawn_ctx.profiles);
+    let sc = match gpu.create_swapchain(win.hwnd(), w, h, transparent) {
+        Ok(sc) => sc,
+        Err(e) if transparent => {
+            tracing::warn!("composition swap chain: {e}; drawing opaque");
+            gpu.create_swapchain(win.hwnd(), w, h, false)?
+        }
+        Err(e) => return Err(e),
+    };
     let pipe_name = wraith_ipc::pipe_name();
     let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 
@@ -2245,10 +2369,9 @@ pub fn run() -> Result<()> {
     link.send(ClientMsg::AttachWindow { workspace: None });
 
     let double_click = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
-    let font_size = config.font_size;
     let matcher = KeybindMatcher::new(&config.keybinds);
-    let spawn_ctx = build_spawn_ctx(&config);
-    let m = fonts.metrics();
+    let m = font.metrics();
+    let fonts = FontTable::new(FontKey { families: config.font_family.clone(), size_pt: config.font_size, features: config.font_feature.clone() }, font);
     let s = win.dpi() as f32 / 96.0;
     let geom = Geometry {
         client: (w as i32, h as i32),
@@ -2267,6 +2390,7 @@ pub fn run() -> Result<()> {
         sc,
         fonts,
         atlas,
+        missing_fonts: HashSet::new(),
         pipe,
         grids: HashMap::new(),
         images: ImageStore::default(),
@@ -2281,7 +2405,6 @@ pub fn run() -> Result<()> {
         events: rx,
         woken,
         config,
-        font_size,
         keys: KeyTranslator::default(),
         ime: Ime::default(),
         matcher,
@@ -2310,6 +2433,7 @@ pub fn run() -> Result<()> {
         motion: Motion::new(crate::window::animations_enabled()),
         preview_base: None,
     }));
+    app.borrow_mut().rebuild_looks();
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
     app.borrow().win.show();
     let a = app.clone();

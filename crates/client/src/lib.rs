@@ -2,6 +2,7 @@ pub mod app;
 pub mod atlas;
 pub mod chrome;
 pub mod font;
+pub mod font_table;
 pub mod gpu;
 pub mod grid;
 pub mod images;

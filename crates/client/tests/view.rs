@@ -527,6 +527,17 @@ fn palette_opens_filters_and_runs_an_action() {
 }
 
 #[test]
+fn palette_hands_app_level_actions_back() {
+    // Zoom, copy, paste, scroll and the like need the app's fonts, clipboard and config, not the view.
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "reset font");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert_eq!(out.app, Some(Action::ResetFontSize), "{out:?}");
+}
+
+#[test]
 fn escape_closes_and_returns_focus() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());
@@ -995,4 +1006,126 @@ fn hovering_a_menu_row_selects_it() {
     let (i, r) = v.menu_layout().unwrap().rows[1];
     v.hover_at(r.x + 3, r.y + 3);
     assert_eq!(v.menu().unwrap().selected, i);
+}
+
+// Per-pane looks (spec §3.3, §3.4).
+use std::collections::{HashMap, HashSet};
+use wraith_client::view::Look;
+
+fn look(font: u16, cell: (u32, u32), pad: i32) -> Look {
+    Look { font, cell, pad: (pad, pad), opacity: 1.0 }
+}
+
+/// Window 8x16 pad 2 (as `geom()`), cmd 10x20 pad 4 in font 1.
+fn looked_view() -> WindowView {
+    let mut v = view();
+    v.set_looks(look(0, (8, 16), 2), HashMap::from([("cmd".to_string(), look(1, (10, 20), 4))]));
+    v
+}
+
+/// (pane, cols, rows, cell_w, cell_h) of every Resize.
+fn resizes_px(msgs: &[ClientMsg]) -> Vec<(PaneId, u16, u16, u32, u32)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ClientMsg::Cmd { pane, cmd: PaneCmd::Resize { cols, rows, cell_w_px, cell_h_px } } => Some((*pane, *cols, *rows, *cell_w_px, *cell_h_px)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn panes_resize_with_their_own_cell() {
+    let mut v = looked_view();
+    let msgs = v.on_snapshot(snap(10), &ctx());
+    let r2 = v.visible()[1].1;
+    let got = resizes_px(&msgs);
+    assert_eq!(got[0], (1, 62, 35, 8, 16), "pwsh keeps the window look");
+    assert_eq!(got[1], (2, ((r2.w - 8) / 10) as u16, ((r2.h - 8) / 20) as u16, 10, 20));
+}
+
+#[test]
+fn split_spawns_with_new_profiles_cell() {
+    let mut v = looked_view();
+    let mut s = snap(10);
+    s.tabs[0].focused = 1;
+    v.on_snapshot(s, &ctx());
+    let r1 = v.visible()[0].1;
+    let out = v.split_profile(1, &ctx());
+    let [ClientMsg::Model(ModelCmd::Split { profile, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!(profile, "cmd");
+    assert_eq!((spawn.cell_w_px, spawn.cell_h_px), (10, 20));
+    // Pane 1 is taller than wide, so it splits down: half its height, in cmd cells.
+    assert_eq!((spawn.cols, spawn.rows), (((r1.w - 8) / 10) as u16, ((r1.h / 2 - 8) / 20) as u16));
+}
+
+#[test]
+fn zoom_changes_only_that_pane() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    let msgs = v.set_zoom(2, 2.0, look(1, (12, 24), 4));
+    let got = resizes_px(&msgs);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!((got[0].0, got[0].3, got[0].4), (2, 12, 24));
+    assert_eq!((v.zoom(2), v.zoom(1)), (2.0, 0.0));
+    assert_eq!(v.zoomed_panes(), vec![(2, "cmd".to_string(), 2.0)]);
+    let back = resizes_px(&v.set_zoom(2, 0.0, look(9, (1, 1), 0)));
+    assert_eq!(back.iter().map(|r| (r.0, r.3, r.4)).collect::<Vec<_>>(), vec![(2, 10, 20)]);
+    assert_eq!(v.look(2), look(1, (10, 20), 4));
+    assert!(v.zoomed_panes().is_empty());
+}
+
+#[test]
+fn fractional_zoom_steps_return_to_zero() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    for _ in 0..10 {
+        v.set_zoom(2, v.zoom(2) + 0.1, look(1, (12, 24), 4));
+    }
+    assert_eq!(v.zoom(2), 1.0);
+    for _ in 0..10 {
+        v.set_zoom(2, v.zoom(2) - 0.1, look(1, (12, 24), 4));
+    }
+    assert_eq!(v.zoom(2), 0.0);
+    assert!(v.zoomed_panes().is_empty(), "{:?}", v.zoomed_panes());
+}
+
+#[test]
+fn zoom_past_min_size_keeps_at_least_2x1() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    let got = resizes_px(&v.set_zoom(2, 60.0, look(1, (400, 400), 2)));
+    let r = got.iter().find(|r| r.0 == 2).expect("pane 2 resized");
+    assert!(r.1 >= 2 && r.2 >= 1, "{r:?}");
+}
+
+#[test]
+fn tab_min_size_uses_largest_pane_look() {
+    let mut v = view();
+    v.set_looks(look(0, (8, 16), 2), HashMap::from([("cmd".to_string(), look(1, (20, 40), 2))]));
+    let mut s = snap(10);
+    s.tabs[0].root = PaneNode::Split { axis: Axis::Horizontal, ratio: 0.01, a: Box::new(leaf(1)), b: Box::new(leaf(2)) };
+    v.on_snapshot(s, &ctx());
+    for (p, r) in v.visible() {
+        assert!(r.w >= 2 * 20 + 2 * 2, "pane {p} is {r:?}");
+    }
+}
+
+#[test]
+fn used_fonts_covers_profiles_and_zooms() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    v.set_zoom(1, 1.0, look(2, (9, 18), 2));
+    assert_eq!(v.used_fonts(), HashSet::from([0, 1, 2]));
+    v.set_zoom(1, 0.0, look(2, (9, 18), 2));
+    assert_eq!(v.used_fonts(), HashSet::from([0, 1]));
+}
+
+#[test]
+fn zoom_cleared_on_set_workspace() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    v.set_zoom(2, 2.0, look(1, (12, 24), 4));
+    v.set_workspace(7);
+    assert!(v.zoomed_panes().is_empty());
+    assert_eq!(v.zoom(2), 0.0);
 }

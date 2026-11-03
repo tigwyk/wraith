@@ -9,7 +9,7 @@ use wraith_config::{Config, ProfileExtra, Rgb, Scheme};
 use wraith_server::profile::{Profile, ShellKind};
 
 fn wt_profile(name: &str, command: &str) -> WtProfile {
-    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None }
+    WtProfile { name: name.into(), command: command.into(), dir: None, icon: None, scheme: None, ..WtProfile::default() }
 }
 
 fn wt() -> Result<WtSettings, String> {
@@ -62,6 +62,31 @@ fn extras_apply_and_unknown_warns() {
     let cmd = &m.profiles[1];
     assert_eq!((cmd.dir.as_deref(), cmd.scheme.as_deref(), cmd.icon.as_deref()), (Some(r"C:\src"), Some("Campbell"), Some("🐢")));
     assert!(m.warnings.iter().any(|w| w.contains("ghost")), "{:?}", m.warnings);
+}
+
+fn wt_with_appearance() -> Result<WtSettings, String> {
+    let mut s = wt()?;
+    s.profiles[2].font_size = Some(14.0);
+    s.profiles[2].opacity = Some(0.9);
+    Ok(s)
+}
+
+#[test]
+fn wt_appearance_reaches_profile() {
+    let m = merge(Some(&wt_with_appearance()), Vec::new, &Config::default());
+    assert_eq!((m.profiles[2].font_size, m.profiles[2].opacity), (Some(14.0), Some(0.9)));
+}
+
+#[test]
+fn profile_lines_override_wt_appearance() {
+    let mut c = Config::default();
+    c.profile_extras = vec![
+        ("Ubuntu 22.04".into(), ProfileExtra::FontSize, "11".into()),
+        ("Ubuntu 22.04".into(), ProfileExtra::Padding, "3".into()),
+    ];
+    let m = merge(Some(&wt_with_appearance()), Vec::new, &c);
+    let u = &m.profiles[2];
+    assert_eq!((u.font_size, u.padding, u.opacity), (Some(11.0), Some((3, 3)), Some(0.9)));
 }
 
 #[test]
@@ -142,4 +167,38 @@ fn empty_list_falls_back_to_detected() {
     c.windows_terminal_profiles = false;
     c.profile_detect = false;
     assert_eq!(names(&merge(None, detected, &c).profiles), ["pwsh"], "a window always has a profile to start");
+}
+
+// Per-pane appearance (per-profile-appearance spec §2.3, §3.3).
+use wraith_client::profiles::appearance;
+
+#[test]
+fn appearance_defaults_to_global() {
+    let c = Config::default();
+    let a = appearance(None, &c, 0.0, &|_| true);
+    assert_eq!(a.families, c.font_family);
+    assert_eq!(a.size_pt, c.font_size);
+    assert_eq!(a.pad, (c.window_padding_x, c.window_padding_y));
+    assert_eq!(a.opacity, c.background_opacity);
+}
+
+#[test]
+fn appearance_profile_wins_and_zoom_adds() {
+    let c = Config::default();
+    let p = Profile { font: Some(vec!["A".into()]), font_size: Some(14.0), padding: Some((8, 4)), opacity: Some(0.8), ..detected().remove(0) };
+    let a = appearance(Some(&p), &c, 2.0, &|_| true);
+    let mut want = vec!["A".to_string()];
+    want.extend(c.font_family.iter().filter(|f| *f != "A").cloned());
+    assert_eq!(a.families, want);
+    assert_eq!((a.size_pt, a.pad, a.opacity), (16.0, (8, 4), 0.8));
+    assert_eq!(appearance(Some(&p), &c, 100.0, &|_| true).size_pt, 72.0);
+}
+
+#[test]
+fn uninstalled_family_falls_back_to_window_families() {
+    let c = Config::default();
+    let p = Profile { font: Some(vec!["Cascadia Mono".into()]), font_size: Some(14.0), ..detected().remove(0) };
+    let a = appearance(Some(&p), &c, 0.0, &|f| f != "Cascadia Mono");
+    assert_eq!(a.families, c.font_family);
+    assert_eq!(a.size_pt, 14.0);
 }

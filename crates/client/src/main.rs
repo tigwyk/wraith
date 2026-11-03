@@ -67,10 +67,10 @@ fn init_logging(prefix: &str) -> Option<tracing_appender::non_blocking::WorkerGu
 
 /// Open a window, present one cleared frame, exit. Used by CI to prove the GPU path works.
 fn smoke_test() -> windows::core::Result<()> {
-    let win = Window::create("wraith smoke", 320, 200, false)?;
+    let win = Window::create("wraith smoke", 320, 200)?;
     let gpu = Gpu::new()?;
     let (w, h) = win.client_size();
-    let sc = gpu.create_swapchain(win.hwnd(), w, h)?;
+    let sc = gpu.create_swapchain(win.hwnd(), w, h, false)?;
     sc.wait();
     gpu.clear(sc.rtv(), [0.1, 0.1, 0.1, 1.0]);
     sc.present()?;

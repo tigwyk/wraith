@@ -314,3 +314,23 @@ fn profile_detect_key() {
     assert!(parse_str("", p(), &themes()).0.profile_detect);
     assert!(!parse_str("profile-detect = false\n", p(), &themes()).0.profile_detect);
 }
+
+#[test]
+fn profile_appearance_keys_round_trip() {
+    use wraith_config::ProfileExtra as E;
+    let (c, d) = parse_str(
+        "profile-font = U:JetBrainsMono NF, Cascadia Mono\nprofile-font-size = U:14\nprofile-padding = U:8,4\nprofile-opacity = U:0.85\nprofile-font-size = U:13\n",
+        p(),
+        &themes(),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    let u = |k, v: &str| ("U".to_string(), k, v.to_string());
+    assert_eq!(c.profile_extras, vec![u(E::Font, "JetBrainsMono NF, Cascadia Mono"), u(E::Padding, "8,4"), u(E::Opacity, "0.85"), u(E::FontSize, "13")]);
+}
+
+#[test]
+fn profile_appearance_bad_values_are_diagnostics() {
+    let (c, d) = parse_str("profile-font-size = U:200\nprofile-opacity = U:1.5\nprofile-padding = U:40\nprofile-font = U: , \n", p(), &themes());
+    assert_eq!(d.len(), 4, "{d:?}");
+    assert!(c.profile_extras.is_empty());
+}

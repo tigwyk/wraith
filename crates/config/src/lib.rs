@@ -114,6 +114,36 @@ pub enum ProfileExtra {
     Dir,
     Theme,
     Icon,
+    Font,
+    FontSize,
+    Padding,
+    Opacity,
+}
+
+/// A `profile-font` list: comma-separated family names, trimmed, empties dropped; `None` if none are left.
+pub fn font_list(v: &str) -> Option<Vec<String>> {
+    let l: Vec<String> = v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+    (!l.is_empty()).then_some(l)
+}
+
+/// A `profile-font-size`: a number from 4 to 72.
+pub fn font_size(v: &str) -> Option<f32> {
+    v.trim().parse::<f32>().ok().filter(|n| (4.0..=72.0).contains(n))
+}
+
+/// A `profile-padding`: `n`, `x,y` or `l,t,r,b` (only the left and top are used), each from 0 to 32.
+pub fn padding(v: &str) -> Option<(u16, u16)> {
+    let p: Vec<u16> = v.split(',').map(|s| s.trim().parse::<u16>().ok().filter(|n| *n <= 32)).collect::<Option<_>>()?;
+    match p[..] {
+        [n] => Some((n, n)),
+        [x, y] | [x, y, _, _] => Some((x, y)),
+        _ => None,
+    }
+}
+
+/// A `profile-opacity`: a number from 0 to 1.
+pub fn opacity(v: &str) -> Option<f32> {
+    v.trim().parse::<f32>().ok().filter(|n| (0.0..=1.0).contains(n))
 }
 
 /// `workspace = name:dir[:layout]`

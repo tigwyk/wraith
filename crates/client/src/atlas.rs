@@ -15,10 +15,12 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SA
 use windows::core::Result;
 
 use crate::font::{FaceId, FontStack};
+use crate::font_table::FontId;
 use crate::gpu::Gpu;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
+    pub font: FontId,
     pub face: FaceId,
     pub glyph: u16,
     /// Subpixel x offset in quarter pixels (0..4).
@@ -84,7 +86,8 @@ impl GlyphAtlas {
         if let Some(e) = self.map.get(&key) {
             return *e;
         }
-        let (face, color) = fonts.face(key.face);
+        // Not cached: the face may be added later, and this key must then rasterize.
+        let Some((face, color)) = fonts.face(key.face) else { return AtlasEntry { uv: [0.0; 4], w: 0, h: 0, bearing: (0, 0), color: false } };
         let bmp = rasterize(fonts, &face, color, key).unwrap_or_default();
         let e = self.insert(gpu, &bmp);
         self.map.insert(key, e);
