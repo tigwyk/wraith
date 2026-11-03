@@ -10,6 +10,7 @@ pub mod notify;
 pub mod reload;
 pub mod link;
 pub mod motion;
+pub mod new_tab_menu;
 pub mod paint;
 pub mod palette;
 pub mod profiles;

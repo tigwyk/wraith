@@ -13,6 +13,7 @@ use wraith_proto::{KeyAction, KeyCode, KeyEvent};
 use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
+use crate::new_tab_menu::{MenuLayout, NewTabMenu};
 use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
 use crate::selection::Selection;
 use crate::settings::{SettingsLayout, SettingsView};
@@ -108,6 +109,7 @@ pub enum Ui {
     MoveTab,
     NewWindow,
     Settings,
+    NewTabMenu,
 }
 
 /// What a shell exit does (see `WindowView::on_exit`).
@@ -225,6 +227,7 @@ pub struct WindowView {
     configured_done: bool,
     palette: Option<Palette>,
     settings: Option<SettingsView>,
+    menu: Option<NewTabMenu>,
     /// The open find bar (scrollback search), if any.
     find: Option<Find>,
     /// The pointer's last position in the client area, and what is under it.
@@ -260,6 +263,7 @@ impl WindowView {
             configured_done: false,
             palette: None,
             settings: None,
+            menu: None,
             find: None,
             pointer: None,
             hovered: None,
@@ -278,6 +282,7 @@ impl WindowView {
     }
 
     pub fn open_settings(&mut self, s: SettingsView) {
+        self.menu = None;
         self.settings = Some(s);
         self.rehover();
     }
@@ -291,6 +296,32 @@ impl WindowView {
         self.settings.as_ref().map(|s| s.layout(self.geom.client, (self.geom.cell.0 as i32, self.geom.cell.1 as i32), self.geom.bar_h))
     }
 
+    pub fn menu(&self) -> Option<&NewTabMenu> {
+        self.menu.as_ref()
+    }
+
+    pub fn menu_mut(&mut self) -> Option<&mut NewTabMenu> {
+        self.menu.as_mut()
+    }
+
+    /// Open the new-tab menu over everything else; the palette and settings close.
+    pub fn open_menu(&mut self, ctx: &SpawnCtx) {
+        self.palette = None;
+        self.settings = None;
+        self.menu = Some(NewTabMenu::new(&ctx.profiles, &ctx.profile(None).name, &ctx.config.keybinds));
+        self.rehover();
+    }
+
+    pub fn close_menu(&mut self) {
+        self.menu = None;
+        self.rehover();
+    }
+
+    pub fn menu_layout(&self) -> Option<MenuLayout> {
+        let (_, plus) = self.tab_layout();
+        self.menu.as_ref().map(|m| m.layout(plus, self.geom.client, (self.geom.cell.0 as i32, self.geom.cell.1 as i32), self.geom.bar_h))
+    }
+
     pub fn palette(&self) -> Option<&Palette> {
         self.palette.as_ref()
     }
@@ -301,6 +332,7 @@ impl WindowView {
             Mode::Picker => picker_items(&self.snap, &ctx.config.workspaces),
             Mode::MoveTab => self.workspace.map(|w| move_tab_items(&self.snap, w)).unwrap_or_default(),
         };
+        self.menu = None;
         self.palette = Some(Palette::new(mode, items));
     }
 
@@ -906,6 +938,9 @@ impl WindowView {
         if a == Action::OpenSettings {
             return Out { ui: Some(Ui::Settings), ..Out::default() };
         }
+        if a == Action::OpenNewTabMenu {
+            return Out { ui: Some(Ui::NewTabMenu), ..Out::default() };
+        }
         if a == Action::ToggleSidebar {
             let visible = !self.sidebar_visible;
             return Out::msgs(self.set_sidebar(visible, self.sidebar_cols));
@@ -1078,6 +1113,9 @@ impl WindowView {
         {
             return l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(Hit::Palette, |(i, _)| Hit::PaletteRow(*i));
         }
+        if let Some(h) = self.menu_layout().and_then(|l| NewTabMenu::hit(&l, x, y)) {
+            return Hit::Menu(h);
+        }
         if let Some(h) = self.settings_layout().and_then(|l| SettingsView::hit(&l, x, y)) {
             return Hit::Settings(h);
         }
@@ -1091,6 +1129,7 @@ impl WindowView {
             regions: &regions,
             tabs: &tabs,
             new_tab,
+            new_tab_menu: chrome::chevron_rect(new_tab, self.geom.cell.0 as i32),
             workspaces: &workspaces,
             new_workspace,
             agents: &self.agent_rects(),

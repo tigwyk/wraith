@@ -941,3 +941,38 @@ fn subscription_colors_follow_each_panes_profile() {
     assert_eq!(bg(1), (g.0, g.1, g.2), "pane 1 runs pwsh, which has no scheme");
     assert_eq!(bg(2), (4, 5, 6), "pane 2 runs cmd");
 }
+
+#[test]
+fn open_menu_closes_palette_and_settings() {
+    use wraith_client::palette::Mode;
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    assert_eq!(v.action(Action::OpenNewTabMenu, &ctx()).ui, Some(Ui::NewTabMenu));
+    v.open_palette(Mode::Palette, &ctx());
+    v.open_menu(&ctx());
+    assert!(v.menu().is_some() && v.palette().is_none());
+    v.open_palette(Mode::Palette, &ctx());
+    assert!(v.menu().is_none(), "the palette closes the menu");
+    v.open_menu(&ctx());
+    let s = wraith_client::settings::SettingsView::new(
+        wraith_client::settings::Sources { themes: vec![], fonts: vec![], profiles: vec![] },
+        wraith_config::settings::all().iter().map(|_| wraith_client::settings::RowState { origin: wraith_config::edit::Origin::Default, warning: None }).collect(),
+    );
+    v.open_settings(s);
+    assert!(v.menu().is_none(), "settings close the menu");
+    v.open_menu(&ctx());
+    assert!(v.settings().is_none(), "the menu closes settings");
+}
+
+#[test]
+fn hit_prefers_menu_over_tabs() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    let (_, plus) = v.tab_layout();
+    assert_eq!(v.hit(plus.x + plus.w + 2, 5), Hit::NewTabMenu);
+    v.open_menu(&ctx());
+    let l = v.menu_layout().unwrap();
+    let (i, r) = l.rows[0];
+    assert_eq!(v.hit(r.x + 2, r.y + 2), Hit::Menu(wraith_client::new_tab_menu::MenuHit::Row(i)));
+    assert_eq!(v.menu().unwrap().rows.len(), 5, "pwsh, cmd, separator, Settings, Command palette");
+}

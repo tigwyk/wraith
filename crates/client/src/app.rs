@@ -542,6 +542,15 @@ impl App {
         }
     }
 
+    fn toggle_menu(&mut self) {
+        if self.view.menu().is_some() {
+            self.view.close_menu();
+        } else {
+            self.view.open_menu(&self.spawn_ctx);
+        }
+        self.request_redraw();
+    }
+
     pub(crate) fn action(&mut self, a: Action) {
         match a {
             Action::Copy => self.send_focused(PaneCmd::CopySelection),
@@ -596,6 +605,7 @@ impl App {
             Some(Ui::Picker) => self.view.open_palette(Mode::Picker, &self.spawn_ctx),
             Some(Ui::MoveTab) => self.view.open_palette(Mode::MoveTab, &self.spawn_ctx),
             Some(Ui::Settings) => self.toggle_settings(),
+            Some(Ui::NewTabMenu) => self.toggle_menu(),
             None => {}
         }
     }
