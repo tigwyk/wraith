@@ -46,6 +46,8 @@ Date: 2026-11-03. Branch `feat/per-profile-appearance`.
 **Found and fixed during the check:**
 - **Palette rows for zoom, copy, paste, scroll, clear and reload did nothing.** The palette passed every action to `WindowView::action`, which ignores the ones only the app can run, so "Reset font size" left a pane zoomed (after a palette reset the pane still read 18 x 29 at 20 pt). The bug dates from the palette's first commit; zoom made it visible. The palette now hands such actions back in `Out::app` and `App::run_out` runs them (`palette_hands_app_level_actions_back`).
 
+**Final review follow-up (zoom with fallback glyphs):** same setup, one PowerShell pane, CaskaydiaCove NFM. A posted command printed U+1F600 and U+263A three times (the emoji comes from the Segoe UI Emoji fallback face). With the fix: `F6` twice, `F7`, the palette's "increase font" and "reset font", a reload adding `font-size = 14` (a font rebuild), then `F6` again; the client stayed up after every step and the emoji redrew at the zoomed size. With both parts of the fix reverted in the working tree (renderer drop and the atlas guard), the client exited on the first `F6`. Captures were session-local and not kept.
+
 **Not run live:**
 - **`Ctrl+=`, `Ctrl+-` and `Ctrl+0`:** posted messages carry no Ctrl state. The same actions ran through bare-key bindings and the palette. The default bindings are in the keybind defaults.
 - **Alt+click and Alt+Enter (split with a chosen profile):** no Alt state. The two-profile split came from editing the private layout (see Setup). Covered by `split_profile_uses_chosen_profile_along_longer_side`.
