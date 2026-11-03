@@ -155,8 +155,14 @@ impl FontStack {
         &self.factory
     }
 
+    /// Whether `name` is this stack's resolved primary family.
     pub fn has_family(&self, name: &str) -> bool {
         self.primary.eq_ignore_ascii_case(name)
+    }
+
+    /// Whether `name` is installed on the system (any family, not just this stack's).
+    pub fn installed(&self, name: &str) -> bool {
+        find_face(&self.collection, name, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL).is_some()
     }
 
     pub fn face(&self, id: FaceId) -> (IDWriteFontFace, bool) {

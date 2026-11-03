@@ -128,3 +128,15 @@ fn two_fonts_same_glyph_do_not_collide() {
     let b = atlas.get(&gpu, &big, GlyphKey { font: 1, ..k });
     assert_ne!(a.h, b.h);
 }
+
+#[test]
+fn installed_checks_the_system_not_the_primary() {
+    let s = stack("Cascadia Mono", 96);
+    assert!(!s.installed("NoSuchFont Zz"));
+    if !stack("Courier New", 96).has_family("Courier New") {
+        eprintln!("Courier New not installed; skipping");
+        return;
+    }
+    assert!(!s.has_family("Courier New"), "the window stack's primary is not Courier New");
+    assert!(s.installed("Courier New"));
+}

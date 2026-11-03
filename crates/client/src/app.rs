@@ -390,9 +390,9 @@ impl App {
     fn look_for(&mut self, profile: Option<&str>, zoom: f32) -> Look {
         let p = profile.and_then(|n| self.spawn_ctx.profiles.iter().find(|p| p.name == n));
         let window = self.fonts.get(0);
-        let a = appearance(p, &self.config, zoom, &|f| window.has_family(f));
+        let a = appearance(p, &self.config, zoom, &|f| window.installed(f));
         if let Some(fs) = p.and_then(|p| p.font.as_ref())
-            && !fs.iter().any(|f| window.has_family(f))
+            && !fs.iter().any(|f| window.installed(f))
         {
             for f in fs.iter().filter(|f| self.missing_fonts.insert((*f).clone())) {
                 tracing::warn!("font `{f}` of profile `{}` is not installed; using font-family", p.map_or("", |p| p.name.as_str()));
