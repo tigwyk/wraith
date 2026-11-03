@@ -488,7 +488,8 @@ impl GridRenderer {
             q.push(Quad { pos: [x, y], size: [w, h], uv: [0.0; 4], color: f(c, 1.0), kind: 0 });
         };
         if let Some(r) = fill {
-            solid(q, r.x as f32, r.y as f32, r.w as f32, r.h as f32, self.bg);
+            // The default background and padding are the see-through part (spec §4.3).
+            q.push(Quad { pos: [r.x as f32, r.y as f32], size: [r.w as f32, r.h as f32], uv: [0.0; 4], color: f(self.bg, opts.opacity), kind: 0 });
         }
         for (y, row) in self.rows.iter().enumerate() {
             for &(x, n, c) in &row.bgs {

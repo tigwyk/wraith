@@ -1,10 +1,8 @@
-//! Win32 top-level window: per-monitor DPI, dark title bar, optional Mica, message loop.
+//! Win32 top-level window: per-monitor DPI, dark title bar, message loop.
 use std::cell::RefCell;
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WAIT_OBJECT_0, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
-};
+use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
@@ -41,7 +39,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn create(title: &str, w: i32, h: i32, mica: bool) -> Result<Window> {
+    pub fn create(title: &str, w: i32, h: i32) -> Result<Window> {
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let hinst = GetModuleHandleW(None)?;
@@ -60,7 +58,7 @@ impl Window {
             };
             RegisterClassExW(&wc);
             let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
-            // No redirection bitmap: the flip-model swap chain is the only surface.
+            // No redirection bitmap: the flip-model swap chain (HWND or composition) is the only surface.
             let hwnd = CreateWindowExW(
                 WS_EX_NOREDIRECTIONBITMAP,
                 class,
@@ -77,10 +75,6 @@ impl Window {
             )?;
             let dark: i32 = 1;
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&raw const dark).cast(), 4);
-            if mica {
-                let backdrop = DWMSBT_MAINWINDOW;
-                let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&raw const backdrop).cast(), 4);
-            }
             let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
             Ok(Window { hwnd })
         }

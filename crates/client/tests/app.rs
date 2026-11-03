@@ -1,7 +1,7 @@
 #![cfg(windows)]
 use std::time::{Duration, Instant};
 
-use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, pixel_to_cell};
+use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, needs_transparency, pixel_to_cell};
 use wraith_client::font::CellMetrics;
 use wraith_config::{Action, parse_keybind};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
@@ -172,4 +172,17 @@ fn ctrl_shift_digit_matches_new_tab_profile() {
 fn ctrl_shift_space_matches_menu() {
     let mut k = KeybindMatcher::new(&wraith_config::Config::default().keybinds);
     assert_eq!(k.feed(&key(KeyCode::Space, Mods::CTRL | Mods::SHIFT), Instant::now()), Match::Action(Action::OpenNewTabMenu));
+}
+
+#[test]
+fn transparency_choice() {
+    use wraith_server::profile::{Profile, from_config};
+    let c = wraith_config::Config::default();
+    let opaque: Vec<Profile> = vec![from_config("a", "cmd.exe"), Profile { opacity: Some(1.0), ..from_config("b", "pwsh.exe") }];
+    assert!(!needs_transparency(&c, &opaque));
+    let mut see_through = c.clone();
+    see_through.background_opacity = 0.9;
+    assert!(needs_transparency(&see_through, &opaque));
+    let half = vec![from_config("a", "cmd.exe"), Profile { opacity: Some(0.5), ..from_config("b", "pwsh.exe") }];
+    assert!(needs_transparency(&c, &half));
 }

@@ -229,6 +229,7 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
     } else if opacities(&old, &old_profiles) != opacities(&app.config, &app.spawn_ctx.profiles) {
         app.rebuild_looks();
     }
+    app.sync_swapchain();
     app.request_redraw();
 }
 

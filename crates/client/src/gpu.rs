@@ -1,16 +1,20 @@
-//! D3D11 device, flip-model swap chain, and an offscreen target for pixel tests.
-use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, WAIT_OBJECT_0};
+//! D3D11 device, flip-model swap chain (on the HWND, or through DirectComposition for transparency),
+//! and an offscreen target for pixel tests.
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
     D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
     D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
 };
+use windows::Win32::Graphics::DirectComposition::{
+    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+};
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+    DXGI_PRESENT, DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
     DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     IDXGIDevice, IDXGIFactory2, IDXGISwapChain2,
 };
@@ -75,7 +79,9 @@ impl Gpu {
         Ok(tex.unwrap())
     }
 
-    pub fn create_swapchain(&self, hwnd: HWND, w: u32, h: u32) -> Result<SwapChain> {
+    /// With `composition`, a premultiplied-alpha swap chain shown through DirectComposition, so
+    /// what the window draws transparent shows the windows behind; else the plain HWND swap chain.
+    pub fn create_swapchain(&self, hwnd: HWND, w: u32, h: u32, composition: bool) -> Result<SwapChain> {
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: w.max(1),
             Height: h.max(1),
@@ -84,20 +90,32 @@ impl Gpu {
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             // A stale frame during resize shows at 1:1 instead of being stretched to the new size.
-            Scaling: DXGI_SCALING_NONE,
+            // Composition swap chains do not accept SCALING_NONE.
+            Scaling: if composition { DXGI_SCALING_STRETCH } else { DXGI_SCALING_NONE },
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            AlphaMode: if composition { DXGI_ALPHA_MODE_PREMULTIPLIED } else { DXGI_ALPHA_MODE_IGNORE },
             Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
             ..Default::default()
         };
         unsafe {
             let dxgi: IDXGIDevice = self.device.cast()?;
             let factory: IDXGIFactory2 = dxgi.GetAdapter()?.GetParent()?;
-            let sc: IDXGISwapChain2 = factory.CreateSwapChainForHwnd(&self.device, hwnd, &desc, None, None)?.cast()?;
+            let (sc, comp): (IDXGISwapChain2, _) = if composition {
+                let sc: IDXGISwapChain2 = factory.CreateSwapChainForComposition(&self.device, &desc, None)?.cast()?;
+                let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi)?;
+                let target = dcomp.CreateTargetForHwnd(hwnd, true)?;
+                let visual = dcomp.CreateVisual()?;
+                visual.SetContent(&sc)?;
+                target.SetRoot(&visual)?;
+                dcomp.Commit()?;
+                (sc, Some((dcomp, target, visual)))
+            } else {
+                (factory.CreateSwapChainForHwnd(&self.device, hwnd, &desc, None, None)?.cast()?, None)
+            };
             // One queued frame: input-to-photon latency over throughput.
             sc.SetMaximumFrameLatency(1)?;
             let waitable = sc.GetFrameLatencyWaitableObject();
-            let mut s = SwapChain { sc, waitable, rtv: None, device: self.device.clone() };
+            let mut s = SwapChain { rtv: None, sc, waitable, device: self.device.clone(), _comp: comp };
             s.make_rtv()?;
             Ok(s)
         }
@@ -140,10 +158,21 @@ impl Offscreen {
 }
 
 pub struct SwapChain {
+    // Field order is drop order: the view on the back buffer goes before the swap chain.
+    rtv: Option<ID3D11RenderTargetView>,
     sc: IDXGISwapChain2,
     waitable: HANDLE,
-    rtv: Option<ID3D11RenderTargetView>,
     device: ID3D11Device,
+    /// The DirectComposition device, target and visual that show a composition swap chain.
+    _comp: Option<(IDCompositionDevice, IDCompositionTarget, IDCompositionVisual)>,
+}
+
+impl Drop for SwapChain {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.waitable);
+        }
+    }
 }
 
 impl SwapChain {
@@ -159,6 +188,10 @@ impl SwapChain {
 
     pub fn rtv(&self) -> &ID3D11RenderTargetView {
         self.rtv.as_ref().unwrap()
+    }
+
+    pub fn is_composition(&self) -> bool {
+        self._comp.is_some()
     }
 
     pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {

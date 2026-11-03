@@ -23,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
+use wraith_server::profile::Profile;
 use wraith_proto::{KeyCode, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent};
 use wraith_proto::model::{AgentState, Rect, TabId};
 use wraith_proto::pane::{PaneCmd, PaneEvent, ScrollTo};
@@ -49,6 +50,11 @@ use crate::input::{Ime, ImeUpdate, KeyTranslator};
 pub use crate::selection::{SelAction, Selection};
 use crate::selection::{get_clipboard, set_clipboard};
 use crate::window::{Idle, LoopControl, WinMsg, Window, run_message_loop};
+
+/// Whether the window needs a composition swap chain: any opacity below 1 (spec §4.2).
+pub fn needs_transparency(c: &Config, profiles: &[Profile]) -> bool {
+    c.background_opacity < 1.0 || profiles.iter().any(|p| p.opacity.is_some_and(|o| o < 1.0))
+}
 
 /// Grid that fits a client area, or `None` for a zero-size (minimized) window. Never below 2×1.
 pub fn grid_size(client_w: u32, client_h: u32, m: &CellMetrics, pad_x: u16, pad_y: u16) -> Option<(u16, u16)> {
@@ -253,7 +259,8 @@ const WM_NCMOUSELEAVE: u32 = 0x02A2;
 pub(crate) struct App {
     pub(crate) win: Window,
     pub(crate) gpu: Gpu,
-    pub(crate) sc: SwapChain,
+    /// None only while `sync_swapchain` swaps kinds.
+    pub(crate) sc: Option<SwapChain>,
     /// Entry 0 is the window font (chrome and the window look); the rest are profile and zoom fonts.
     pub(crate) fonts: FontTable<FontStack>,
     pub(crate) atlas: GlyphAtlas,
@@ -446,7 +453,9 @@ impl App {
         self.size_px = (w, h);
         let msgs = self.view.set_geometry(self.geometry());
         self.send_all(msgs);
-        let _ = self.sc.resize(w, h);
+        if let Some(sc) = &mut self.sc {
+            let _ = sc.resize(w, h);
+        }
         self.dirty = true;
     }
 
@@ -1376,10 +1385,10 @@ impl App {
         }
         if !self.present_token {
             self.present_token = if blocking {
-                self.sc.wait();
+                self.sc().wait();
                 true
             } else {
-                self.sc.try_acquire()
+                self.sc().try_acquire()
             };
         }
         if self.present_token {
@@ -1455,7 +1464,7 @@ impl App {
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
         // Still dirty: wake as soon as the compositor can take the frame.
-        let wait_on = (self.dirty && !self.present_token).then(|| self.sc.waitable());
+        let wait_on = (self.dirty && !self.present_token).then(|| self.sc().waitable());
         Idle { ctl: LoopControl::Continue, sleep_ms, wait_on }
     }
 
@@ -1466,6 +1475,35 @@ impl App {
     pub(crate) fn rebuild_spawn_ctx(&mut self) {
         self.spawn_ctx = build_spawn_ctx(&self.config);
         self.view.set_dim_opacity(self.config.unfocused_split_opacity);
+    }
+
+    pub(crate) fn sc(&self) -> &SwapChain {
+        self.sc.as_ref().expect("swap chain")
+    }
+
+    /// Switch between the HWND and the composition swap chain when the opacities crossed 1 (spec
+    /// §4.2). Called between frames; the old one goes first, as a window shows one at a time.
+    pub(crate) fn sync_swapchain(&mut self) {
+        let want = needs_transparency(&self.config, &self.spawn_ctx.profiles);
+        if self.sc().is_composition() == want {
+            return;
+        }
+        self.sc = None;
+        // D3D11 defers releases; flush them so the old swap chain has let go of the window.
+        unsafe {
+            self.gpu.ctx.ClearState();
+            self.gpu.ctx.Flush();
+        }
+        let (w, h) = self.size_px;
+        let hwnd = self.win.hwnd();
+        let sc = self.gpu.create_swapchain(hwnd, w, h, want).or_else(|e| {
+            tracing::warn!("swap chain (composition: {want}): {e}");
+            self.gpu.create_swapchain(hwnd, w, h, !want)
+        });
+        self.sc = Some(sc.expect("no swap chain of either kind"));
+        // A token taken from the old waitable is not one of the new chain's.
+        self.present_token = false;
+        self.dirty = true;
     }
 
     /// Send each pane in view its profile's colors (after a config reload).
@@ -2075,8 +2113,8 @@ impl App {
         batches.push(Batch { quads: q, texture: None });
         // shortcut: icons draw above every chrome quad, toasts included; fine while nothing else overlaps the menu.
         batches.extend(icon_quads.into_iter().map(|(srv, quad)| Batch { quads: vec![quad], texture: Some(srv) }));
-        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
-        let _ = self.sc.present();
+        self.pipe.submit(&self.gpu, self.sc().rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
+        let _ = self.sc().present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
     }
@@ -2299,14 +2337,15 @@ pub fn run() -> Result<()> {
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
     }
     crate::notify::set_app_id();
-    let win = Window::create("Wraith", 1000, 640, config.background_opacity < 1.0)?;
+    let win = Window::create("Wraith", 1000, 640)?;
     let notifier = crate::notify::Notifier::new(win.hwnd());
     let gpu = Gpu::new()?;
     let font = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
     let atlas = GlyphAtlas::new(&gpu, 2048)?;
     let pipe = Rc::new(Pipeline::new(&gpu)?);
     let (w, h) = win.client_size();
-    let sc = gpu.create_swapchain(win.hwnd(), w, h)?;
+    let spawn_ctx = build_spawn_ctx(&config);
+    let sc = Some(gpu.create_swapchain(win.hwnd(), w, h, needs_transparency(&config, &spawn_ctx.profiles))?);
     let pipe_name = wraith_ipc::pipe_name();
     let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 
@@ -2318,7 +2357,6 @@ pub fn run() -> Result<()> {
 
     let double_click = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
     let matcher = KeybindMatcher::new(&config.keybinds);
-    let spawn_ctx = build_spawn_ctx(&config);
     let m = font.metrics();
     let fonts = FontTable::new(FontKey { families: config.font_family.clone(), size_pt: config.font_size, features: config.font_feature.clone() }, font);
     let s = win.dpi() as f32 / 96.0;
