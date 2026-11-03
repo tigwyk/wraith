@@ -52,6 +52,7 @@ fn writes_profile_lines_and_extras() {
             "profile = cmd:cmd.exe",
             "profile-theme = cmd:Campbell",
             "default-profile = Ubuntu",
+            "profile-detect = false",
             "windows-terminal-profiles = false",
         ]
     );

@@ -93,6 +93,8 @@ pub struct Config {
     pub default_profile: Option<String>,
     /// `windows-terminal-profiles`: list Windows Terminal's profiles (wt-profiles spec §3).
     pub windows_terminal_profiles: bool,
+    /// `profile-detect`: add the shells found on this machine when WT's profiles are not used.
+    pub profile_detect: bool,
     /// `profile-dir`, `profile-theme`, `profile-icon` = `name:value`, one per (name, kind).
     pub profile_extras: Vec<(String, ProfileExtra, String)>,
     pub shell_integration: bool,
@@ -155,6 +157,7 @@ impl Default for Config {
             profiles: Vec::new(),
             default_profile: None,
             windows_terminal_profiles: true,
+            profile_detect: true,
             profile_extras: Vec::new(),
             shell_integration: true,
             sidebar_visible: true,

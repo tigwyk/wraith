@@ -308,3 +308,9 @@ fn profile_extras_parse() {
     assert_eq!(parse_str("profile-dir = nocolon\n", p(), &themes()).1.len(), 1);
     assert!(parse_str("profile-dir = Ubuntu:~\nprofile-dir =\n", p(), &themes()).0.profile_extras.is_empty());
 }
+
+#[test]
+fn profile_detect_key() {
+    assert!(parse_str("", p(), &themes()).0.profile_detect);
+    assert!(!parse_str("profile-detect = false\n", p(), &themes()).0.profile_detect);
+}

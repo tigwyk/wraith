@@ -976,3 +976,23 @@ fn hit_prefers_menu_over_tabs() {
     assert_eq!(v.hit(r.x + 2, r.y + 2), Hit::Menu(wraith_client::new_tab_menu::MenuHit::Row(i)));
     assert_eq!(v.menu().unwrap().rows.len(), 5, "pwsh, cmd, separator, Settings, Command palette");
 }
+
+#[test]
+fn split_profile_uses_chosen_profile_along_longer_side() {
+    let mut v = view();
+    v.on_snapshot(snap(11), &ctx());
+    let out = v.split_profile(1, &ctx());
+    let [ClientMsg::Model(ModelCmd::Split { pane, axis, new_first, profile, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((*pane, *axis, *new_first, profile.as_str()), (3, Axis::Horizontal, false, "cmd"), "pane 3 is wider than tall: split right");
+    assert!(v.split_profile(7, &ctx()).msgs.is_empty());
+}
+
+#[test]
+fn hovering_a_menu_row_selects_it() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_menu(&ctx());
+    let (i, r) = v.menu_layout().unwrap().rows[1];
+    v.hover_at(r.x + 3, r.y + 3);
+    assert_eq!(v.menu().unwrap().selected, i);
+}

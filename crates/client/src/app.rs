@@ -33,6 +33,7 @@ use crate::motion::{Dot, Layout, Motion, SlideSlot};
 use crate::images::ImageStore;
 use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
+use crate::new_tab_menu::{MenuDo, MenuHit, MenuOutcome, MenuRow, letter_tile, menu_action};
 use crate::palette::Mode;
 use crate::view::{ExitOut, Geometry, Out, SpawnCtx, Ui, WindowView};
 use crate::settings::{Edit, SettingsHit, SettingsView, Sources};
@@ -419,6 +420,9 @@ impl App {
             self.dirty = true;
             return;
         }
+        if self.view.menu().is_some() {
+            return self.menu_key(ev);
+        }
         if self.view.settings().is_some() {
             return self.settings_key(ev);
         }
@@ -434,6 +438,40 @@ impl App {
             Match::Action(a) => self.action(a),
             Match::Pending => {}
             Match::None(keys) => keys.into_iter().for_each(|k| self.send_key(k)),
+        }
+    }
+
+    /// While the new-tab menu is open it takes every key. A bound Ctrl chord closes it and runs (its own
+    /// binding just closes it).
+    fn menu_key(&mut self, ev: KeyEvent) {
+        self.dirty = true;
+        if ev.action != wraith_proto::KeyAction::Release && ev.mods.has(Mods::CTRL) {
+            match self.matcher.feed(&ev, Instant::now()) {
+                Match::Action(a) => {
+                    self.view.close_menu();
+                    if a != Action::OpenNewTabMenu {
+                        self.action(a);
+                    }
+                }
+                _ => self.matcher.reset(),
+            }
+            return;
+        }
+        if let Some(o) = self.view.menu_mut().and_then(|m| m.key(&ev)) {
+            self.menu_outcome(o);
+        }
+    }
+
+    fn menu_outcome(&mut self, o: MenuOutcome) {
+        self.view.close_menu();
+        self.dirty = true;
+        match menu_action(o) {
+            Some(MenuDo::Action(a)) => self.action(a),
+            Some(MenuDo::Split(i)) => {
+                let out = self.view.split_profile(i, &self.spawn_ctx);
+                self.run_out(out);
+            }
+            None => {}
         }
     }
 
@@ -700,6 +738,7 @@ impl App {
                     self.dirty = true;
                     return;
                 }
+                Hit::Menu(_) => return,
                 _ => {}
             }
             let pane = match self.view.hit(pt.x, pt.y) {
@@ -754,6 +793,21 @@ impl App {
         {
             self.dirty = true;
             return self.run_out(out);
+        }
+        // A press while the new-tab menu is open: a row acts; anywhere else, its button included, closes
+        // it (and the press goes no further).
+        if matches!(msg, WM_LBUTTONDOWN | WM_RBUTTONDOWN) && self.view.menu().is_some() {
+            self.dirty = true;
+            match hit {
+                Hit::Menu(h) if msg == WM_LBUTTONDOWN => {
+                    if let Some(o) = self.view.menu_mut().and_then(|m| m.click(&h, alt)) {
+                        self.menu_outcome(o);
+                    }
+                }
+                Hit::Menu(_) => {}
+                _ => self.view.close_menu(),
+            }
+            return;
         }
         // A press while the settings panel is open: its parts act; anywhere else, the gear included,
         // closes it (and the press goes no further).
@@ -811,6 +865,7 @@ impl App {
                 }
                 Hit::TabClose(t) => return self.close_tab(t),
                 Hit::NewTab => return self.action(Action::NewTab),
+                Hit::NewTabMenu => return self.toggle_menu(),
                 Hit::Pane(p) => {
                     let msgs = self.view.pane_click(p);
                     self.send_all(msgs);
@@ -992,6 +1047,8 @@ impl App {
                         if self.view.palette().is_some() {
                             self.view.palette_text(&t);
                             self.dirty = true;
+                        } else if self.view.menu().is_some() {
+                            // The menu has no text field; typed text must not reach the shell behind it.
                         } else if let Some(s) = self.view.settings_mut() {
                             s.text(&t);
                         } else if let Some(out) = self.view.find_text(&t) {
@@ -1515,6 +1572,12 @@ impl App {
         }
         let ty = plus.y + (plus.h - m.h as i32) / 2;
         p.text(&self.gpu, &mut self.atlas, &self.fonts, plus.x + (plus.w - m.w as i32) / 2, ty, "+", col.bar_fg_dim, 1.0);
+        let chevron = chrome::chevron_rect(plus, m.w as i32);
+        if let Some(c) = wash(&Hit::NewTabMenu) {
+            p.rect(chevron, c, 1.0);
+        }
+        let cc = if self.view.menu().is_some() { accent } else { col.bar_fg_dim };
+        p.text(&self.gpu, &mut self.atlas, &self.fonts, chevron.x + (chevron.w - m.w as i32) / 2, ty, "⌄", cc, 1.0);
         let gear = self.view.gear_rect();
         if let Some(c) = wash(&Hit::Gear) {
             p.rect(gear, c, 1.0);
@@ -1757,6 +1820,67 @@ impl App {
         }
         let n = p.q.len();
         crate::paint::shift(&mut p.q[set_start..n], 0.0, (8.0 * (1.0 - set_a)).round(), set_a);
+        // The new-tab menu, under its button. It fades in like the palette.
+        let menu_start = p.q.len();
+        let menu_a = self.motion.overlay(|m| &mut m.menu, self.view.menu().is_some(), now);
+        if let (Some(menu), Some(l)) = (self.view.menu(), self.view.menu_layout()) {
+            let (cw, panel) = (m.w as i32, l.panel);
+            p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, col.divider, 1.0);
+            p.rect(panel, col.bar_bg, 1.0);
+            let hovered = match self.view.hovered() {
+                Some(Hit::Menu(MenuHit::Row(i))) => Some(*i),
+                _ => None,
+            };
+            for &(i, r) in &l.rows {
+                let row = &menu.rows[i];
+                if *row == MenuRow::Separator {
+                    p.rect(Rect { x: r.x + pad_x, y: r.y + r.h / 2, w: r.w - 2 * pad_x, h: 1 }, col.divider, 1.0);
+                    continue;
+                }
+                if i == menu.selected || hovered == Some(i) {
+                    p.rect(r, col.tab_active_bg, 1.0);
+                }
+                if i == menu.selected {
+                    p.rect(Rect { x: r.x, y: r.y, w: 2, h: r.h }, accent, 1.0);
+                }
+                let ty = r.y + (r.h - m.h as i32) / 2;
+                let ix = r.x + pad_x;
+                let (label, binding, lc) = match row {
+                    MenuRow::Profile { name, icon, binding, default, .. } => {
+                        match icon.as_deref().filter(|t| t.chars().count() <= 2) {
+                            Some(t) => {
+                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, t, col.bar_fg, 1.0);
+                            }
+                            None => {
+                                let (c, tile) = letter_tile(name);
+                                let side = (m.h as i32).min(2 * cw);
+                                p.rect(Rect { x: ix, y: ty, w: side, h: m.h as i32 }, tile, 1.0);
+                                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + (side - cw) / 2, ty, &c.to_string(), (255, 255, 255), 1.0);
+                            }
+                        }
+                        // The default profile's name is in the accent colour (the UI font has no bold).
+                        (name.as_str(), binding.as_deref(), if *default { accent } else { col.bar_fg })
+                    }
+                    MenuRow::Settings(b) => {
+                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "⚙", col.bar_fg_dim, 1.0);
+                        ("Settings", b.as_deref(), col.bar_fg)
+                    }
+                    MenuRow::Palette(b) => {
+                        p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, "›", col.bar_fg_dim, 1.0);
+                        ("Command palette", b.as_deref(), col.bar_fg)
+                    }
+                    MenuRow::Separator => continue,
+                };
+                let bw = binding.map_or(0, |b| crate::paint::text_width(&self.fonts, b));
+                let room = ((r.w - 3 * cw - bw - 3 * pad_x) / cw).max(0) as usize;
+                p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + 3 * cw, ty, &truncate_cells(label, room), lc, 1.0);
+                if let Some(b) = binding {
+                    p.text(&self.gpu, &mut self.atlas, &self.fonts, r.x + r.w - pad_x - bw, ty, b, col.bar_fg_dim, 1.0);
+                }
+            }
+        }
+        let n = p.q.len();
+        crate::paint::shift(&mut p.q[menu_start..n], 0.0, (8.0 * (1.0 - menu_a)).round(), menu_a);
         // Command palette / picker, centered over everything. It fades in, rising 8 px.
         let pal_start = p.q.len();
         let pal_a = self.motion.overlay(|m| &mut m.palette, self.view.palette().is_some(), now);
@@ -1825,6 +1949,7 @@ impl App {
                 let text = chrome::tooltip_for(h, &self.config.keybinds)?;
                 let r = match h {
                     Hit::NewTab => plus,
+                    Hit::NewTabMenu => chrome::chevron_rect(plus, m.w as i32),
                     Hit::TabClose(t) => chrome::close_rect(tabs.iter().find(|(id, _)| id == t)?.1, m.w as i32),
                     Hit::NewWorkspace => self.view.workspace_rects().1,
                     Hit::Gear => self.view.gear_rect(),

@@ -171,10 +171,29 @@ fn fill(into: &mut Map<String, Value>, from: &Map<String, Value>) {
     }
 }
 
+/// `c` with an unquoted program path that has spaces (`C:\Program Files\x.exe -a`, which WT accepts)
+/// quoted, so the program is the whole path and not its first word.
+fn quote_exe(c: String) -> String {
+    if c.starts_with('"') {
+        return c;
+    }
+    let lower = c.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find(".exe") {
+        let end = from + i + 4;
+        if end == c.len() || c[end..].starts_with(' ') {
+            let exe = &c[..end];
+            return if exe.contains(' ') { format!("\"{exe}\"{}", &c[end..]) } else { c };
+        }
+        from = end;
+    }
+    c
+}
+
 /// The command WT would start for profile `m`, or why there is none.
 fn command(m: &Map<String, Value>, env: &dyn Fn(&str) -> Option<String>) -> Result<String, String> {
     if let Some(c) = text(m, "commandline") {
-        return Ok(expand(&c, env));
+        return Ok(quote_exe(expand(&c, env)));
     }
     let name = text(m, "name").unwrap_or_default();
     match (guid(m, "guid").as_deref(), text(m, "source").as_deref()) {
@@ -389,6 +408,8 @@ pub fn plan_import(src: &str, wt: &WtSettings, themes_dir: &Path) -> (String, Im
     {
         out = set(&out, "default-profile", d, Which::Last);
     }
+    // The imported list replaces both sources it came from: WT's settings and Wraith's own detection.
+    out = set(&out, "profile-detect", "false", Which::Last);
     out = set(&out, "windows-terminal-profiles", "false", Which::Last);
     (out, report, themes)
 }

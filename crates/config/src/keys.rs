@@ -156,6 +156,7 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
             }
         }
         "windows-terminal-profiles" => set!(windows_terminal_profiles, boolean),
+        "profile-detect" => set!(profile_detect, boolean),
         "default-profile" => set!(default_profile, |v: &str| Ok::<_, String>(Some(v.to_string()))),
         "shell-integration" => set!(shell_integration, |v: &str| match v {
             "none" => Ok(false),

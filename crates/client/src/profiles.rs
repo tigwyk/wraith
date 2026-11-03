@@ -15,6 +15,8 @@ pub struct Merged {
 /// would show each WSL distro twice); `detected` runs only without them.
 pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() -> Vec<Profile>, config: &Config) -> Merged {
     let mut warnings = Vec::new();
+    let mut detected = Some(detected);
+    let mut detect = || detected.take().map_or_else(Vec::new, |f| f());
     let wt = wt.filter(|_| config.windows_terminal_profiles);
     let (mut profiles, wt_default) = match wt {
         Some(Ok(s)) => {
@@ -27,9 +29,9 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
         }
         Some(Err(e)) => {
             warnings.push(format!("Windows Terminal profiles not loaded: {e}"));
-            (detected(), None)
+            (if config.profile_detect { detect() } else { Vec::new() }, None)
         }
-        None => (detected(), None),
+        None => (if config.profile_detect { detect() } else { Vec::new() }, None),
     };
     for (name, cmd) in &config.profiles {
         let p = from_config(name, cmd);
@@ -54,6 +56,10 @@ pub fn merge(wt: Option<&Result<WtSettings, String>>, detected: impl FnOnce() ->
             ProfileExtra::Icon => &mut p.icon,
         };
         *field = Some(value.clone());
+    }
+    if profiles.is_empty() {
+        // A window always needs a shell to start.
+        profiles = detect();
     }
     Merged { profiles, default: config.default_profile.clone().or(wt_default), warnings }
 }

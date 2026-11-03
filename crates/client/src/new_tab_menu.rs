@@ -112,6 +112,13 @@ impl NewTabMenu {
         None
     }
 
+    /// The pointer moved onto row `i`: the selection follows it, as in menus (the separator is skipped).
+    pub fn hover(&mut self, i: usize) {
+        if self.selectable(i) {
+            self.selected = i;
+        }
+    }
+
     pub fn click(&mut self, hit: &MenuHit, alt: bool) -> Option<MenuOutcome> {
         let MenuHit::Row(i) = *hit else { return None };
         if self.selectable(i) {
@@ -159,4 +166,33 @@ impl NewTabMenu {
         }
         Some(l.rows.iter().find(|(_, r)| r.contains(x, y)).map_or(MenuHit::Panel, |(i, _)| MenuHit::Row(*i)))
     }
+}
+
+/// What a menu outcome asks the app to do. A split is not an `Action`: it carries a profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MenuDo {
+    Action(Action),
+    /// Split the focused pane with profile `i`.
+    Split(usize),
+}
+
+pub fn menu_action(o: MenuOutcome) -> Option<MenuDo> {
+    match o {
+        MenuOutcome::Open(i) => u8::try_from(i + 1).ok().map(|n| MenuDo::Action(Action::NewTabProfile(n))),
+        MenuOutcome::Split(i) => Some(MenuDo::Split(i)),
+        MenuOutcome::Settings => Some(MenuDo::Action(Action::OpenSettings)),
+        MenuOutcome::Palette => Some(MenuDo::Action(Action::CommandPalette)),
+        MenuOutcome::Close => None,
+    }
+}
+
+/// The stand-in icon for a profile without a drawable one: its name's first letter or digit, on a
+/// colour picked from the name so it stays the same from run to run.
+pub fn letter_tile(name: &str) -> (char, (u8, u8, u8)) {
+    const COLORS: [(u8, u8, u8); 8] =
+        [(0x3b, 0x82, 0xf6), (0x10, 0xb9, 0x81), (0xf5, 0x9e, 0x0b), (0xef, 0x44, 0x44), (0x8b, 0x5c, 0xf6), (0x06, 0xb6, 0xd4), (0xec, 0x48, 0x99), (0x84, 0xcc, 0x16)];
+    let letter = name.chars().find(|c| c.is_alphanumeric()).map_or('?', |c| c.to_uppercase().next().unwrap_or(c));
+    // FNV-1a: stable across runs, unlike std's hasher.
+    let h = name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    (letter, COLORS[h as usize % COLORS.len()])
 }

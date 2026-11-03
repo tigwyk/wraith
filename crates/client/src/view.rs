@@ -14,7 +14,7 @@ use wraith_server::profile::{Profile, process_cwd, resolve, spawn_command};
 
 use crate::chrome::{self, Hit, HitCtx, Regions};
 use crate::new_tab_menu::{MenuLayout, NewTabMenu};
-use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items};
+use crate::palette::{Choice, Mode, Palette, SHOWN, move_tab_items, palette_items, picker_items, profile_items};
 use crate::selection::Selection;
 use crate::settings::{SettingsLayout, SettingsView};
 
@@ -328,7 +328,13 @@ impl WindowView {
 
     pub fn open_palette(&mut self, mode: Mode, ctx: &SpawnCtx) {
         let items = match mode {
-            Mode::Palette => palette_items(&ctx.config.keybinds),
+            Mode::Palette => {
+                let mut items = palette_items(&ctx.config.keybinds);
+                let names: Vec<String> = ctx.profiles.iter().map(|p| p.name.clone()).collect();
+                let at = items.iter().rposition(|i| i.group == "Tabs").map_or(items.len(), |i| i + 1);
+                items.splice(at..at, profile_items(&names, &ctx.config.keybinds));
+                items
+            }
             Mode::Picker => picker_items(&self.snap, &ctx.config.workspaces),
             Mode::MoveTab => self.workspace.map(|w| move_tab_items(&self.snap, w)).unwrap_or_default(),
         };
@@ -526,6 +532,11 @@ impl WindowView {
             && let (Some(Hit::PaletteRow(i)), Some(p)) = (&self.hovered, &mut self.palette)
         {
             p.select(*i);
+        }
+        if changed
+            && let (Some(Hit::Menu(crate::new_tab_menu::MenuHit::Row(i))), Some(m)) = (&self.hovered, &mut self.menu)
+        {
+            m.hover(*i);
         }
         changed
     }
@@ -922,6 +933,36 @@ impl WindowView {
         self.geom.cell
     }
 
+    /// Split the focused pane toward `dir`, running `prof`, else the focused pane's profile, in its directory.
+    fn split_msg(&self, dir: Dir, prof: Option<&Profile>, ctx: &SpawnCtx) -> Out {
+        let Some(t) = self.active_tab() else { return Out::default() };
+        let meta = self.snap.pane(t.focused);
+        let prof = prof.unwrap_or_else(|| ctx.profile(meta.map(|m| m.profile.as_str())));
+        let cwd = meta.and_then(|m| m.cwd.clone());
+        let (axis, new_first) = match dir {
+            Dir::Right => (Axis::Horizontal, false),
+            Dir::Left => (Axis::Horizontal, true),
+            Dir::Down => (Axis::Vertical, false),
+            Dir::Up => (Axis::Vertical, true),
+        };
+        let cells = self.panes.get(&t.focused).map_or_else(|| self.est_cells(), |p| p.cells);
+        let cells = if axis == Axis::Horizontal { (cells.0 / 2, cells.1) } else { (cells.0, cells.1 / 2) };
+        Out::model(ModelCmd::Split {
+            pane: t.focused,
+            axis,
+            new_first,
+            profile: prof.name.clone(),
+            spawn: ctx.spawn(prof, cwd.as_deref(), (cells.0.max(2), cells.1.max(1)), self.cell_px()),
+        })
+    }
+
+    /// Split the focused pane with profile `i`, along its longer side (the menu's Alt+click).
+    pub fn split_profile(&self, i: usize, ctx: &SpawnCtx) -> Out {
+        let Some(p) = ctx.profiles.get(i) else { return Out::default() };
+        let wide = self.focused().and_then(|f| self.panes.get(&f)).is_none_or(|v| v.rect.w >= v.rect.h);
+        self.split_msg(if wide { Dir::Right } else { Dir::Down }, Some(p), ctx)
+    }
+
     /// A new tab in `ws` running `prof`, else the workspace's profile.
     fn new_tab_msg(&self, ws: WorkspaceId, ctx: &SpawnCtx, prof: Option<&Profile>) -> ClientMsg {
         let w = self.snap.workspace(ws);
@@ -962,27 +1003,7 @@ impl WindowView {
                 select(if a == Action::NextTab { (i + 1) % tabs.len() } else { (i + tabs.len() - 1) % tabs.len() })
             }
             Action::GotoTab(n) if (1..=tabs.len()).contains(&usize::from(n)) => select(usize::from(n) - 1),
-            Action::NewSplit(dir) => {
-                let Some(t) = tab else { return Out::default() };
-                let meta = self.snap.pane(t.focused);
-                let prof = ctx.profile(meta.map(|m| m.profile.as_str()));
-                let cwd = meta.and_then(|m| m.cwd.clone());
-                let (axis, new_first) = match dir {
-                    Dir::Right => (Axis::Horizontal, false),
-                    Dir::Left => (Axis::Horizontal, true),
-                    Dir::Down => (Axis::Vertical, false),
-                    Dir::Up => (Axis::Vertical, true),
-                };
-                let cells = self.panes.get(&t.focused).map_or_else(|| self.est_cells(), |p| p.cells);
-                let cells = if axis == Axis::Horizontal { (cells.0 / 2, cells.1) } else { (cells.0, cells.1 / 2) };
-                Out::model(ModelCmd::Split {
-                    pane: t.focused,
-                    axis,
-                    new_first,
-                    profile: prof.name.clone(),
-                    spawn: ctx.spawn(prof, cwd.as_deref(), (cells.0.max(2), cells.1.max(1)), self.cell_px()),
-                })
-            }
+            Action::NewSplit(dir) => self.split_msg(dir, None, ctx),
             Action::GotoSplit(target) => {
                 let Some(t) = tab else { return Out::default() };
                 let rects = self.visible();

@@ -184,3 +184,12 @@ fn scroll_moves_selection_by_rows_and_clamps() {
     assert_eq!(p.selected, n - 1);
     assert_eq!(p.top, n - SHOWN);
 }
+
+#[test]
+fn new_tab_rows_per_profile() {
+    let binds = wraith_config::Config::default().keybinds;
+    let items = wraith_client::palette::profile_items(&["pwsh".to_string(), "Ubuntu 22.04".to_string()], &binds);
+    let rows: Vec<(&str, &str, &str)> = items.iter().map(|i| (i.label.as_str(), i.detail.as_str(), i.group)).collect();
+    assert_eq!(rows, [("New tab: pwsh", "Ctrl+Shift+1", "Tabs"), ("New tab: Ubuntu 22.04", "Ctrl+Shift+2", "Tabs")]);
+    assert_eq!(items[1].choice, Choice::Action(Action::NewTabProfile(2)));
+}

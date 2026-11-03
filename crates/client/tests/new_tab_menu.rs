@@ -1,5 +1,6 @@
 //! The new-tab profile menu's view state (wt-profiles spec §5.2): rows, keys, clicks and layout.
-use wraith_client::new_tab_menu::{MenuHit, MenuOutcome, MenuRow, NewTabMenu};
+use wraith_client::new_tab_menu::{MenuDo, MenuHit, MenuOutcome, MenuRow, NewTabMenu, letter_tile, menu_action};
+use wraith_config::Action;
 use wraith_config::Config;
 use wraith_proto::model::Rect;
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
@@ -122,4 +123,22 @@ fn layout_scrolls_in_short_window() {
     }
     let l = m.layout(ANCHOR, (1000, 200), (8, 16), 26);
     assert!(l.rows.iter().any(|(i, _)| *i == m.selected), "the selection stays visible");
+}
+
+#[test]
+fn letter_tile_is_stable_and_uppercase() {
+    let (c, color) = letter_tile("ubuntu");
+    assert_eq!(c, 'U');
+    assert_eq!(letter_tile("ubuntu").1, color, "same name, same colour");
+    assert_eq!(letter_tile("🦀x").0, 'X', "the first letter or digit");
+    assert_eq!(letter_tile("").0, '?');
+}
+
+#[test]
+fn menu_outcome_maps_to_actions() {
+    assert_eq!(menu_action(MenuOutcome::Open(0)), Some(MenuDo::Action(Action::NewTabProfile(1))));
+    assert_eq!(menu_action(MenuOutcome::Split(2)), Some(MenuDo::Split(2)));
+    assert_eq!(menu_action(MenuOutcome::Settings), Some(MenuDo::Action(Action::OpenSettings)));
+    assert_eq!(menu_action(MenuOutcome::Palette), Some(MenuDo::Action(Action::CommandPalette)));
+    assert_eq!(menu_action(MenuOutcome::Close), None);
 }

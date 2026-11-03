@@ -171,3 +171,17 @@ fn oversized_fragment_is_skipped() {
 fn load_from_without_wt_is_none() {
     assert!(load_from(&tmp("none"), &tmp("none-pd")).is_none());
 }
+
+#[test]
+fn unquoted_exe_path_with_spaces_is_quoted() {
+    let env = |k: &str| (k == "PROGRAMFILES").then(|| r"C:\Program Files".to_string());
+    let cmd = |c: &str| {
+        let src = format!(r#"{{"profiles":{{"list":[{{"name":"A","commandline":{}}}]}}}}"#, serde_json::to_string(c).unwrap());
+        parse(&src, &[], &env).unwrap().profiles[0].command.clone()
+    };
+    assert_eq!(cmd("%PROGRAMFILES%/PowerShell/7/pwsh.exe -nologo"), r#""C:\Program Files/PowerShell/7/pwsh.exe" -nologo"#);
+    assert_eq!(cmd("%PROGRAMFILES%/PowerShell/7/pwsh.exe"), r#""C:\Program Files/PowerShell/7/pwsh.exe""#);
+    assert_eq!(cmd("cmd.exe /k echo a b"), "cmd.exe /k echo a b");
+    assert_eq!(cmd(r#""C:\Program Files\x.exe" -a"#), r#""C:\Program Files\x.exe" -a"#);
+    assert_eq!(cmd("wsl -d Ubuntu"), "wsl -d Ubuntu", "no .exe: left as written");
+}

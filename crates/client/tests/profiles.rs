@@ -125,3 +125,21 @@ fn unknown_profile_gets_global_colors() {
         assert_eq!(palette[1], (c.palette[1].0, c.palette[1].1, c.palette[1].2));
     }
 }
+
+#[test]
+fn profile_detect_off_skips_detection() {
+    let mut c = Config::default();
+    c.windows_terminal_profiles = false;
+    c.profile_detect = false;
+    c.profiles = vec![("mine".into(), "x.exe".into())];
+    let m = merge(None, || panic!("detection is off"), &c);
+    assert_eq!(names(&m.profiles), ["mine"]);
+}
+
+#[test]
+fn empty_list_falls_back_to_detected() {
+    let mut c = Config::default();
+    c.windows_terminal_profiles = false;
+    c.profile_detect = false;
+    assert_eq!(names(&merge(None, detected, &c).profiles), ["pwsh"], "a window always has a profile to start");
+}

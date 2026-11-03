@@ -88,11 +88,27 @@ cursor, padding, behaviour and agent notifications. Each change shows at once
 and rewrites only that key's line in the file. Keybinds, workspaces, profiles
 and the other rarer keys stay in the text file, one click away.
 
+### Windows Terminal profiles
+
+If Windows Terminal is installed, Wraith lists its profiles, in the same order
+and with their colour schemes. The `⌄` beside the `+` button (or
+`Ctrl+Shift+Space`) opens them, and `Ctrl+Shift+1…9` opens the first nine
+directly. Alt+click splits the current pane instead of opening a tab. Profiles
+only Windows Terminal can start, such as Azure Cloud Shell, are left out.
+
+To stop depending on Windows Terminal, run `wr import-wt` (or "Import Windows
+Terminal profiles" in the palette). It copies the profiles into your config as
+`profile`, `profile-dir`, `profile-theme` and `profile-icon` lines, and saves
+schemes that only Windows Terminal has to `%APPDATA%\wraith\themes`. Set
+`windows-terminal-profiles = false` to ignore Windows Terminal without importing.
+
 ### Keys
 
 | Keys | Action |
 | --- | --- |
 | `Ctrl+Shift+T` / `Ctrl+Shift+W` | New tab / close pane |
+| `Ctrl+Shift+Space` | Profile menu (also the `⌄` beside `+`) |
+| `Ctrl+Shift+1…9` | New tab with that profile |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Alt+Shift+Plus` / `Alt+Shift+Minus` | Split right / split down |
 | `Alt+Arrow` | Move focus between panes |
@@ -128,6 +144,7 @@ Any other tool or script can report its state with
 | `wr events --json` | Stream workspace, pane and agent changes as JSON lines |
 | `wr config check [path]` | Check a config file |
 | `wr update` | Install the latest GitHub release, restarting Wraith with your tabs and history (shells restart) |
+| `wr import-wt` | Copy Windows Terminal's profiles and schemes into your config |
 
 The full design lives in the
 [spec](docs/superpowers/specs/2026-11-01-wraith-terminal-design.md).
@@ -158,4 +175,6 @@ Wraith is the author's daily driver and is still young.
 |  6  | Hover feedback and motion polish                                       |   ✅   |
 |  7  | `wr events`, `wr config check`, right-click menu, inline IME           |   ✅   |
 |  –  | Settings GUI                                                           |   ✅   |
+|  –  | Windows Terminal profiles and the new-tab menu                         |   ✅   |
+|  –  | Per-profile font, size and padding                                     |   ❌   |
 |  –  | Drop-down (quake) window, auto-update, ARM64                           |   ❌   |

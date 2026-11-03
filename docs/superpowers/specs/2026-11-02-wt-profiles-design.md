@@ -1,6 +1,6 @@
 # Wraith Windows Terminal profiles and new-tab menu — design
 
-Status: approved design (2026-11-02), not yet planned
+Status: implemented (2026-11-02); see `docs/wt-profiles-acceptance.md`
 Parent spec: `docs/superpowers/specs/2026-11-01-wraith-terminal-design.md` (§4.3 profiles, §7 configuration)
 
 ## 1. Intent
