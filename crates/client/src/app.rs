@@ -2435,6 +2435,11 @@ pub fn run() -> Result<()> {
     }));
     app.borrow_mut().rebuild_looks();
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
+    // A composition swap chain with nothing presented is fully see-through: draw the first frame
+    // (chrome and pane fills) before the window appears. The HWND path is left as it was.
+    if app.borrow().sc.is_composition() {
+        app.borrow_mut().render_now(true);
+    }
     app.borrow().win.show();
     let a = app.clone();
     run_message_loop(
