@@ -56,6 +56,25 @@ pub fn needs_transparency(c: &Config, profiles: &[Profile]) -> bool {
     c.background_opacity < 1.0 || profiles.iter().any(|p| p.opacity.is_some_and(|o| o < 1.0))
 }
 
+/// What a reload does to the swap chain (spec §4.2).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScChange {
+    Keep,
+    Switch,
+    /// Transparency is wanted but the window has an HWND swap chain: it stays, and the user is told once.
+    KeepAndNotify,
+}
+
+/// Composition to HWND switches live; HWND to composition does not, because DWM keeps the released
+/// HWND swap chain's last frame under the new visual. `was_wanted` makes the notice once per crossing.
+pub fn swapchain_change(is_composition: bool, was_wanted: bool, wanted: bool) -> ScChange {
+    match (is_composition, wanted) {
+        (true, false) => ScChange::Switch,
+        (false, true) if !was_wanted => ScChange::KeepAndNotify,
+        _ => ScChange::Keep,
+    }
+}
+
 /// Grid that fits a client area, or `None` for a zero-size (minimized) window. Never below 2×1.
 pub fn grid_size(client_w: u32, client_h: u32, m: &CellMetrics, pad_x: u16, pad_y: u16) -> Option<(u16, u16)> {
     if client_w == 0 || client_h == 0 {
@@ -259,8 +278,7 @@ const WM_NCMOUSELEAVE: u32 = 0x02A2;
 pub(crate) struct App {
     pub(crate) win: Window,
     pub(crate) gpu: Gpu,
-    /// None only while `sync_swapchain` swaps kinds.
-    pub(crate) sc: Option<SwapChain>,
+    pub(crate) sc: SwapChain,
     /// Entry 0 is the window font (chrome and the window look); the rest are profile and zoom fonts.
     pub(crate) fonts: FontTable<FontStack>,
     pub(crate) atlas: GlyphAtlas,
@@ -453,9 +471,7 @@ impl App {
         self.size_px = (w, h);
         let msgs = self.view.set_geometry(self.geometry());
         self.send_all(msgs);
-        if let Some(sc) = &mut self.sc {
-            let _ = sc.resize(w, h);
-        }
+        let _ = self.sc.resize(w, h);
         self.dirty = true;
     }
 
@@ -1385,10 +1401,10 @@ impl App {
         }
         if !self.present_token {
             self.present_token = if blocking {
-                self.sc().wait();
+                self.sc.wait();
                 true
             } else {
-                self.sc().try_acquire()
+                self.sc.try_acquire()
             };
         }
         if self.present_token {
@@ -1464,7 +1480,7 @@ impl App {
         // A pending key sequence must time out even with no other activity.
         let sleep_ms = if self.matcher.since.is_some() { sleep.min(100) } else { sleep };
         // Still dirty: wake as soon as the compositor can take the frame.
-        let wait_on = (self.dirty && !self.present_token).then(|| self.sc().waitable());
+        let wait_on = (self.dirty && !self.present_token).then(|| self.sc.waitable());
         Idle { ctl: LoopControl::Continue, sleep_ms, wait_on }
     }
 
@@ -1477,33 +1493,32 @@ impl App {
         self.view.set_dim_opacity(self.config.unfocused_split_opacity);
     }
 
-    pub(crate) fn sc(&self) -> &SwapChain {
-        self.sc.as_ref().expect("swap chain")
-    }
-
-    /// Switch between the HWND and the composition swap chain when the opacities crossed 1 (spec
-    /// §4.2). Called between frames; the old one goes first, as a window shows one at a time.
-    pub(crate) fn sync_swapchain(&mut self) {
+    /// Apply a reload's swap chain decision (spec §4.2); `was_wanted` is the answer before it.
+    /// Called between frames. A failed switch keeps the current swap chain.
+    pub(crate) fn sync_swapchain(&mut self, was_wanted: bool) {
         let want = needs_transparency(&self.config, &self.spawn_ctx.profiles);
-        if self.sc().is_composition() == want {
-            return;
+        match swapchain_change(self.sc.is_composition(), was_wanted, want) {
+            ScChange::Keep => {}
+            ScChange::KeepAndNotify => crate::reload::toast_text(self, "transparency", "Transparency applies to new windows".into()),
+            ScChange::Switch => {
+                let (w, h) = self.size_px;
+                // Made before the old one goes: on failure the window keeps what it has.
+                match self.gpu.create_swapchain(self.win.hwnd(), w, h, want) {
+                    Ok(sc) => {
+                        self.sc = sc;
+                        // D3D11 defers releases; flush them so the old swap chain lets go now.
+                        unsafe {
+                            self.gpu.ctx.ClearState();
+                            self.gpu.ctx.Flush();
+                        }
+                        // A token taken from the old waitable is not one of the new chain's.
+                        self.present_token = false;
+                        self.dirty = true;
+                    }
+                    Err(e) => tracing::warn!("swap chain (composition: {want}): {e}"),
+                }
+            }
         }
-        self.sc = None;
-        // D3D11 defers releases; flush them so the old swap chain has let go of the window.
-        unsafe {
-            self.gpu.ctx.ClearState();
-            self.gpu.ctx.Flush();
-        }
-        let (w, h) = self.size_px;
-        let hwnd = self.win.hwnd();
-        let sc = self.gpu.create_swapchain(hwnd, w, h, want).or_else(|e| {
-            tracing::warn!("swap chain (composition: {want}): {e}");
-            self.gpu.create_swapchain(hwnd, w, h, !want)
-        });
-        self.sc = Some(sc.expect("no swap chain of either kind"));
-        // A token taken from the old waitable is not one of the new chain's.
-        self.present_token = false;
-        self.dirty = true;
     }
 
     /// Send each pane in view its profile's colors (after a config reload).
@@ -2113,8 +2128,8 @@ impl App {
         batches.push(Batch { quads: q, texture: None });
         // shortcut: icons draw above every chrome quad, toasts included; fine while nothing else overlaps the menu.
         batches.extend(icon_quads.into_iter().map(|(srv, quad)| Batch { quads: vec![quad], texture: Some(srv) }));
-        self.pipe.submit(&self.gpu, self.sc().rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
-        let _ = self.sc().present();
+        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
+        let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);
     }
@@ -2345,7 +2360,7 @@ pub fn run() -> Result<()> {
     let pipe = Rc::new(Pipeline::new(&gpu)?);
     let (w, h) = win.client_size();
     let spawn_ctx = build_spawn_ctx(&config);
-    let sc = Some(gpu.create_swapchain(win.hwnd(), w, h, needs_transparency(&config, &spawn_ctx.profiles))?);
+    let sc = gpu.create_swapchain(win.hwnd(), w, h, needs_transparency(&config, &spawn_ctx.profiles))?;
     let pipe_name = wraith_ipc::pipe_name();
     let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 

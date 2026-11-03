@@ -1,7 +1,7 @@
 #![cfg(windows)]
 use std::time::{Duration, Instant};
 
-use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, needs_transparency, pixel_to_cell};
+use wraith_client::app::{KeybindMatcher, Match, SelAction, Selection, grid_size, needs_transparency, pixel_to_cell, ScChange, swapchain_change};
 use wraith_client::font::CellMetrics;
 use wraith_config::{Action, parse_keybind};
 use wraith_proto::{KeyAction, KeyCode, KeyEvent, Mods};
@@ -185,4 +185,14 @@ fn transparency_choice() {
     assert!(needs_transparency(&see_through, &opaque));
     let half = vec![from_config("a", "cmd.exe"), Profile { opacity: Some(0.5), ..from_config("b", "pwsh.exe") }];
     assert!(needs_transparency(&c, &half));
+}
+
+#[test]
+fn swapchain_change_on_reload() {
+    // (is_composition, was_wanted, wanted)
+    assert_eq!(swapchain_change(false, false, false), ScChange::Keep);
+    assert_eq!(swapchain_change(true, true, true), ScChange::Keep);
+    assert_eq!(swapchain_change(true, true, false), ScChange::Switch, "composition to HWND switches live");
+    assert_eq!(swapchain_change(false, false, true), ScChange::KeepAndNotify, "HWND to composition waits for a new window");
+    assert_eq!(swapchain_change(false, true, true), ScChange::Keep, "told once per crossing");
 }
