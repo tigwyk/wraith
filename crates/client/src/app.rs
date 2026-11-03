@@ -709,6 +709,9 @@ impl App {
     /// Carry out what a view action asked for: messages, confirmations, UI.
     fn run_out(&mut self, out: Out) {
         self.send_all(out.msgs);
+        if let Some(a) = out.app {
+            self.action(a);
+        }
         if let Some(pane) = out.confirm_close
             && self.confirm("A process is still running in this terminal. End it?")
         {

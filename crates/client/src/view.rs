@@ -130,6 +130,15 @@ pub enum ExitOut {
     CloseWindow(Vec<ClientMsg>),
 }
 
+/// The actions `App::action` runs itself; `WindowView::action` ignores them.
+fn app_level(a: &Action) -> bool {
+    use Action::*;
+    matches!(
+        a,
+        Copy | Paste | IncreaseFontSize(_) | DecreaseFontSize(_) | ResetFontSize | ScrollPageUp | ScrollPageDown | ScrollToTop | ScrollToBottom | ClearScreen | ReloadConfig | ToggleFrameOverlay | ImportWtProfiles
+    )
+}
+
 /// What an action produced: messages for the server, a close awaiting the user's confirmation, or a UI request.
 #[derive(Debug, Default, PartialEq)]
 pub struct Out {
@@ -137,6 +146,8 @@ pub struct Out {
     pub confirm_close: Option<PaneId>,
     pub confirm_close_workspace: Option<WorkspaceId>,
     pub ui: Option<Ui>,
+    /// An action only the app can run (fonts, clipboard, config), picked from the palette.
+    pub app: Option<Action>,
 }
 
 impl Out {
@@ -489,6 +500,7 @@ impl WindowView {
             })
         };
         match choice {
+            Choice::Action(a) if app_level(&a) => Out { app: Some(a), ..Out::default() },
             Choice::Action(a) => self.action(a, ctx),
             Choice::Workspace(id) if mode == Mode::MoveTab => match self.active_tab().map(|t| t.id) {
                 Some(tab) => Out::model(ModelCmd::MoveTab { tab, to: id, index: None }),

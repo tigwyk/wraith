@@ -527,6 +527,17 @@ fn palette_opens_filters_and_runs_an_action() {
 }
 
 #[test]
+fn palette_hands_app_level_actions_back() {
+    // Zoom, copy, paste, scroll and the like need the app's fonts, clipboard and config, not the view.
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.open_palette(Mode::Palette, &ctx());
+    type_all(&mut v, "reset font");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert_eq!(out.app, Some(Action::ResetFontSize), "{out:?}");
+}
+
+#[test]
 fn escape_closes_and_returns_focus() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());
