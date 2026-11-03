@@ -141,6 +141,21 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
                 c.profiles.push((n.to_string(), cmd.to_string()));
             }
         }
+        "profile-dir" | "profile-theme" | "profile-icon" => {
+            let kind = match key {
+                "profile-dir" => crate::ProfileExtra::Dir,
+                "profile-theme" => crate::ProfileExtra::Theme,
+                _ => crate::ProfileExtra::Icon,
+            };
+            if value.is_empty() {
+                c.profile_extras.retain(|(_, k, _)| *k != kind);
+            } else {
+                let (n, v) = value.split_once(':').filter(|(n, v)| !n.is_empty() && !v.is_empty()).ok_or_else(|| bad(value))?;
+                c.profile_extras.retain(|(p, k, _)| !(p == n && *k == kind));
+                c.profile_extras.push((n.to_string(), kind, v.to_string()));
+            }
+        }
+        "windows-terminal-profiles" => set!(windows_terminal_profiles, boolean),
         "default-profile" => set!(default_profile, |v: &str| Ok::<_, String>(Some(v.to_string()))),
         "shell-integration" => set!(shell_integration, |v: &str| match v {
             "none" => Ok(false),

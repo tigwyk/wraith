@@ -146,3 +146,12 @@ fn write_keeps_a_symlinked_config_a_symlink() {
     assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link survives");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "a = 1\nb = 2\n");
 }
+
+#[test]
+fn append_adds_line_even_when_key_exists() {
+    let src = "profile = a:a.exe\r\nprofile = b:b.exe";
+    assert_eq!(
+        wraith_config::edit::append(src, "profile", "c:c.exe"),
+        "profile = a:a.exe\r\nprofile = b:b.exe\r\nprofile = c:c.exe\r\n"
+    );
+}

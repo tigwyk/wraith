@@ -167,7 +167,7 @@ fn group_of(a: Action) -> (usize, &'static str) {
     use Action::*;
     match a {
         NewWorkspace | CloseWorkspace | NextWorkspace | PreviousWorkspace | WorkspacePicker => (0, "Workspaces"),
-        NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace => (1, "Tabs"),
+        NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace | NewTabProfile(_) | OpenNewTabMenu => (1, "Tabs"),
         NewSplit(_) | GotoSplit(_) | ToggleSplitZoom | ResizeSplit(..) | EqualizeSplits | CloseSurface | Find => (2, "Panes"),
         _ => (3, "Window"),
     }

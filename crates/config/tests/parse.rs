@@ -279,3 +279,32 @@ fn agent_notify_none_turns_all_off() {
     let (_, d) = parse_str("agent-notify = none,toast\n", p(), &themes());
     assert_eq!(d.len(), 1, "none mixes with nothing");
 }
+
+#[test]
+fn windows_terminal_profiles_key() {
+    assert!(parse_str("", p(), &themes()).0.windows_terminal_profiles);
+    let (c, d) = parse_str("windows-terminal-profiles = false\n", p(), &themes());
+    assert!(d.is_empty() && !c.windows_terminal_profiles, "{d:?}");
+    assert_eq!(parse_str("windows-terminal-profiles = maybe\n", p(), &themes()).1.len(), 1);
+}
+
+#[test]
+fn profile_extras_parse() {
+    use wraith_config::ProfileExtra;
+    let (c, d) = parse_str(
+        "profile-dir = Ubuntu:~/src\nprofile-theme = My Shell:Campbell\nprofile-icon = Ubuntu:🐧\nprofile-dir = Ubuntu:~/other\n",
+        p(),
+        &themes(),
+    );
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(
+        c.profile_extras,
+        vec![
+            ("My Shell".to_string(), ProfileExtra::Theme, "Campbell".to_string()),
+            ("Ubuntu".to_string(), ProfileExtra::Icon, "🐧".to_string()),
+            ("Ubuntu".to_string(), ProfileExtra::Dir, "~/other".to_string()),
+        ]
+    );
+    assert_eq!(parse_str("profile-dir = nocolon\n", p(), &themes()).1.len(), 1);
+    assert!(parse_str("profile-dir = Ubuntu:~\nprofile-dir =\n", p(), &themes()).0.profile_extras.is_empty());
+}

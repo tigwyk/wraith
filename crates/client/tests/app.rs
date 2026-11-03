@@ -159,3 +159,17 @@ fn reset_drops_a_pending_sequence() {
     k.reset();
     assert!(k.tick(t + Duration::from_secs(5)).is_empty(), "nothing is flushed to the terminal later");
 }
+
+#[test]
+fn ctrl_shift_digit_matches_new_tab_profile() {
+    let mut k = KeybindMatcher::new(&wraith_config::Config::default().keybinds);
+    let t = Instant::now();
+    assert_eq!(k.feed(&key(KeyCode::Digit1, Mods::CTRL | Mods::SHIFT), t), Match::Action(Action::NewTabProfile(1)));
+    assert_eq!(k.feed(&key(KeyCode::Digit9, Mods::CTRL | Mods::SHIFT), t), Match::Action(Action::NewTabProfile(9)));
+}
+
+#[test]
+fn ctrl_shift_space_matches_menu() {
+    let mut k = KeybindMatcher::new(&wraith_config::Config::default().keybinds);
+    assert_eq!(k.feed(&key(KeyCode::Space, Mods::CTRL | Mods::SHIFT), Instant::now()), Match::Action(Action::OpenNewTabMenu));
+}

@@ -91,6 +91,10 @@ pub struct Config {
     /// `(name, command)` from `profile = name:command`.
     pub profiles: Vec<(String, String)>,
     pub default_profile: Option<String>,
+    /// `windows-terminal-profiles`: list Windows Terminal's profiles (wt-profiles spec §3).
+    pub windows_terminal_profiles: bool,
+    /// `profile-dir`, `profile-theme`, `profile-icon` = `name:value`, one per (name, kind).
+    pub profile_extras: Vec<(String, ProfileExtra, String)>,
     pub shell_integration: bool,
     pub sidebar_visible: bool,
     /// Tabs whose agent needs attention pulse slowly (spec §5.4).
@@ -100,6 +104,14 @@ pub struct Config {
     pub unfocused_split_opacity: f32,
     /// Bytes per pane.
     pub image_storage_limit: u64,
+}
+
+/// Which `profile-*` key a profile extra came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileExtra {
+    Dir,
+    Theme,
+    Icon,
 }
 
 /// `workspace = name:dir[:layout]`
@@ -142,6 +154,8 @@ impl Default for Config {
             workspaces: Vec::new(),
             profiles: Vec::new(),
             default_profile: None,
+            windows_terminal_profiles: true,
+            profile_extras: Vec::new(),
             shell_integration: true,
             sidebar_visible: true,
             agent_tab_pulse: false,

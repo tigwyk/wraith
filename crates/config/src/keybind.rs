@@ -64,6 +64,10 @@ pub enum Action {
     ToggleSidebar,
     NewWindow,
     OpenSettings,
+    /// 1-based index into the profile list.
+    NewTabProfile(u8),
+    OpenNewTabMenu,
+    ImportWtProfiles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,6 +126,9 @@ impl Action {
             Action::ToggleSidebar => "toggle_sidebar",
             Action::NewWindow => "new_window",
             Action::OpenSettings => "open_settings",
+            Action::NewTabProfile(_) => "new_tab_profile",
+            Action::OpenNewTabMenu => "open_new_tab_menu",
+            Action::ImportWtProfiles => "import_windows_terminal_profiles",
         }
     }
 }
@@ -136,6 +143,7 @@ pub fn all_actions() -> Vec<(Action, &'static str)> {
         (PreviousWorkspace, "previous_workspace"),
         (WorkspacePicker, "workspace_picker"),
         (NewTab, "new_tab"),
+        (OpenNewTabMenu, "open_new_tab_menu"),
         (CloseTab, "close_tab"),
         (NextTab, "next_tab"),
         (PreviousTab, "previous_tab"),
@@ -161,6 +169,7 @@ pub fn all_actions() -> Vec<(Action, &'static str)> {
         (NewWindow, "new_window"),
         (ToggleSidebar, "toggle_sidebar"),
         (OpenSettings, "open_settings"),
+        (ImportWtProfiles, "import_windows_terminal_profiles"),
         (CommandPalette, "command_palette"),
         (Find, "find"),
         (Copy, "copy_to_clipboard"),
@@ -267,6 +276,15 @@ fn parse_action(s: &str) -> Result<Action, String> {
         "toggle_sidebar" => Action::ToggleSidebar,
         "new_window" => Action::NewWindow,
         "open_settings" => Action::OpenSettings,
+        "new_tab_profile" => {
+            let n: u8 = param.ok_or("new_tab_profile needs a number")?.parse().map_err(|_| "invalid profile number".to_string())?;
+            if n == 0 {
+                return Err("profile numbers start at 1".into());
+            }
+            Action::NewTabProfile(n)
+        }
+        "open_new_tab_menu" => Action::OpenNewTabMenu,
+        "import_windows_terminal_profiles" => Action::ImportWtProfiles,
         _ => return Err(format!("unknown action `{name}`")),
     })
 }
@@ -300,6 +318,16 @@ pub fn defaults() -> Vec<Keybind> {
         "ctrl+shift+o=workspace_picker",
         "ctrl+shift+n=new_window",
         "ctrl+comma=open_settings",
+        "ctrl+shift+space=open_new_tab_menu",
+        "ctrl+shift+1=new_tab_profile:1",
+        "ctrl+shift+2=new_tab_profile:2",
+        "ctrl+shift+3=new_tab_profile:3",
+        "ctrl+shift+4=new_tab_profile:4",
+        "ctrl+shift+5=new_tab_profile:5",
+        "ctrl+shift+6=new_tab_profile:6",
+        "ctrl+shift+7=new_tab_profile:7",
+        "ctrl+shift+8=new_tab_profile:8",
+        "ctrl+shift+9=new_tab_profile:9",
     ]
     .iter()
     .map(|s| parse_keybind(s).expect("default keybind"))
