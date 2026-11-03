@@ -1,7 +1,7 @@
 //! The M1 app: one window, one pane. Window messages are always handled before frame work (spec §6.3).
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
+use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
@@ -258,6 +259,8 @@ pub(crate) struct App {
     grids: HashMap<PaneId, GridRenderer>,
     /// Inline image textures, per pane.
     images: ImageStore,
+    /// Profile icon textures by file; `None` when the file could not be drawn (the letter tile shows).
+    icons: HashMap<PathBuf, Option<Icon>>,
     link: ServerLink,
     pub(crate) view: WindowView,
     pub(crate) spawn_ctx: SpawnCtx,
@@ -1823,6 +1826,8 @@ impl App {
         // The new-tab menu, under its button. It fades in like the palette.
         let menu_start = p.q.len();
         let menu_a = self.motion.overlay(|m| &mut m.menu, self.view.menu().is_some(), now);
+        // Image icons are separate texture batches, drawn after the chrome.
+        let mut icon_quads: Vec<(ID3D11ShaderResourceView, crate::grid::Quad)> = Vec::new();
         if let (Some(menu), Some(l)) = (self.view.menu(), self.view.menu_layout()) {
             let (cw, panel) = (m.w as i32, l.panel);
             p.rect(Rect { x: panel.x - 1, y: panel.y - 1, w: panel.w + 2, h: panel.h + 2 }, col.divider, 1.0);
@@ -1847,13 +1852,27 @@ impl App {
                 let ix = r.x + pad_x;
                 let (label, binding, lc) = match row {
                     MenuRow::Profile { name, icon, binding, default, .. } => {
-                        match icon.as_deref().filter(|t| t.chars().count() <= 2) {
-                            Some(t) => {
+                        let side = (m.h as i32).min(2 * cw);
+                        let image = icon.as_deref().and_then(|i| wraith_config::wt::resolve_icon(i, None)).and_then(|f| {
+                            let gpu = &self.gpu;
+                            self.icons.entry(f).or_insert_with_key(|f| icon_texture(gpu, f)).clone()
+                        });
+                        match (icon.as_deref().filter(|t| t.chars().count() <= 2), image) {
+                            (Some(t), _) => {
                                 p.text(&self.gpu, &mut self.atlas, &self.fonts, ix, ty, t, col.bar_fg, 1.0);
                             }
-                            None => {
+                            (None, Some((srv, _))) => {
+                                let quad = crate::grid::Quad {
+                                    pos: [ix as f32, (ty + (m.h as i32 - side) / 2) as f32],
+                                    size: [side as f32, side as f32],
+                                    uv: [0.0, 0.0, 1.0, 1.0],
+                                    color: [1.0, 1.0, 1.0, 1.0],
+                                    kind: crate::images::KIND_IMAGE,
+                                };
+                                icon_quads.push((srv, quad));
+                            }
+                            (None, None) => {
                                 let (c, tile) = letter_tile(name);
-                                let side = (m.h as i32).min(2 * cw);
                                 p.rect(Rect { x: ix, y: ty, w: side, h: m.h as i32 }, tile, 1.0);
                                 p.text(&self.gpu, &mut self.atlas, &self.fonts, ix + (side - cw) / 2, ty, &c.to_string(), (255, 255, 255), 1.0);
                             }
@@ -1880,7 +1899,12 @@ impl App {
             }
         }
         let n = p.q.len();
-        crate::paint::shift(&mut p.q[menu_start..n], 0.0, (8.0 * (1.0 - menu_a)).round(), menu_a);
+        let menu_dy = (8.0 * (1.0 - menu_a)).round();
+        crate::paint::shift(&mut p.q[menu_start..n], 0.0, menu_dy, menu_a);
+        for (_, q) in &mut icon_quads {
+            q.pos[1] += menu_dy;
+            q.color[3] = menu_a;
+        }
         // Command palette / picker, centered over everything. It fades in, rising 8 px.
         let pal_start = p.q.len();
         let pal_a = self.motion.overlay(|m| &mut m.palette, self.view.palette().is_some(), now);
@@ -1977,6 +2001,8 @@ impl App {
         }
         self.motion.end(now);
         batches.push(Batch { quads: q, texture: None });
+        // shortcut: icons draw above every chrome quad, toasts included; fine while nothing else overlaps the menu.
+        batches.extend(icon_quads.into_iter().map(|(srv, quad)| Batch { quads: vec![quad], texture: Some(srv) }));
         self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
@@ -2097,6 +2123,55 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
     }
 }
 
+/// The installed folder of the package family `family` (Windows Terminal's, for its icons).
+fn package_dir(family: &str) -> Option<PathBuf> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::Storage::Packaging::Appx::{GetPackagePathByFullName, GetPackagesByPackageFamily};
+    use windows::core::PWSTR;
+    let fam = wide(family);
+    let (mut count, mut len) = (0u32, 0u32);
+    unsafe {
+        let _ = GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, None, &mut len, None);
+        if count == 0 || len == 0 {
+            return None;
+        }
+        let mut names = vec![PWSTR::null(); count as usize];
+        let mut buf = vec![0u16; len as usize];
+        if GetPackagesByPackageFamily(PCWSTR(fam.as_ptr()), &mut count, Some(names.as_mut_ptr()), &mut len, Some(PWSTR(buf.as_mut_ptr()))) != ERROR_SUCCESS {
+            return None;
+        }
+        let full = PCWSTR(names.first()?.0);
+        let mut plen = 0u32;
+        let _ = GetPackagePathByFullName(full, &mut plen, None);
+        let mut path = vec![0u16; plen as usize];
+        if plen == 0 || GetPackagePathByFullName(full, &mut plen, Some(PWSTR(path.as_mut_ptr()))) != ERROR_SUCCESS {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf16_lossy(&path[..(plen as usize).saturating_sub(1)])))
+    }
+}
+
+/// `p`, or the scaled variant a package ships instead (`x.scale-100.png` for `x.png`), if one exists.
+fn existing_icon(p: PathBuf) -> Option<PathBuf> {
+    if p.is_file() {
+        return Some(p);
+    }
+    let stem = p.file_stem()?.to_string_lossy().into_owned();
+    ["scale-100", "scale-200", "scale-150", "scale-125"].iter().map(|s| p.with_file_name(format!("{stem}.{s}.png"))).find(|c| c.is_file())
+}
+
+/// A profile icon's texture and its pixel size.
+type Icon = (ID3D11ShaderResourceView, (u32, u32));
+
+/// A PNG icon file as a texture; files over 1 MiB are not read.
+fn icon_texture(gpu: &Gpu, path: &Path) -> Option<Icon> {
+    if std::fs::metadata(path).ok()?.len() > 1 << 20 {
+        return None;
+    }
+    let (w, h, rgba) = crate::new_tab_menu::decode_icon(&std::fs::read(path).ok()?)?;
+    Some((crate::images::texture(gpu, w, h, &rgba).ok()?, (w, h)))
+}
+
 /// Windows Terminal's or the detected profiles, plus the configured ones (wt-profiles spec §3);
 /// `-e <command>` or `command =` becomes the default.
 fn build_spawn_ctx(config: &Config) -> SpawnCtx {
@@ -2106,6 +2181,16 @@ fn build_spawn_ctx(config: &Config) -> SpawnCtx {
         tracing::warn!("{w}");
     }
     let mut profiles = merged.profiles;
+    // WT's own icons (`ms-appx:///…`) live in its package folder; point them at the file there.
+    let package = match &wt {
+        Some(Ok(s)) => s.family.as_deref().and_then(package_dir),
+        _ => None,
+    };
+    for p in &mut profiles {
+        if let Some(i) = p.icon.as_deref().filter(|i| i.starts_with("ms-appx:")) {
+            p.icon = wraith_config::wt::resolve_icon(i, package.as_deref()).and_then(existing_icon).map(|f| f.display().to_string());
+        }
+    }
     let themes = themes_dir();
     let mut schemes = HashMap::new();
     for name in profiles.iter().filter_map(|p| p.scheme.clone()) {
@@ -2185,6 +2270,7 @@ pub fn run() -> Result<()> {
         pipe,
         grids: HashMap::new(),
         images: ImageStore::default(),
+        icons: HashMap::new(),
         link,
         view,
         spawn_ctx,

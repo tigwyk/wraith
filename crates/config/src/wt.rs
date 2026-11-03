@@ -250,7 +250,8 @@ pub fn parse(settings: &str, fragments: &[(String, String)], env: &dyn Fn(&str) 
             Ok(command) => out.profiles.push(WtProfile {
                 command,
                 dir: text(&m, "startingDirectory").map(|d| expand(&d, env)),
-                icon: text(&m, "icon"),
+                // WT draws a built-in profile's icon from its package by guid when none is set.
+                icon: text(&m, "icon").or_else(|| text(&m, "guid").map(|g| format!("ms-appx:///ProfileIcons/{g}.png"))),
                 scheme: match m.get("colorScheme") {
                     Some(Value::Object(o)) => text(o, "dark"),
                     Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
@@ -434,4 +435,20 @@ pub fn import(config: &Path, themes_dir: &Path, wt: &WtSettings) -> std::io::Res
         }
     }
     Ok(report)
+}
+
+/// The PNG file a profile icon names: a path as written, or `ms-appx:///…` inside WT's package folder
+/// `install_dir`. Anything else (an emoji, an `.exe`, a URL) is `None`.
+pub fn resolve_icon(icon: &str, install_dir: Option<&Path>) -> Option<PathBuf> {
+    let png = |p: &Path| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png"));
+    if let Some(rel) = icon.strip_prefix("ms-appx:///") {
+        let rel = Path::new(rel);
+        if rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+            return None;
+        }
+        let p = install_dir?.join(rel);
+        return png(&p).then_some(p);
+    }
+    let p = PathBuf::from(icon);
+    (icon.contains(['\\', '/']) && !icon.contains("://") && png(&p)).then_some(p)
 }

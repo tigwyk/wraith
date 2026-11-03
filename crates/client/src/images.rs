@@ -27,30 +27,37 @@ pub struct ImageStore {
 impl ImageStore {
     /// Replace image `id` of `pane` with `w`×`h` RGBA8 pixels.
     pub fn upload(&mut self, gpu: &Gpu, pane: PaneId, id: u32, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
-        if w == 0 || h == 0 || rgba.len() < w as usize * h as usize * 4 {
-            return Err(Error::new(E_INVALIDARG, "image data does not match its size"));
-        }
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: w,
-            Height: h,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-            Usage: D3D11_USAGE_IMMUTABLE,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-            ..Default::default()
-        };
-        let init = D3D11_SUBRESOURCE_DATA { pSysMem: rgba.as_ptr().cast(), SysMemPitch: w * 4, SysMemSlicePitch: 0 };
-        let (mut tex, mut srv) = (None, None);
-        unsafe {
-            gpu.device.CreateTexture2D(&desc, Some(&init), Some(&mut tex))?;
-            gpu.device.CreateShaderResourceView(tex.as_ref().unwrap(), None, Some(&mut srv))?;
-        }
-        self.tex.insert((pane, id), (srv.unwrap(), (w, h)));
+        self.tex.insert((pane, id), (texture(gpu, w, h, rgba)?, (w, h)));
         Ok(())
     }
+}
 
+/// An immutable GPU texture of `w`×`h` RGBA8 pixels.
+pub fn texture(gpu: &Gpu, w: u32, h: u32, rgba: &[u8]) -> Result<ID3D11ShaderResourceView> {
+    if w == 0 || h == 0 || rgba.len() < w as usize * h as usize * 4 {
+        return Err(Error::new(E_INVALIDARG, "image data does not match its size"));
+    }
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: w,
+        Height: h,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_IMMUTABLE,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        ..Default::default()
+    };
+    let init = D3D11_SUBRESOURCE_DATA { pSysMem: rgba.as_ptr().cast(), SysMemPitch: w * 4, SysMemSlicePitch: 0 };
+    let (mut tex, mut srv) = (None, None);
+    unsafe {
+        gpu.device.CreateTexture2D(&desc, Some(&init), Some(&mut tex))?;
+        gpu.device.CreateShaderResourceView(tex.as_ref().unwrap(), None, Some(&mut srv))?;
+    }
+    Ok(srv.unwrap())
+}
+
+impl ImageStore {
     pub fn delete(&mut self, pane: PaneId, id: u32) {
         self.tex.remove(&(pane, id));
     }

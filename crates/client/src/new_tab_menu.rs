@@ -196,3 +196,25 @@ pub fn letter_tile(name: &str) -> (char, (u8, u8, u8)) {
     let h = name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
     (letter, COLORS[h as usize % COLORS.len()])
 }
+
+/// A profile icon's PNG bytes as RGBA8, or `None` (then the letter tile is drawn).
+pub fn decode_icon(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(bytes));
+    d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut r = d.read_info().ok()?;
+    // Icons are small; a huge header is not worth the allocation.
+    if r.info().width > 1024 || r.info().height > 1024 {
+        return None;
+    }
+    let mut buf = vec![0; r.output_buffer_size()?];
+    let info = r.next_frame(&mut buf).ok()?;
+    let px = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => px.to_vec(),
+        png::ColorType::Rgb => px.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => px.as_chunks::<2>().0.iter().flat_map(|c| [c[0], c[0], c[0], c[1]]).collect(),
+        png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None, // EXPAND turns palettes into RGB(A)
+    };
+    Some((info.width, info.height, rgba))
+}

@@ -185,3 +185,24 @@ fn unquoted_exe_path_with_spaces_is_quoted() {
     assert_eq!(cmd(r#""C:\Program Files\x.exe" -a"#), r#""C:\Program Files\x.exe" -a"#);
     assert_eq!(cmd("wsl -d Ubuntu"), "wsl -d Ubuntu", "no .exe: left as written");
 }
+
+#[test]
+fn resolve_icon_rules() {
+    use wraith_config::wt::resolve_icon;
+    let dir = Path::new(r"C:\WT");
+    assert_eq!(resolve_icon(r"C:\icons\a.png", Some(dir)), Some(PathBuf::from(r"C:\icons\a.png")));
+    assert_eq!(resolve_icon("ms-appx:///ProfileIcons/x.png", Some(dir)), Some(dir.join("ProfileIcons").join("x.png")));
+    assert_eq!(resolve_icon("ms-appx:///ProfileIcons/x.png", None), None, "no package folder");
+    assert_eq!(resolve_icon("ms-appx:///../../evil.png", Some(dir)), None, "stays inside the package");
+    assert_eq!(resolve_icon("🦀", Some(dir)), None);
+    assert_eq!(resolve_icon(r"C:\Program Files\WSL\wsl.exe", Some(dir)), None, "only PNG files");
+}
+
+#[test]
+fn profiles_without_icon_get_wts_default_by_guid() {
+    let s = settings();
+    let icon = |n: &str| s.profiles.iter().find(|p| p.name == n).unwrap().icon.clone();
+    assert_eq!(icon("cmd").as_deref(), Some("ms-appx:///ProfileIcons/{0caa0dad-35be-5f56-a8ff-afceeeaa6101}.png"));
+    assert_eq!(icon("Custom").as_deref(), Some("🦀"), "a profile's own icon wins");
+    assert_eq!(icon("From Fragment").as_deref(), Some("ms-appx:///ProfileIcons/{11111111-0000-0000-0000-000000000001}.png"));
+}

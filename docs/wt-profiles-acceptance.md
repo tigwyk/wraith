@@ -18,6 +18,7 @@ Date: 2026-11-02. Branch `feat/wt-profiles`.
 | Keys | Pass | End then Enter opened the command palette; Esc closed it |
 | `wr import-wt` | Pass | "4 profiles imported"; Azure listed as skipped with its reason. The config gained the `profile` lines, `profile-theme = cmd:One Half Dark`, `default-profile`, `profile-detect = false` and `windows-terminal-profiles = false` |
 | After the import, the same menu | Pass | Same four profiles in the same order, read from the config alone |
+| Image icons from WT's package | Pass | Windows PowerShell, cmd and Developer PowerShell for VS 2022 showed WT's own icons (`ProfileIcons\…scale-100.png`, found through the package family). Ubuntu's icon is an `.exe` in WT, so it shows its letter tile |
 
 **Found and fixed during the check:**
 - **Unquoted program paths with spaces.** WT accepts `%PROGRAMFILES%/PowerShell/7/pwsh.exe`. Expanded, Wraith read the program as `C:\Program`, so the profile was not recognised as pwsh and got no shell integration. Such paths are now quoted (`unquoted_exe_path_with_spaces_is_quoted`).
@@ -27,4 +28,4 @@ Date: 2026-11-02. Branch `feat/wt-profiles`.
 **Not run live:**
 - **Alt+click and Alt+Enter (split):** posted messages carry no Alt state. Covered by `click_profile_alt_click_split`, `enter_opens_alt_enter_splits` and `split_profile_uses_chosen_profile_along_longer_side`.
 - **`Ctrl+Shift+Space` and `Ctrl+Shift+1…9`:** posted messages carry no Ctrl state. Covered by `ctrl_shift_space_matches_menu` and `ctrl_shift_digit_matches_new_tab_profile`.
-- **Image icons:** see Task 7.
+- **Icons from `.exe` and `.ico` files:** not supported; those profiles show a letter tile.

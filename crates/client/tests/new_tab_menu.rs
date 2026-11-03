@@ -142,3 +142,19 @@ fn menu_outcome_maps_to_actions() {
     assert_eq!(menu_action(MenuOutcome::Palette), Some(MenuDo::Action(Action::CommandPalette)));
     assert_eq!(menu_action(MenuOutcome::Close), None);
 }
+
+#[test]
+fn bad_png_falls_back_to_tile() {
+    use wraith_client::new_tab_menu::decode_icon;
+    assert_eq!(decode_icon(b"not a png"), None);
+    let mut bytes = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut bytes, 2, 2);
+        e.set_color(png::ColorType::Rgb);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 9, 9, 9]).unwrap();
+    }
+    let (w, h, rgba) = decode_icon(&bytes).unwrap();
+    assert_eq!((w, h), (2, 2));
+    assert_eq!(&rgba[..8], &[255, 0, 0, 255, 0, 255, 0, 255], "RGB becomes opaque RGBA");
+}

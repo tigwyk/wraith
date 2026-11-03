@@ -1159,6 +1159,7 @@ dependencies = [
  "crossbeam-channel",
  "embed-resource",
  "notify",
+ "png",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
