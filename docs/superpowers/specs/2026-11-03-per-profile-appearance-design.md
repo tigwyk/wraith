@@ -1,6 +1,6 @@
 # Wraith per-profile appearance (font, size, padding, opacity) — design
 
-Status: approved design (2026-11-03), not implemented
+Status: implemented (2026-11-03); see `docs/per-profile-appearance-acceptance.md`
 Parent specs: `docs/superpowers/specs/2026-11-01-wraith-terminal-design.md` (§6.3 latency), `docs/superpowers/specs/2026-11-02-wt-profiles-design.md` (spec 1, on branch `feat/wt-profiles`; this is its "spec 2")
 
 ## 1. Intent
