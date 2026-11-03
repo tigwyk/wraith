@@ -760,6 +760,7 @@ impl WindowView {
         self.requested_tab_for = None;
         self.subscribed.clear();
         self.panes.clear();
+        self.zooms.clear();
         self.drag = None;
         vec![ClientMsg::AttachWindow { workspace: None }]
     }
@@ -783,6 +784,7 @@ impl WindowView {
         self.requested_tab_for = None;
         self.subscribed.clear();
         self.panes.clear();
+        self.zooms.clear();
         self.drag = None;
     }
 

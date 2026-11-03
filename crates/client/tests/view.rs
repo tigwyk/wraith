@@ -1093,3 +1093,13 @@ fn used_fonts_covers_profiles_and_zooms() {
     v.set_zoom(1, 0.0, look(2, (9, 18), 2));
     assert_eq!(v.used_fonts(), HashSet::from([0, 1]));
 }
+
+#[test]
+fn zoom_cleared_on_set_workspace() {
+    let mut v = looked_view();
+    v.on_snapshot(snap(10), &ctx());
+    v.set_zoom(2, 2.0, look(1, (12, 24), 4));
+    v.set_workspace(7);
+    assert!(v.zoomed_panes().is_empty());
+    assert_eq!(v.zoom(2), 0.0);
+}

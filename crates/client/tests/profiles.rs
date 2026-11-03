@@ -168,3 +168,37 @@ fn empty_list_falls_back_to_detected() {
     c.profile_detect = false;
     assert_eq!(names(&merge(None, detected, &c).profiles), ["pwsh"], "a window always has a profile to start");
 }
+
+// Per-pane appearance (per-profile-appearance spec §2.3, §3.3).
+use wraith_client::profiles::appearance;
+
+#[test]
+fn appearance_defaults_to_global() {
+    let c = Config::default();
+    let a = appearance(None, &c, 0.0, &|_| true);
+    assert_eq!(a.families, c.font_family);
+    assert_eq!(a.size_pt, c.font_size);
+    assert_eq!(a.pad, (c.window_padding_x, c.window_padding_y));
+    assert_eq!(a.opacity, c.background_opacity);
+}
+
+#[test]
+fn appearance_profile_wins_and_zoom_adds() {
+    let c = Config::default();
+    let p = Profile { font: Some(vec!["A".into()]), font_size: Some(14.0), padding: Some((8, 4)), opacity: Some(0.8), ..detected().remove(0) };
+    let a = appearance(Some(&p), &c, 2.0, &|_| true);
+    let mut want = vec!["A".to_string()];
+    want.extend(c.font_family.iter().filter(|f| *f != "A").cloned());
+    assert_eq!(a.families, want);
+    assert_eq!((a.size_pt, a.pad, a.opacity), (16.0, (8, 4), 0.8));
+    assert_eq!(appearance(Some(&p), &c, 100.0, &|_| true).size_pt, 72.0);
+}
+
+#[test]
+fn uninstalled_family_falls_back_to_window_families() {
+    let c = Config::default();
+    let p = Profile { font: Some(vec!["Cascadia Mono".into()]), font_size: Some(14.0), ..detected().remove(0) };
+    let a = appearance(Some(&p), &c, 0.0, &|f| f != "Cascadia Mono");
+    assert_eq!(a.families, c.font_family);
+    assert_eq!(a.size_pt, 14.0);
+}

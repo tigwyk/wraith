@@ -6,6 +6,7 @@ use wraith_proto::model::Rect;
 
 use crate::atlas::{GlyphAtlas, GlyphKey};
 use crate::font::FontStack;
+use crate::font_table::FontId;
 use crate::gpu::Gpu;
 use crate::grid::Quad;
 
@@ -32,13 +33,19 @@ impl Painter<'_> {
         self.q.push(Quad { pos: [r.x as f32, r.y as f32], size: [r.w as f32, r.h as f32], uv: [0.0; 4], color: color(rgb, alpha), kind: 0 });
     }
 
-    /// Draw `s` with its top-left at (`x`, `y`); returns the advance in pixels.
+    /// Draw `s` in the window font (table entry 0) with its top-left at (`x`, `y`); returns the advance in pixels.
     #[allow(clippy::too_many_arguments, reason = "one text run's full input")]
     pub fn text(&mut self, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, x: i32, y: i32, s: &str, rgb: Rgb, alpha: f32) -> i32 {
+        self.text_in(gpu, atlas, fonts, 0, x, y, s, rgb, alpha)
+    }
+
+    /// `text` in `fonts`, which is table entry `font` (a pane's font, for IME preedit).
+    #[allow(clippy::too_many_arguments, reason = "one text run's full input")]
+    pub fn text_in(&mut self, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, font: FontId, x: i32, y: i32, s: &str, rgb: Rgb, alpha: f32) -> i32 {
         let m = fonts.metrics();
         if s.chars().any(|c| c != ' ') {
             for g in fonts.shape(s, StyleFlags(0)) {
-                let e = atlas.get(gpu, fonts, GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 });
+                let e = atlas.get(gpu, fonts, GlyphKey { font, face: g.face, glyph: g.glyph, subpx: 0 });
                 if e.w == 0 {
                     continue;
                 }

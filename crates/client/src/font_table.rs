@@ -27,6 +27,7 @@ impl<F> FontTable<F> {
         if let Some((id, ..)) = self.entries.iter().find(|e| e.1 == *key) {
             return Ok(*id);
         }
+        debug_assert!(!self.exhausted(), "rebuild the table (and atlas) before loading more fonts");
         let font = load(key)?;
         let id = self.next;
         self.next += 1;

@@ -8,6 +8,7 @@ use notify::{RecursiveMode, Watcher};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use wraith_config::{Action, Config, Diagnostic};
+use wraith_server::profile::Profile;
 
 use crate::app::{App, KeybindMatcher, themes_dir};
 
@@ -215,21 +216,28 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
     }
     let schemes = |a: &App| (a.spawn_ctx.profiles.iter().map(|p| (p.name.clone(), p.scheme.clone())).collect::<Vec<_>>(), a.spawn_ctx.schemes.clone());
     let old_schemes = schemes(app);
+    let old_profiles = app.spawn_ctx.profiles.clone();
     // Rebuilt first: resend_colors reads each pane's colours from it.
     app.rebuild_spawn_ctx();
     if (app.config.foreground, app.config.background, app.config.palette) != (old.foreground, old.background, old.palette) || schemes(app) != old_schemes {
         app.resend_colors();
     }
-    let c = &app.config;
     // shortcut: `command` changes apply on the next app start, not on pane restart (pane keeps its options).
-    let fonts_changed = (&c.font_family, &c.font_feature) != (&old.font_family, &old.font_feature)
-        || c.font_size != old.font_size
-        || (c.window_padding_x, c.window_padding_y) != (old.window_padding_x, old.window_padding_y);
-    if c.font_size != old.font_size {
-        app.font_size = c.font_size;
-    }
-    if fonts_changed {
+    let opacities = |c: &Config, ps: &[Profile]| (c.background_opacity, ps.iter().map(|p| p.opacity).collect::<Vec<_>>());
+    if fonts_changed(&old, &app.config, &old_profiles, &app.spawn_ctx.profiles) {
         app.rebuild_fonts();
+    } else if opacities(&old, &old_profiles) != opacities(&app.config, &app.spawn_ctx.profiles) {
+        app.rebuild_looks();
     }
     app.request_redraw();
+}
+
+/// Whether a reload needs a new font table and atlas: the window font, padding, or any profile's
+/// font, size or padding changed (spec §3.5).
+pub fn fonts_changed(old: &Config, new: &Config, old_p: &[Profile], new_p: &[Profile]) -> bool {
+    let profiles = |ps: &[Profile]| ps.iter().map(|p| (p.name.clone(), p.font.clone(), p.font_size, p.padding)).collect::<Vec<_>>();
+    (&new.font_family, &new.font_feature) != (&old.font_family, &old.font_feature)
+        || new.font_size != old.font_size
+        || (new.window_padding_x, new.window_padding_y) != (old.window_padding_x, old.window_padding_y)
+        || profiles(old_p) != profiles(new_p)
 }

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use wraith_client::app::clamp_font_size;
-use wraith_client::reload::{Toasts, format_diagnostics, reload_file};
+use wraith_client::reload::{Toasts, fonts_changed, format_diagnostics, reload_file};
 use wraith_config::Diagnostic;
 
 fn themes() -> PathBuf {
@@ -69,4 +69,22 @@ fn row_states_match_diagnostics_by_line() {
     assert_eq!(rows[i].origin, Origin::Here { line: 1 });
     assert_eq!(rows[i].warning.as_deref(), Some("invalid value `abc`"));
     assert!(rows.iter().enumerate().all(|(j, r)| j == i || r.warning.is_none()));
+}
+
+#[test]
+fn profile_font_change_rebuilds() {
+    use wraith_client::profiles::merge;
+    use wraith_server::profile::{Profile, ShellKind};
+    let dir = std::env::temp_dir().join(format!("wraith-reload-pf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config");
+    let detected = || vec![Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into(), ..Profile::default() }];
+    std::fs::write(&path, "profile-detect = true\n").unwrap();
+    let (old, _) = reload_file(&path, &themes());
+    std::fs::write(&path, "profile-detect = true\nprofile-font-size = pwsh:20\n").unwrap();
+    let (new, toast) = reload_file(&path, &themes());
+    assert_eq!(toast, None);
+    let (old_p, new_p) = (merge(None, detected, &old).profiles, merge(None, detected, &new).profiles);
+    assert!(!fonts_changed(&old, &old, &old_p, &old_p));
+    assert!(fonts_changed(&old, &new, &old_p, &new_p));
 }
