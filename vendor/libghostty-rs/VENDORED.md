@@ -14,5 +14,6 @@ Local changes:
       set LIBCLANG_PATH=<dir with libclang.dll>
       cargo run --manifest-path vendor/libghostty-rs/Cargo.toml -p libghostty-vt-sys --features bindgen-tool --bin gen-bindings
 - `crates/libghostty-vt/src/terminal.rs`: `vt_write_until_ground` calls `ghostty_terminal_vt_write_until` with the GROUND boundary (upstream Ghostty removed `ghostty_terminal_vt_write_until_ground`).
+- `crates/libghostty-vt/src/render.rs`: `RenderState::snapshot` reads the last update without updating (to send the captured frame during a render hold).
 
 Building needs Zig 0.17.x on PATH (Ghostty's `minimum_zig_version`).
