@@ -12,6 +12,7 @@ pub mod link;
 pub mod motion;
 pub mod paint;
 pub mod palette;
+pub mod profiles;
 pub mod selection;
 pub mod settings;
 pub mod sprite;

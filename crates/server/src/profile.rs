@@ -1,7 +1,7 @@
 //! Shell profiles (spec §4.3) and the command line that starts one with shell integration (spec §3.5).
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ShellKind {
     Pwsh,
     WindowsPowerShell,
@@ -9,15 +9,22 @@ pub enum ShellKind {
     Bash,
     Zsh,
     Wsl { distro: String },
+    #[default]
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
     pub name: String,
     pub kind: ShellKind,
     /// The command line, without integration arguments.
     pub command: String,
+    /// Where a new tab of this profile starts.
+    pub dir: Option<String>,
+    /// An emoji, a glyph or an image path, for the new-tab menu.
+    pub icon: Option<String>,
+    /// The colour scheme's name.
+    pub scheme: Option<String>,
 }
 
 /// First word of a command line (quoted or not) and the rest.
@@ -61,7 +68,7 @@ pub fn from_config(name: &str, command: &str) -> Profile {
         }
         _ => ShellKind::Other,
     };
-    Profile { name: name.to_string(), kind, command: command.to_string() }
+    Profile { name: name.to_string(), kind, command: command.to_string(), ..Profile::default() }
 }
 
 /// The profile named `wanted` (any case), else `pwsh`, else the first. `profiles` is never empty
@@ -74,7 +81,7 @@ pub fn resolve<'a>(profiles: &'a [Profile], wanted: Option<&str>) -> &'a Profile
 /// Git for Windows' bash under `program_files`, if installed.
 pub fn git_bash_profile(program_files: &Path) -> Option<Profile> {
     let exe = program_files.join("Git").join("bin").join("bash.exe");
-    exe.is_file().then(|| Profile { name: "git-bash".into(), kind: ShellKind::Bash, command: format!("\"{}\" -i", exe.display()) })
+    exe.is_file().then(|| Profile { name: "git-bash".into(), kind: ShellKind::Bash, command: format!("\"{}\" -i", exe.display()), ..Profile::default() })
 }
 
 /// Distro names from `wsl.exe -l -q` output (UTF-16LE). Docker's internal distros are not shells.
@@ -97,15 +104,15 @@ pub fn detect() -> Vec<Profile> {
     use std::os::windows::process::CommandExt;
     let mut out = Vec::new();
     if on_path("pwsh.exe") {
-        out.push(Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into() });
+        out.push(Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into(), ..Profile::default() });
     }
     let sysroot = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
     let ps = sysroot.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe");
     if ps.is_file() {
-        out.push(Profile { name: "powershell".into(), kind: ShellKind::WindowsPowerShell, command: format!("\"{}\"", ps.display()) });
+        out.push(Profile { name: "powershell".into(), kind: ShellKind::WindowsPowerShell, command: format!("\"{}\"", ps.display()), ..Profile::default() });
     }
     let cmd = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
-    out.push(Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: if cmd.contains(' ') { format!("\"{cmd}\"") } else { cmd } });
+    out.push(Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: if cmd.contains(' ') { format!("\"{cmd}\"") } else { cmd }, ..Profile::default() });
     if let Some(pf) = std::env::var_os("ProgramFiles")
         && let Some(p) = git_bash_profile(Path::new(&pf))
     {
@@ -117,7 +124,7 @@ pub fn detect() -> Vec<Profile> {
     {
         for distro in decode_wsl_list(&o.stdout) {
             let command = format!("wsl.exe -d {distro}");
-            out.push(Profile { name: distro.clone(), kind: ShellKind::Wsl { distro }, command });
+            out.push(Profile { name: distro.clone(), kind: ShellKind::Wsl { distro }, command, ..Profile::default() });
         }
     }
     out

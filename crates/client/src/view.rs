@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use wraith_config::{Action, CloseOnExit, Config, SplitTarget};
+use wraith_config::{Action, CloseOnExit, Config, Scheme, SplitTarget};
 use wraith_proto::model::{AgentInfo, AgentState, Axis, Dir, Divider, ModelCmd, ModelSnapshot, Rect, Tab, TabId, WorkspaceId, focus_neighbor};
 use wraith_proto::pane::{PaneCmd, SearchCmd, SpawnOpts};
 use wraith_proto::wire::{ClientMsg, PaneId};
@@ -29,10 +29,14 @@ pub struct Geometry {
     pub caption_w: i32,
 }
 
+type Rgb8 = (u8, u8, u8);
+
 /// What a new pane needs: its profile's command line, colors and environment.
 pub struct SpawnCtx {
     pub config: Config,
     pub profiles: Vec<Profile>,
+    /// The colour schemes the profiles name, by name.
+    pub schemes: HashMap<String, Scheme>,
     /// Folder of the shell integration scripts.
     pub scripts: PathBuf,
     pub env: Vec<(String, String)>,
@@ -43,9 +47,31 @@ impl SpawnCtx {
         resolve(&self.profiles, name.filter(|n| !n.is_empty()).or(self.config.default_profile.as_deref()))
     }
 
-    pub fn spawn(&self, p: &Profile, cwd: Option<&str>, cells: (u16, u16), cell_px: (u32, u32)) -> SpawnOpts {
+    /// Foreground, background and 256-colour palette for a pane of `profile`: its scheme over the
+    /// global colours, or the global colours when it has none (or no longer exists).
+    pub fn colors(&self, profile: &str) -> (Rgb8, Rgb8, Vec<Rgb8>) {
         let c = &self.config;
         let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
+        let mut palette = c.palette;
+        let scheme = self.profiles.iter().find(|p| p.name == profile).and_then(|p| self.schemes.get(p.scheme.as_deref()?));
+        let (fg, bg) = match scheme {
+            Some(s) => {
+                palette[..16].copy_from_slice(&s.palette);
+                (s.fg, s.bg)
+            }
+            None => (c.foreground, c.background),
+        };
+        (rgb(fg), rgb(bg), palette.iter().copied().map(rgb).collect())
+    }
+
+    pub fn set_colors(&self, profile: &str) -> PaneCmd {
+        let (fg, bg, palette) = self.colors(profile);
+        PaneCmd::SetColors { fg, bg, palette }
+    }
+
+    pub fn spawn(&self, p: &Profile, cwd: Option<&str>, cells: (u16, u16), cell_px: (u32, u32)) -> SpawnOpts {
+        let c = &self.config;
+        let (default_fg, default_bg, palette) = self.colors(&p.name);
         SpawnOpts {
             cmdline: spawn_command(p, cwd, &self.scripts, c.shell_integration),
             cwd: process_cwd(p, cwd),
@@ -55,12 +81,22 @@ impl SpawnCtx {
             cell_w_px: cell_px.0,
             cell_h_px: cell_px.1,
             scrollback_lines: c.scrollback_lines(cells.0),
-            default_fg: rgb(c.foreground),
-            default_bg: rgb(c.background),
-            palette: c.palette.iter().copied().map(rgb).collect(),
+            default_fg,
+            default_bg,
+            palette,
             image_storage_limit: c.image_storage_limit,
             agent_detect: c.agent_detect.clone(),
         }
+    }
+}
+
+/// Where a new tab of `p` starts: its `dir`, with a leading `~` meaning the Windows profile folder for
+/// native shells (WSL resolves `~` itself).
+fn profile_dir(p: &Profile) -> Option<String> {
+    let d = p.dir.as_deref()?;
+    match (&p.kind, d.strip_prefix('~')) {
+        (wraith_server::profile::ShellKind::Wsl { .. }, _) | (_, None) => Some(d.to_string()),
+        (_, Some(rest)) => std::env::var("USERPROFILE").ok().map(|h| format!("{h}{}", rest.replace('/', "\\"))),
     }
 }
 
@@ -783,14 +819,10 @@ impl WindowView {
         let mut visible: Vec<PaneId> = self.visible().iter().map(|(p, _)| *p).collect();
         visible.sort_unstable();
         let mut msgs = Vec::new();
-        let c = &ctx.config;
-        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
         for &p in &visible {
             if self.colored.insert(p) {
-                msgs.push(ClientMsg::Cmd {
-                    pane: p,
-                    cmd: PaneCmd::SetColors { fg: rgb(c.foreground), bg: rgb(c.background), palette: c.palette.iter().copied().map(rgb).collect() },
-                });
+                let profile = self.snap.pane(p).map_or("", |m| m.profile.as_str());
+                msgs.push(ClientMsg::Cmd { pane: p, cmd: ctx.set_colors(profile) });
             }
         }
         msgs.extend(resizes);
@@ -840,7 +872,7 @@ impl WindowView {
         {
             if self.requested_tab_for != Some(ws.id) {
                 self.requested_tab_for = Some(ws.id);
-                msgs.push(self.new_tab_msg(ws.id, ctx));
+                msgs.push(self.new_tab_msg(ws.id, ctx, None));
             }
         } else {
             self.requested_tab_for = None;
@@ -858,11 +890,15 @@ impl WindowView {
         self.geom.cell
     }
 
-    fn new_tab_msg(&self, ws: WorkspaceId, ctx: &SpawnCtx) -> ClientMsg {
+    /// A new tab in `ws` running `prof`, else the workspace's profile.
+    fn new_tab_msg(&self, ws: WorkspaceId, ctx: &SpawnCtx, prof: Option<&Profile>) -> ClientMsg {
         let w = self.snap.workspace(ws);
+        let prof = prof.unwrap_or_else(|| ctx.profile(w.map(|w| w.profile.as_str())));
         let focused_cwd = self.focused().and_then(|p| self.snap.pane(p)).and_then(|p| p.cwd.clone());
-        let cwd = w.and_then(|w| w.root_dir.clone()).or(focused_cwd).or_else(|| std::env::var("USERPROFILE").ok());
-        let prof = ctx.profile(w.map(|w| w.profile.as_str()));
+        let cwd = profile_dir(prof)
+            .or_else(|| w.and_then(|w| w.root_dir.clone()))
+            .or(focused_cwd)
+            .or_else(|| std::env::var("USERPROFILE").ok());
         ClientMsg::Model(ModelCmd::NewTab { workspace: ws, profile: prof.name.clone(), spawn: ctx.spawn(prof, cwd.as_deref(), self.est_cells(), self.cell_px()) })
     }
 
@@ -880,7 +916,11 @@ impl WindowView {
         let active_idx = tab.as_ref().and_then(|t| tabs.iter().position(|&x| x == t.id));
         let select = |i: usize| Out::model(ModelCmd::SelectTab(tabs[i]));
         match a {
-            Action::NewTab => Out::msgs(vec![self.new_tab_msg(ws, ctx)]),
+            Action::NewTab => Out::msgs(vec![self.new_tab_msg(ws, ctx, None)]),
+            Action::NewTabProfile(n) => match ctx.profiles.get(usize::from(n).saturating_sub(1)) {
+                Some(p) => Out::msgs(vec![self.new_tab_msg(ws, ctx, Some(p))]),
+                None => Out::default(),
+            },
             Action::CloseTab => tab.map_or_else(Out::default, |t| Out::model(ModelCmd::CloseTab(t.id))),
             Action::NextTab | Action::PreviousTab if tabs.len() > 1 => {
                 let i = active_idx.unwrap_or(0);

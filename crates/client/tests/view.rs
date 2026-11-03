@@ -20,9 +20,10 @@ fn ctx() -> SpawnCtx {
     SpawnCtx {
         config: Config::default(),
         profiles: vec![
-            Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into() },
-            Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: "cmd.exe".into() },
+            Profile { name: "pwsh".into(), kind: ShellKind::Pwsh, command: "pwsh.exe".into(), ..Profile::default() },
+            Profile { name: "cmd".into(), kind: ShellKind::Cmd, command: "cmd.exe".into(), ..Profile::default() },
         ],
+        schemes: Default::default(),
         scripts: PathBuf::from(r"C:\s"),
         env: vec![],
     }
@@ -892,4 +893,51 @@ fn open_settings_panel_takes_hits() {
     assert!(matches!(v.hit(l.panel.x + 1, l.panel.y + 1), Hit::Settings(_)));
     v.close_settings();
     assert!(v.settings().is_none() && v.settings_layout().is_none());
+}
+
+/// `ctx()` with cmd starting in C:\cmdhome under a scheme with background (4, 5, 6).
+fn ctx_profiles() -> SpawnCtx {
+    let mut c = ctx();
+    c.profiles[1].dir = Some(r"C:\cmdhome".into());
+    c.profiles[1].scheme = Some("Mine".into());
+    let rgb = wraith_config::Rgb;
+    c.schemes.insert("Mine".into(), wraith_config::Scheme { fg: rgb(1, 2, 3), bg: rgb(4, 5, 6), cursor: None, palette: [rgb(9, 9, 9); 16] });
+    c
+}
+
+#[test]
+fn new_tab_profile_spawns_nth_with_its_dir() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx_profiles());
+    let out = v.action(Action::NewTabProfile(2), &ctx_profiles());
+    let [ClientMsg::Model(ModelCmd::NewTab { profile, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((profile.as_str(), spawn.cwd.as_deref()), ("cmd", Some(r"C:\cmdhome")));
+    assert_eq!(spawn.default_bg, (4, 5, 6), "the profile's scheme");
+    assert!(v.action(Action::NewTabProfile(9), &ctx_profiles()).msgs.is_empty());
+}
+
+#[test]
+fn split_keeps_focused_cwd_not_profile_dir() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx_profiles());
+    let out = v.action(Action::NewSplit(Dir::Right), &ctx_profiles());
+    let [ClientMsg::Model(ModelCmd::Split { profile, spawn, .. })] = out.msgs.as_slice() else { panic!("{out:?}") };
+    assert_eq!((profile.as_str(), spawn.cwd.as_deref()), ("cmd", Some(r"C:\work")));
+}
+
+#[test]
+fn subscription_colors_follow_each_panes_profile() {
+    let mut v = view();
+    let msgs = v.on_snapshot(snap(10), &ctx_profiles());
+    let bg = |pane: PaneId| {
+        msgs.iter()
+            .find_map(|m| match m {
+                ClientMsg::Cmd { pane: p, cmd: PaneCmd::SetColors { bg, .. } } if *p == pane => Some(*bg),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let g = Config::default().background;
+    assert_eq!(bg(1), (g.0, g.1, g.2), "pane 1 runs pwsh, which has no scheme");
+    assert_eq!(bg(2), (4, 5, 6), "pane 2 runs cmd");
 }

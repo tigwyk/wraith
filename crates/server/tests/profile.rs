@@ -5,7 +5,7 @@ use wraith_server::profile::{Profile, ShellKind, decode_wsl_list, detect, from_c
 use wraith_server::shell::{ensure_scripts_in, scripts};
 
 fn p(name: &str, kind: ShellKind, command: &str) -> Profile {
-    Profile { name: name.into(), kind, command: command.into() }
+    Profile { name: name.into(), kind, command: command.into(), ..Profile::default() }
 }
 
 const SCRIPTS: &str = r"C:\Users\x\wraith\v1";

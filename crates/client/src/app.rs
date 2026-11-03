@@ -259,7 +259,7 @@ pub(crate) struct App {
     images: ImageStore,
     link: ServerLink,
     pub(crate) view: WindowView,
-    spawn_ctx: SpawnCtx,
+    pub(crate) spawn_ctx: SpawnCtx,
     pipe_name: String,
     /// Set by the wake thread when the server's pipe closes (spec §8).
     server_lost: Arc<AtomicBool>,
@@ -1317,12 +1317,12 @@ impl App {
         self.view.set_dim_opacity(self.config.unfocused_split_opacity);
     }
 
-    /// Send the configured colors to every pane in view (after a config reload).
+    /// Send each pane in view its profile's colors (after a config reload).
     pub(crate) fn resend_colors(&mut self) {
-        let c = &self.config;
-        let rgb = |p: wraith_config::Rgb| (p.0, p.1, p.2);
         for (p, _) in self.view.visible() {
-            self.send_pane(p, PaneCmd::SetColors { fg: rgb(c.foreground), bg: rgb(c.background), palette: c.palette.iter().copied().map(rgb).collect() });
+            let profile = self.view.snapshot().pane(p).map_or("", |m| m.profile.as_str());
+            let cmd = self.spawn_ctx.set_colors(profile);
+            self.send_pane(p, cmd);
         }
     }
 
@@ -1950,14 +1950,31 @@ fn attach_with_restart(hwnd: HWND, pipe: &str) -> Option<ServerLink> {
     }
 }
 
-/// Detected profiles plus the configured ones; `-e <command>` or `command =` becomes the default.
+/// Windows Terminal's or the detected profiles, plus the configured ones (wt-profiles spec §3);
+/// `-e <command>` or `command =` becomes the default.
 fn build_spawn_ctx(config: &Config) -> SpawnCtx {
-    let mut profiles = wraith_server::profile::detect();
-    for (name, cmd) in &config.profiles {
-        profiles.retain(|p| &p.name != name);
-        profiles.push(wraith_server::profile::from_config(name, cmd));
+    let wt = if config.windows_terminal_profiles { wraith_config::wt::load() } else { None };
+    let merged = crate::profiles::merge(wt.as_ref(), wraith_server::profile::detect, config);
+    for w in &merged.warnings {
+        tracing::warn!("{w}");
+    }
+    let mut profiles = merged.profiles;
+    let themes = themes_dir();
+    let mut schemes = HashMap::new();
+    for name in profiles.iter().filter_map(|p| p.scheme.clone()) {
+        let found = match &wt {
+            Some(Ok(s)) => s.scheme(&name, &themes),
+            _ => wraith_config::wt::scheme_from_theme(&themes, &name),
+        };
+        match found {
+            Some(s) => {
+                schemes.insert(name, s);
+            }
+            None => tracing::warn!("colour scheme `{name}` not found; the profile uses the theme"),
+        }
     }
     let mut config = config.clone();
+    config.default_profile = merged.default;
     if let Some(cmd) = command_from_args(&std::env::args().collect::<Vec<_>>()).or_else(|| config.command.clone()) {
         profiles.retain(|p| p.name != "command");
         profiles.push(wraith_server::profile::from_config("command", &cmd));
@@ -1967,7 +1984,7 @@ fn build_spawn_ctx(config: &Config) -> SpawnCtx {
         tracing::warn!("shell integration scripts: {e}");
         PathBuf::new()
     });
-    SpawnCtx { config, profiles, scripts, env: spawn_env() }
+    SpawnCtx { config, profiles, schemes, scripts, env: spawn_env() }
 }
 
 pub fn run() -> Result<()> {
