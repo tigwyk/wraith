@@ -1,0 +1,6 @@
+{
+  "profiles": [
+    { "guid": "{11111111-0000-0000-0000-000000000001}", "name": "From Fragment", "commandline": "bash.exe" },
+    { "updates": "{aaaaaaaa-0000-0000-0000-000000000003}", "icon": "x.png", "tabTitle": "ignored" }
+  ]
+}

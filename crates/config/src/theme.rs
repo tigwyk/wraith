@@ -14,6 +14,13 @@ pub const COLOR_KEYS: &[&str] = &[
     "selection-foreground",
 ];
 
+/// Theme `name` from `dir` as a scheme (the colours it sets over Wraith's defaults).
+pub fn scheme_from_theme(dir: &Path, name: &str) -> Option<crate::wt::Scheme> {
+    let mut c = Config::default();
+    apply(&mut c, dir, name).ok()?;
+    Some(crate::wt::Scheme { fg: c.foreground, bg: c.background, cursor: c.cursor_color, palette: c.palette[..16].try_into().ok()? })
+}
+
 /// Apply theme `name` from `dir` onto `c`.
 pub fn apply(c: &mut Config, dir: &Path, name: &str) -> Result<(), String> {
     // Theme names are file names; refuse path tricks.

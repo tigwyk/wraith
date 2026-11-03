@@ -1,6 +1,7 @@
 //! Wraith config: Ghostty `key = value` syntax and key names (spec §7).
 pub mod edit;
 pub mod settings;
+pub mod wt;
 mod keybind;
 mod keys;
 mod parse;
@@ -8,6 +9,7 @@ mod theme;
 
 use std::path::{Path, PathBuf};
 
+pub use wt::Scheme;
 pub use keybind::{Action, Keybind, SplitTarget, Trigger, TriggerKey, all_actions, parse_keybind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
