@@ -265,6 +265,35 @@ fn appearance_ranges() {
 }
 
 #[test]
+fn unusable_font_face_falls_back_to_the_old_keys() {
+    let s = one(r#""font": {"face": "", "size": "big"}, "fontFace": "Consolas", "fontSize": 13"#);
+    assert_eq!((s.profiles[0].font.clone(), s.profiles[0].font_size), (Some(vec!["Consolas".to_string()]), Some(13.0)));
+    assert!(s.warnings.is_empty(), "a usable old key is no problem: {:?}", s.warnings);
+    let s = one(r#""font": {"face": ""}"#);
+    assert_eq!((s.profiles[0].font.clone(), s.warnings.len()), (None, 1));
+}
+
+#[test]
+fn padding_rejects_non_finite_and_negative_values() {
+    for p in [r#""-4""#, r#""NaN""#, r#""inf""#, r#""8, -1""#, "-2"] {
+        let s = one(&format!(r#""padding": {p}"#));
+        assert_eq!((s.profiles[0].padding, s.warnings.len()), (None, 1), "{p}");
+    }
+    assert_eq!(one(r#""padding": "6, 7, 8""#).profiles[0].padding, None, "three parts is no WT form");
+}
+
+#[test]
+fn padding_and_opacity_come_from_defaults() {
+    let json = r#"{"profiles":{"defaults":{"padding":"5, 6","opacity":"x"},"list":[
+        {"name":"A","commandline":"a.exe"},
+        {"name":"B","commandline":"b.exe","padding":3,"opacity":40}]}}"#;
+    let s = parse(json, &[], &env).unwrap();
+    assert_eq!((s.profiles[0].padding, s.profiles[0].opacity), (Some((5, 6)), None));
+    assert_eq!((s.profiles[1].padding, s.profiles[1].opacity), (Some((3, 3)), Some(0.4)));
+    assert_eq!(s.warnings, vec![r#"profile defaults: opacity "x" is not a number from 0 to 100"#.to_string()], "a bad default warns once");
+}
+
+#[test]
 fn wrong_typed_appearance_values_are_ignored() {
     let s = one(r#""opacity": "high", "padding": true"#);
     assert_eq!((s.profiles.len(), s.profiles[0].opacity, s.profiles[0].padding), (1, None, None));

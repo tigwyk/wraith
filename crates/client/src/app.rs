@@ -409,8 +409,10 @@ impl App {
         }
     }
 
+    /// Normalised like every look's key, so a profile that sets nothing shares entry 0.
     fn window_key(&self) -> FontKey {
-        FontKey { families: self.config.font_family.clone(), size_pt: self.config.font_size, features: self.config.font_feature.clone() }
+        let a = appearance(None, &self.config, 0.0, &|_| true);
+        FontKey { families: a.families, size_pt: a.size_pt, features: self.config.font_feature.clone() }
     }
 
     /// The look of a pane of `profile` (the window's for `None`) at `zoom` points, loading its font.
@@ -418,8 +420,8 @@ impl App {
         let p = profile.and_then(|n| self.spawn_ctx.profiles.iter().find(|p| p.name == n));
         let window = self.fonts.get(0);
         let a = appearance(p, &self.config, zoom, &|f| window.installed(f));
-        if let Some(fs) = p.and_then(|p| p.font.as_ref())
-            && !fs.iter().any(|f| window.installed(f))
+        if a.fell_back
+            && let Some(fs) = p.and_then(|p| p.font.as_ref())
         {
             for f in fs.iter().filter(|f| self.missing_fonts.insert((*f).clone())) {
                 tracing::warn!("font `{f}` of profile `{}` is not installed; using font-family", p.map_or("", |p| p.name.as_str()));
@@ -1292,6 +1294,8 @@ impl App {
         match m {
             ServerMsg::WindowAttached { workspace } => {
                 self.view.set_workspace(workspace);
+                // Zooms were cleared with the workspace; so go their fonts.
+                self.fonts.retain(&self.view.used_fonts());
                 self.grids.clear();
                 self.images = ImageStore::default();
             }
@@ -1308,6 +1312,7 @@ impl App {
                 // Another window took ours: show whatever is free (or a new workspace).
                 let msgs = self.view.on_workspace_taken(workspace);
                 self.send_all(msgs);
+                self.fonts.retain(&self.view.used_fonts());
                 self.grids.clear();
                 self.images = ImageStore::default();
                 self.dirty = true;

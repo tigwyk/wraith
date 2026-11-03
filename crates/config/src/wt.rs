@@ -206,34 +206,38 @@ fn quote_exe(c: String) -> String {
 
 type Appearance = (Option<Vec<String>>, Option<f32>, Option<(u16, u16)>, Option<f32>);
 
+/// The first of `vs` that `ok` accepts; otherwise the first one present, to warn about.
+fn first_usable<T>(vs: [Option<&Value>; 2], ok: impl Fn(&Value) -> Option<T>) -> (Option<T>, Option<&Value>) {
+    match vs.iter().flatten().find_map(|v| ok(v)) {
+        Some(t) => (Some(t), None),
+        None => (None, vs.into_iter().flatten().next()),
+    }
+}
+
 /// The font, font size, padding and opacity `m` sets itself. Unusable values are left out with a warning;
 /// WT clamps sizes and padding where Wraith's config rejects them (spec §2.1).
 fn appearance(m: &Map<String, Value>, name: &str, warnings: &mut Vec<String>) -> Appearance {
     let mut bad = |key: &str, v: &Value, want: &str| warnings.push(format!("{name}: {key} {v} is not {want}"));
     let font = m.get("font").and_then(Value::as_object);
-    let face = font.and_then(|f| f.get("face")).or_else(|| m.get("fontFace"));
-    let size = font.and_then(|f| f.get("size")).or_else(|| m.get("fontSize"));
-    let face = face.and_then(|v| {
-        let r = v.as_str().and_then(crate::font_list);
-        if r.is_none() {
-            bad("font face", v, "a font name");
-        }
-        r
-    });
-    let size = size.and_then(|v| {
-        let r = v.as_f64().map(|n| n.clamp(4.0, 72.0) as f32);
-        if r.is_none() {
-            bad("font size", v, "a number");
-        }
-        r
-    });
+    // `font.face`/`font.size`, else the old `fontFace`/`fontSize`: the first usable one.
+    let (face, unusable) = first_usable([font.and_then(|f| f.get("face")), m.get("fontFace")], |v| v.as_str().and_then(crate::font_list));
+    if let Some(v) = unusable {
+        bad("font face", v, "a font name");
+    }
+    let (size, unusable) = first_usable([font.and_then(|f| f.get("size")), m.get("fontSize")], |v| v.as_f64().map(|n| n.clamp(4.0, 72.0) as f32));
+    if let Some(v) = unusable {
+        bad("font size", v, "a number");
+    }
     let padding = m.get("padding").and_then(|v| {
         let s = match v {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
             _ => String::new(),
         };
-        let parts: Option<Vec<String>> = s.split(',').map(|p| p.trim().parse::<f64>().ok().map(|n| (n.clamp(0.0, 32.0) as u16).to_string())).collect();
+        let parts: Option<Vec<String>> = s
+            .split(',')
+            .map(|p| p.trim().parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0).map(|n| (n.min(32.0) as u16).to_string()))
+            .collect();
         let r = parts.and_then(|p| crate::padding(&p.join(",")));
         if r.is_none() {
             bad("padding", v, "one to four numbers");

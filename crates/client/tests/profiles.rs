@@ -201,4 +201,16 @@ fn uninstalled_family_falls_back_to_window_families() {
     let a = appearance(Some(&p), &c, 0.0, &|f| f != "Cascadia Mono");
     assert_eq!(a.families, c.font_family);
     assert_eq!(a.size_pt, 14.0);
+    assert!(a.fell_back, "the app warns about it");
+    assert!(!appearance(Some(&p), &c, 0.0, &|_| true).fell_back);
+    assert!(!appearance(None, &c, 0.0, &|_| false).fell_back, "no profile font, nothing to fall back from");
+}
+
+#[test]
+fn window_appearance_is_normalised() {
+    // The window font's key comes from here too, so a profile that sets nothing shares its font.
+    let mut c = Config::default();
+    (c.font_family, c.font_size) = (vec!["A".into(), "a".into(), "B".into()], 100.0);
+    let a = appearance(None, &c, 0.0, &|_| true);
+    assert_eq!((a.families, a.size_pt), (vec!["A".to_string(), "B".to_string()], 72.0));
 }
