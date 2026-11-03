@@ -188,7 +188,7 @@
         <div class="tab"><span class="b">◆</span> claude <span class="dot"></span> <span class="x">×</span></div>
         <div class="tab on">pwsh <span class="x">×</span></div>
         <div class="tab"><span class="b">✱</span> codex <span class="spin">⠹</span> <span class="x">×</span></div>
-        <div class="tab"><span class="d">+</span></div>
+        <div class="tab"><span class="d">+ ⌄</span></div>
         <div class="caps"><span>─</span><span>□</span><span>✕</span></div>
       </div>
       <div class="body">
@@ -243,6 +243,9 @@
       <div class="card"><div class="ico">◩</div><h3>Inline images</h3><p>Photos and agent screenshots render in place through the Kitty graphics protocol: <code>kitten icat</code>, <code>chafa</code>, <code>yazi</code>.</p></div>
       <div class="card"><div class="ico">⌘</div><h3>Command palette</h3><p>Every action, fuzzy-searchable, with its current key. A workspace picker, scrollback search, and hover feedback on every button.</p></div>
       <div class="card"><div class="ico">≡</div><h3>Ghostty-style config</h3><p>The same file syntax and key names, the whole Ghostty theme set, keybind sequences like <code>ctrl+a&gt;c</code>, and hot reload on save.</p></div>
+      <div class="card"><div class="ico">⌄</div><h3>Your Windows Terminal profiles</h3><p>Wraith reads Windows Terminal's settings live: the same shells, in the same order, one click away under <code>+ ⌄</code>. <code>wr import-wt</code> copies them over if you'd rather not depend on it.</p></div>
+      <div class="card"><div class="ico">Aa</div><h3>Each pane its own look</h3><p>Every profile keeps its colour scheme, font, size, padding and opacity, even in split panes side by side. Background opacity really shows what's behind the window, and zoom changes just the pane you're in.</p></div>
+      <div class="card"><div class="ico">⚙</div><h3>Settings, live</h3><p>A settings panel (<kbd>Ctrl</kbd> <kbd>,</kbd>) for the common options. Each change shows at once and rewrites only its own line of your config file.</p></div>
     </div>
   </div>
 </section>
@@ -284,16 +287,21 @@
       <h2>Two minutes, no admin.</h2>
       <p class="sub" style="margin-bottom:20px">One line in PowerShell installs the <a href="https://github.com/tigwyk/wraith/releases/latest">latest release</a>. It copies Wraith to <code>%LOCALAPPDATA%\Programs\Wraith</code>, puts <code>wr</code> on your <code>PATH</code>, and adds the Start Menu shortcut toasts need. Prefer the zip? Unpack it and run <code>.\install.ps1</code>.</p>
       <pre class="code"><button class="copy" data-copy="irm https://tigwyk.github.io/wraith/install.ps1 | iex">Copy</button><span class="p">PS&gt;</span> irm https://tigwyk.github.io/wraith/install.ps1 | iex
-<span class="p">PS&gt;</span> wr config check          <span class="d"># %APPDATA%\wraith\config</span></pre>
+<span class="p">PS&gt;</span> wr config check          <span class="d"># %APPDATA%\wraith\config</span>
+<span class="p">PS&gt;</span> wr import-wt            <span class="d"># copy WT's profiles</span>
+<span class="p">PS&gt;</span> wr update              <span class="d"># tabs survive it</span></pre>
     </div>
     <div>
       <table>
         <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd></td><td>New tab</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>Space</kbd></td><td>Open a profile</td></tr>
         <tr><td><kbd>Alt</kbd> <kbd>Shift</kbd> <kbd>+</kbd> / <kbd>−</kbd></td><td>Split right / down</td></tr>
         <tr><td><kbd>Alt</kbd> <kbd>←↑→↓</kbd></td><td>Move between panes</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd></td><td>Command palette</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>O</kbd></td><td>Workspace picker</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>Find in scrollback</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>=</kbd> / <kbd>−</kbd> / <kbd>0</kbd></td><td>Zoom this pane</td></tr>
+        <tr><td><kbd>Ctrl</kbd> <kbd>,</kbd></td><td>Settings</td></tr>
         <tr><td><kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F12</kbd></td><td>Latency overlay</td></tr>
       </table>
     </div>
@@ -314,10 +322,10 @@
       <div class="ms"><div class="n">M5 ✓</div><p>Search, persistence, packaging</p></div>
       <div class="ms"><div class="n">M6 ✓</div><p>Hover feedback and motion</p></div>
       <div class="ms"><div class="n">M7 ✓</div><p>wr events, right-click menu, inline IME</p></div>
+      <div class="ms"><div class="n">0.3 ✓</div><p>Settings panel, wr update</p></div>
+      <div class="ms"><div class="n">0.4 ✓</div><p>Windows Terminal profiles, per-pane looks, transparency</p></div>
       <div class="ms todo"><div class="n">Next</div><p>Drop-down window</p></div>
-      <div class="ms todo"><div class="n">Next</div><p>Settings GUI</p></div>
-      <div class="ms todo"><div class="n">Next</div><p>Auto-update</p></div>
-      <div class="ms todo"><div class="n">Next</div><p>ARM64</p></div>
+      <div class="ms todo"><div class="n">Next</div><p>Auto-update, ARM64</p></div>
     </div>
   </div>
 </section>
