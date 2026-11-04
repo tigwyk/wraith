@@ -1,6 +1,6 @@
 # Wraith quick terminal (drop-down window) — design
 
-Status: approved for planning (2026-11-03)
+Status: implemented (2026-11-03); see `docs/quick-terminal-acceptance.md`
 Parent spec: `docs/superpowers/specs/2026-11-01-wraith-terminal-design.md` (§10 Backlog: "Quake/drop-down window")
 
 ## 1. Intent

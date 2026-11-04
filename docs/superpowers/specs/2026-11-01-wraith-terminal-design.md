@@ -282,7 +282,8 @@ Each milestone gets its own implementation plan.
 | M6 | Hover feedback and polish: every clickable piece of chrome reacts to hover and press, the pointer shape follows the target (resize arrows on dividers), the command palette takes the mouse, tooltips name icon-only buttons and their keys, accents dim in an inactive window, and state changes move briefly (tab underline and workspace bar slide, floating sidebar slides in, palette and find bar fade in, new attention dots flare once). Motion follows Windows' "Show animations" setting and never costs input latency (§6.3). | Done; see `docs/m6-acceptance.md`. |
 | M7 | Spec gaps from the 2026-11-02 review: `wr config check`, `wr events --json`, Retry when the server won't start, the right-click menu (`right-click-action = menu`), inline IME composition, `agent-tab-pulse`, and this spec brought up to date. | Done; see `docs/m7-acceptance.md`. |
 | Settings | A settings panel drawn in the window (`ctrl+comma`, the gear): the common keys, live, edited in place in the config file. Spec: `2026-11-02-settings-gui-design.md`. | Done; see `docs/settings-acceptance.md`. |
-| Backlog | Quake/drop-down window, auto-update, ARM64. | Unscheduled. |
+| Quick terminal | A drop-down window on a global hotkey (`keybind = global:...=toggle_quick_terminal`, `quick-terminal-*`), with its own workspace. Spec: `2026-11-03-quick-terminal-design.md`. | Done; see `docs/quick-terminal-acceptance.md`. |
+| Backlog | Auto-update, ARM64. | Unscheduled. |
 
 ## 11. Known risks
 
