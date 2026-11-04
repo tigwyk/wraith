@@ -246,6 +246,9 @@ pub struct Workspace {
     pub attached: bool,
     /// Monotonic stamp of the last attach/detach; the highest detached one is reattached first.
     pub last_used: u64,
+    /// The quick terminal's workspace (quick-terminal spec §4): normal windows never pick it up.
+    #[serde(default)]
+    pub quick: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -16,6 +16,7 @@ fn snap() -> ModelSnapshot {
             profile: "pwsh".into(),
             attached: true,
             last_used: 0,
+            quick: false,
         }],
         tabs: vec![Tab { id: 10, workspace: 1, title_override: None, root: PaneNode::Leaf(100), focused: 100, zoomed: None }],
         panes: vec![PaneMeta {

@@ -73,6 +73,19 @@ impl Model {
         self.tabs.iter().find(|t| t.id == tab).map(|t| t.workspace)
     }
 
+    /// The quick terminal's workspace, created (empty, named "Quick") the first time.
+    pub fn quick_workspace(&mut self) -> WorkspaceId {
+        if let Some(w) = self.workspaces.iter().find(|w| w.quick) {
+            return w.id;
+        }
+        let id = self.add_workspace(Some("Quick".into()), None, "");
+        if let Some(w) = self.workspaces.iter_mut().find(|w| w.id == id) {
+            w.quick = true;
+        }
+        self.touch();
+        id
+    }
+
     /// A workspace with no tabs; the window that gets it opens the first tab.
     pub fn new_empty_workspace(&mut self) -> WorkspaceId {
         let id = self.add_workspace(None, None, "");
@@ -97,6 +110,7 @@ impl Model {
             profile: profile.to_string(),
             attached: false,
             last_used: 0,
+            quick: false,
         });
         id
     }
@@ -351,7 +365,7 @@ impl Model {
 
     /// The detached workspace used most recently (highest `last_used`, then highest id).
     pub fn most_recent_detached(&self) -> Option<WorkspaceId> {
-        self.workspaces.iter().filter(|w| !w.attached).max_by_key(|w| (w.last_used, w.id)).map(|w| w.id)
+        self.workspaces.iter().filter(|w| !w.attached && !w.quick).max_by_key(|w| (w.last_used, w.id)).map(|w| w.id)
     }
 
     pub fn to_json(&self) -> String {

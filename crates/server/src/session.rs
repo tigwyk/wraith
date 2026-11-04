@@ -477,6 +477,10 @@ impl Server {
                 }
             }
             ClientMsg::AttachWindow { workspace } => self.attach_window(id, workspace),
+            ClientMsg::AttachQuick => {
+                let ws = self.model.quick_workspace();
+                self.take_workspace(id, ws);
+            }
             ClientMsg::DetachWindow => self.detach_window(id),
             ClientMsg::Model(cmd) => {
                 if !self.permitted(id, &cmd) {

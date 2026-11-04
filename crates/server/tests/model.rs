@@ -358,3 +358,31 @@ fn most_recent_detached_follows_last_used() {
     m.set_attached(b, true);
     assert_eq!(m.most_recent_detached(), None);
 }
+
+// Quick terminal (quick-terminal spec §4).
+#[test]
+fn quick_workspace_is_created_once_and_skipped_by_reattach() {
+    let mut m = Model::default();
+    let q = m.quick_workspace();
+    assert_eq!(m.quick_workspace(), q);
+    let ws = m.snapshot().workspaces.into_iter().find(|w| w.id == q).unwrap();
+    assert!(ws.quick);
+    assert_eq!(ws.name, "Quick");
+    assert_ne!(m.most_recent_detached(), Some(q), "a normal window never picks the quick workspace");
+    let only_normal = m.snapshot().workspaces.iter().filter(|w| !w.quick).count();
+    assert_eq!(only_normal, 1, "the model's first workspace is still the only normal one");
+}
+
+#[test]
+fn quick_flag_survives_the_layout_and_old_layouts_load() {
+    let mut m = Model::default();
+    let q = m.quick_workspace();
+    let back = Model::from_json(&m.to_json()).unwrap();
+    assert!(back.snapshot().workspaces.iter().any(|w| w.id == q && w.quick));
+    let mut v: serde_json::Value = serde_json::from_str(&m.to_json()).unwrap();
+    for w in v["workspaces"].as_array_mut().unwrap() {
+        assert!(w.as_object_mut().unwrap().remove("quick").is_some());
+    }
+    let old = Model::from_json(&v.to_string()).expect("a layout from before the flag still loads");
+    assert!(old.snapshot().workspaces.iter().all(|w| !w.quick));
+}
