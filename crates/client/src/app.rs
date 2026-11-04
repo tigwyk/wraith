@@ -18,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
     SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WA_INACTIVE, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_HOTKEY,
     AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
@@ -342,6 +343,8 @@ pub(crate) struct App {
     motion: Motion,
     /// The config from before a settings list started previewing; Esc puts it back.
     preview_base: Option<Config>,
+    /// Set in the `--quick-terminal` process (quick-terminal spec §3).
+    pub(crate) quick: Option<crate::quick::State>,
 }
 
 impl App {
@@ -805,7 +808,7 @@ impl App {
         match attach_with_restart(self.win.hwnd(), &self.pipe_name) {
             Some(link) => {
                 start_forwarder(&link, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
-                link.send(ClientMsg::AttachWindow { workspace: None });
+                link.send(if self.quick.is_some() { ClientMsg::AttachQuick } else { ClientMsg::AttachWindow { workspace: None } });
                 self.link = link;
                 self.foreground = false; // a new server starts at false; resent by the next sync
                 self.view.on_reconnect();
@@ -1087,7 +1090,12 @@ impl App {
                 self.rebuild_fonts();
             }
             WinMsg::Close => {
-                self.detach_and_close();
+                // The quick terminal hides; its process and workspace stay (spec §3.3).
+                if self.quick.is_some() {
+                    crate::quick::hide(self);
+                } else {
+                    self.detach_and_close();
+                }
                 return Some(LRESULT(0));
             }
             WinMsg::Raw { msg, wparam, lparam } => match msg {
@@ -1190,7 +1198,13 @@ impl App {
                 }
                 WM_NCLBUTTONUP if Self::caption_of(wparam.0).is_some() => {
                     let cap = Self::caption_of(wparam.0);
-                    if self.caption_down.take() == cap {
+                    let pressed = self.caption_down.take() == cap;
+                    if pressed && self.quick.is_some() {
+                        // Minimize and close hide the quick terminal; maximize does nothing.
+                        if cap != Some(Caption::Maximize) {
+                            crate::quick::hide(self);
+                        }
+                    } else if pressed {
                         let sc = match cap {
                             Some(Caption::Minimize) => SC_MINIMIZE,
                             Some(Caption::Maximize) if self.win.is_maximized() => SC_RESTORE,
@@ -1257,6 +1271,14 @@ impl App {
                     }
                     return Some(LRESULT(0));
                 }
+                WM_HOTKEY => {
+                    crate::quick::on_hotkey(self);
+                    return Some(LRESULT(0));
+                }
+                WM_ACTIVATE if (wparam.0 & 0xffff) as u32 == WA_INACTIVE => {
+                    crate::quick::on_deactivate(self, HWND(lparam.0 as *mut _));
+                }
+                WM_DISPLAYCHANGE => crate::quick::replace(self),
                 WM_APP => {
                     // Server messages arrived; also delivered inside modal size/move loops.
                     self.render_now(false);
@@ -1310,7 +1332,10 @@ impl App {
             }
             ServerMsg::WorkspaceTaken { workspace } => {
                 // Another window took ours: show whatever is free (or a new workspace).
-                let msgs = self.view.on_workspace_taken(workspace);
+                let mut msgs = self.view.on_workspace_taken(workspace);
+                if self.quick.is_some() {
+                    msgs = vec![ClientMsg::AttachQuick];
+                }
                 self.send_all(msgs);
                 self.fonts.retain(&self.view.used_fonts());
                 self.grids.clear();
@@ -1364,7 +1389,12 @@ impl App {
                     ExitOut::ClosePane(msgs) => self.send_all(msgs),
                     ExitOut::CloseWindow(msgs) => {
                         self.send_all(msgs);
-                        self.detach_and_close();
+                        // The quick terminal hides; its empty workspace gets a new shell (spec §3.3).
+                        if self.quick.is_some() {
+                            crate::quick::hide(self);
+                        } else {
+                            self.detach_and_close();
+                        }
                     }
                 }
                 self.dirty = true;
@@ -1395,6 +1425,11 @@ impl App {
         if self.server_lost.swap(false, Ordering::AcqRel) {
             self.server_stopped = true;
             self.dirty = true;
+            // Nobody sees a hidden quick terminal's "press Enter": it ends with its server (spec §3.1).
+            if self.quick.is_some() {
+                tracing::info!("quick terminal: server gone; exiting");
+                self.quit = true;
+            }
         }
     }
 
@@ -1410,7 +1445,7 @@ impl App {
     /// Draw if something changed and the compositor can take a frame. Never blocks unless asked:
     /// a blocked UI thread cannot take in newer frames, so what it finally draws is stale.
     fn try_render(&mut self, blocking: bool) {
-        if !self.dirty {
+        if !self.dirty || self.quick.as_ref().is_some_and(crate::quick::State::idle) {
             return;
         }
         if !self.present_token {
@@ -1451,6 +1486,14 @@ impl App {
         }
         // The loop's wait on the frame-latency object acquired a present for us.
         self.present_token |= signaled;
+        // A hidden quick terminal only takes in server messages and config changes: no timers, no frames.
+        if self.quick.as_ref().is_some_and(crate::quick::State::idle) {
+            self.drain_server_msgs();
+            crate::reload::poll(self);
+            let sleep_ms = crate::reload::next_deadline(self).map_or(u32::MAX, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
+            let ctl = if self.quit { LoopControl::Exit } else { LoopControl::Continue };
+            return Idle { ctl, sleep_ms, wait_on: None };
+        }
         self.sync_foreground();
         self.drain_server_msgs();
         for k in self.matcher.tick(Instant::now()) {
@@ -1474,6 +1517,7 @@ impl App {
             self.next_spin = now + Duration::from_millis(SPIN_MS as u64);
             self.dirty = true;
         }
+        let slide = crate::quick::tick(self, now);
         crate::reload::poll(self);
         self.try_render(false);
         let until_blink = self.next_blink.saturating_duration_since(Instant::now()).as_millis() as u32;
@@ -1483,6 +1527,9 @@ impl App {
         }
         if spinning {
             sleep = sleep.min(SPIN_MS as u32);
+        }
+        if let Some(ms) = slide {
+            sleep = sleep.min(ms);
         }
         // Still moving after this frame: ask for the next one at vsync (the swap chain's waitable paces
         // it). Tabs that only breathe wake at their 50 ms deadline instead; nothing moving costs nothing.
@@ -1500,6 +1547,28 @@ impl App {
 
     pub(crate) fn request_redraw(&mut self) {
         self.dirty = true;
+    }
+
+    /// A plain Windows toast (no pane to focus on click).
+    pub(crate) fn notify_text(&mut self, title: &str, body: &str) {
+        self.notifier.show(crate::notify::Ways { toast: true, ..Default::default() }, 0, title, body);
+    }
+
+    /// Catch up after the window was moved from inside a message handler, whose nested WM_SIZE and
+    /// WM_DPICHANGED never reach the app (it is borrowed).
+    pub(crate) fn sync_window_size(&mut self, (w, h): (u32, u32), dpi_changed: bool) {
+        if dpi_changed {
+            self.size_px = (w, h);
+            self.rebuild_fonts();
+        } else if (w, h) != self.size_px {
+            self.resize(w, h);
+        }
+    }
+
+    /// Draw a complete frame now, waiting for the compositor (before a window appears).
+    pub(crate) fn render_first_frame(&mut self) {
+        self.dirty = true;
+        self.render_now(true);
     }
 
     pub(crate) fn rebuild_spawn_ctx(&mut self) {
@@ -2339,15 +2408,24 @@ fn build_spawn_ctx(config: &Config) -> SpawnCtx {
     SpawnCtx { config, profiles, schemes, scripts, env: spawn_env() }
 }
 
-pub fn run() -> Result<()> {
+/// Open a window, or with `quick` the hidden quick terminal (quick-terminal spec §3).
+pub fn run(quick: bool) -> Result<()> {
     let path = wraith_config::default_path();
     let (config, diags) = wraith_config::load(&path, &themes_dir());
+    let pipe_name = wraith_ipc::pipe_name();
+    let mutex = match quick.then(|| crate::quick::take_instance(&pipe_name)) {
+        Some(None) => {
+            tracing::info!("quick terminal already running");
+            return Ok(());
+        }
+        m => m.flatten(),
+    };
     // COM for the taskbar and toasts; the app id groups windows and names toasts. Both before the window.
     unsafe {
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
     }
     crate::notify::set_app_id();
-    let win = Window::create("Wraith", 1000, 640)?;
+    let win = Window::create_ex("Wraith", 1000, 640, quick)?;
     let notifier = crate::notify::Notifier::new(win.hwnd());
     let gpu = Gpu::new()?;
     let font = FontStack::new(&config.font_family, config.font_size, win.dpi(), &config.font_feature)?;
@@ -2364,14 +2442,20 @@ pub fn run() -> Result<()> {
         }
         Err(e) => return Err(e),
     };
-    let pipe_name = wraith_ipc::pipe_name();
     let Some(link) = attach_with_restart(win.hwnd(), &pipe_name) else { return Ok(()) };
 
     let (tx, rx) = crossbeam_channel::unbounded();
     let woken = Arc::new(AtomicBool::new(false));
     let server_lost = Arc::new(AtomicBool::new(false));
     start_forwarder(&link, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
-    link.send(ClientMsg::AttachWindow { workspace: None });
+    link.send(if quick { ClientMsg::AttachQuick } else { ClientMsg::AttachWindow { workspace: None } });
+    if !quick && config.quick_terminal_hotkey.is_some() && !crate::quick::running(&pipe_name) {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wraith.exe"));
+        if let Err(e) = crate::link::spawn_detached(&exe, "--quick-terminal", &pipe_name, &spawn_env()) {
+            tracing::warn!("quick terminal: start: {e}");
+        }
+    }
+    let quick_state = mutex.map(|m| crate::quick::State::new(m, win.dpi()));
 
     let double_click = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
     let matcher = KeybindMatcher::new(&config.keybinds);
@@ -2437,6 +2521,7 @@ pub fn run() -> Result<()> {
         notifier,
         motion: Motion::new(crate::window::animations_enabled()),
         preview_base: None,
+        quick: quick_state,
     }));
     app.borrow_mut().rebuild_looks();
     crate::reload::start(&mut app.borrow_mut(), &path, diags);
@@ -2445,7 +2530,11 @@ pub fn run() -> Result<()> {
     if app.borrow().sc.is_composition() {
         app.borrow_mut().render_now(true);
     }
-    app.borrow().win.show();
+    if quick {
+        crate::quick::register(&mut app.borrow_mut());
+    } else {
+        app.borrow().win.show();
+    }
     let a = app.clone();
     run_message_loop(
         move |hwnd, msg| a.try_borrow_mut().ok().and_then(|mut a| a.on_msg(hwnd, msg)),

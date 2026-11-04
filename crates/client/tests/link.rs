@@ -131,6 +131,10 @@ fn server_outlives_killed_client_process() {
     let pipe = unique();
     let dir = std::env::temp_dir().join(format!("wraith-remote-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // No quick terminal: it would add its own shell and hold the user's real Win+` while the test runs.
+    std::fs::create_dir_all(dir.join("wraith")).unwrap();
+    std::fs::write(dir.join("wraith").join("config"), "keybind = global:super+backquote=unbind
+").unwrap();
     let mut client = std::process::Command::new(exe())
         .args(["-e", "cmd.exe", "/k"])
         .env("WRAITH_PIPE_NAME", &pipe)

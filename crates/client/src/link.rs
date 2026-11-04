@@ -58,13 +58,18 @@ pub fn log_dir() -> PathBuf {
 
 /// Start `exe --server` detached, outside any job the client is in, so it outlives the client.
 pub fn spawn_server(exe: &Path, pipe: &str, env: &[(String, String)]) -> io::Result<()> {
+    spawn_detached(exe, "--server", pipe, env)
+}
+
+/// Start `exe <arg>` for `pipe` detached from this process (the server, or the quick terminal).
+pub fn spawn_detached(exe: &Path, arg: &str, pipe: &str, env: &[(String, String)]) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     let start = |flags| {
         std::process::Command::new(exe)
-            .arg("--server")
+            .arg(arg)
             .env("WRAITH_PIPE_NAME", pipe)
             .envs(env.iter().map(|(k, v)| (k, v)))
             // Don't pin the launching window's directory for the server's whole life.

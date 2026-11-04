@@ -233,6 +233,7 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
         let msgs = app.view.set_sidebar(visible, cols);
         app.send_all(msgs);
     }
+    crate::quick::on_reload(app, &old);
     app.request_redraw();
 }
 
