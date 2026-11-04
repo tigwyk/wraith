@@ -15,6 +15,7 @@ pub mod new_tab_menu;
 pub mod paint;
 pub mod palette;
 pub mod profiles;
+pub mod quick;
 pub mod selection;
 pub mod settings;
 pub mod sprite;

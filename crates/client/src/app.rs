@@ -185,7 +185,7 @@ fn trigger_matches(t: &Trigger, e: &KeyEvent) -> bool {
 }
 
 /// The unshifted US character a physical key is named by in keybinds.
-fn key_char(c: KeyCode) -> Option<char> {
+pub(crate) fn key_char(c: KeyCode) -> Option<char> {
     let name = format!("{c:?}");
     if let Some(l) = name.strip_prefix("Key") {
         return l.chars().next().map(|c| c.to_ascii_lowercase());
@@ -210,7 +210,7 @@ fn key_char(c: KeyCode) -> Option<char> {
     })
 }
 
-fn named_key(n: &str) -> Option<KeyCode> {
+pub(crate) fn named_key(n: &str) -> Option<KeyCode> {
     use KeyCode as K;
     let digits = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
     if let Some(i) = digits.iter().position(|d| *d == n) {
