@@ -1134,14 +1134,14 @@ dependencies = [
 
 [[package]]
 name = "wraith-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "wraith-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "embed-resource",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "wraith-client"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "embed-resource",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "wraith-config"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "wraith-proto",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "wraith-ipc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "windows",
  "wraith-proto",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "wraith-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "postcard",
  "serde",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "wraith-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "crossbeam-channel",
  "libghostty-vt",
