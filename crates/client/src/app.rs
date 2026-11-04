@@ -393,7 +393,7 @@ impl App {
         titlebar::nc_hit(&g, pt.x, pt.y, interactive)
     }
 
-    fn send_all(&self, msgs: Vec<ClientMsg>) {
+    pub(crate) fn send_all(&self, msgs: Vec<ClientMsg>) {
         for m in msgs {
             self.link.send(m);
         }
