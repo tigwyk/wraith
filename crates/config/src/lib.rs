@@ -10,7 +10,7 @@ mod theme;
 use std::path::{Path, PathBuf};
 
 pub use wt::Scheme;
-pub use keybind::{Action, Keybind, SplitTarget, Trigger, TriggerKey, all_actions, parse_keybind};
+pub use keybind::{Action, Keybind, SplitTarget, Trigger, TriggerKey, all_actions, parse_global, parse_keybind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -106,6 +106,61 @@ pub struct Config {
     pub unfocused_split_opacity: f32,
     /// Bytes per pane.
     pub image_storage_limit: u64,
+    /// `keybind = global:<trigger>=toggle_quick_terminal` (quick-terminal spec §2); `None` turns it off.
+    pub quick_terminal_hotkey: Option<Trigger>,
+    pub quick_terminal_position: QuickPosition,
+    pub quick_terminal_size: QuickSize,
+    pub quick_terminal_screen: QuickScreen,
+    pub quick_terminal_autohide: bool,
+    /// Seconds; 0 means no slide.
+    pub quick_terminal_animation_duration: f32,
+}
+
+/// `quick-terminal-position`. Ghostty's `left`, `right` and `center` are not supported yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickPosition {
+    Top,
+    Bottom,
+}
+
+/// `quick-terminal-screen`: the primary monitor, or the one under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuickScreen {
+    Main,
+    Mouse,
+}
+
+/// One `quick-terminal-size` value: a percentage of the work area, or pixels at 96 DPI.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dim {
+    Percent(f32),
+    Px(u32),
+}
+
+/// `quick-terminal-size`: the primary axis (height for top and bottom), then optionally the width.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuickSize {
+    pub primary: Dim,
+    pub secondary: Option<Dim>,
+}
+
+/// `40%`, `300px` or `50%,800px`.
+pub fn quick_size(v: &str) -> Result<QuickSize, String> {
+    let bad = || format!("invalid quick-terminal-size `{v}`: use 40% or 300px");
+    let dim = |s: &str| -> Option<Dim> {
+        let s = s.trim();
+        if let Some(n) = s.strip_suffix('%') {
+            n.trim().parse::<f32>().ok().filter(|n| *n > 0.0 && *n <= 100.0).map(Dim::Percent)
+        } else {
+            s.strip_suffix("px")?.trim().parse::<u32>().ok().filter(|n| *n >= 1).map(Dim::Px)
+        }
+    };
+    let parts: Vec<&str> = v.split(',').collect();
+    match parts[..] {
+        [a] => Ok(QuickSize { primary: dim(a).ok_or_else(bad)?, secondary: None }),
+        [a, b] => Ok(QuickSize { primary: dim(a).ok_or_else(bad)?, secondary: Some(dim(b).ok_or_else(bad)?) }),
+        _ => Err(bad()),
+    }
 }
 
 /// Which `profile-*` key a profile extra came from.
@@ -195,6 +250,12 @@ impl Default for Config {
             sidebar_width: 24,
             unfocused_split_opacity: 0.85,
             image_storage_limit: 320 * 1024 * 1024,
+            quick_terminal_hotkey: keybind::parse_global("super+backquote=toggle_quick_terminal").expect("default hotkey"),
+            quick_terminal_position: QuickPosition::Top,
+            quick_terminal_size: QuickSize { primary: Dim::Percent(40.0), secondary: None },
+            quick_terminal_screen: QuickScreen::Main,
+            quick_terminal_autohide: true,
+            quick_terminal_animation_duration: 0.2,
         }
     }
 }

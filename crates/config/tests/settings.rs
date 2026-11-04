@@ -56,9 +56,16 @@ fn defaults_get_what_the_parser_defaults_to() {
 
 #[test]
 fn pages_hold_the_spec_rows() {
-    assert_eq!(all().len(), 20);
+    assert_eq!(all().len(), 22);
     assert_eq!(on_page(Page::Appearance).len(), 9);
-    assert_eq!(on_page(Page::Behaviour).len(), 7);
+    assert_eq!(on_page(Page::Behaviour).len(), 9);
     assert_eq!(on_page(Page::Agents).len(), 4);
     assert_eq!(all()[on_page(Page::Agents)[0]].key, "agent-notify");
+}
+
+#[test]
+fn quick_terminal_rows() {
+    let row = |k: &str| all().iter().find(|s| s.key == k).unwrap_or_else(|| panic!("no row {k}"));
+    assert_eq!(row("quick-terminal-position").kind, Kind::Choice(&[("top", "Top"), ("bottom", "Bottom")]));
+    assert_eq!(row("quick-terminal-autohide").kind, Kind::Toggle);
 }

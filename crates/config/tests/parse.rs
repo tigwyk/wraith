@@ -334,3 +334,66 @@ fn profile_appearance_bad_values_are_diagnostics() {
     assert_eq!(d.len(), 4, "{d:?}");
     assert!(c.profile_extras.is_empty());
 }
+
+// Quick terminal (quick-terminal spec §2).
+use wraith_config::{Dim, QuickPosition, QuickScreen, QuickSize, Trigger, TriggerKey};
+use wraith_proto::Mods;
+
+fn load_with_diags(src: &str) -> (wraith_config::Config, Vec<wraith_config::Diagnostic>) {
+    parse_str(&format!("{src}\n"), p(), &themes())
+}
+fn load_str(src: &str) -> wraith_config::Config {
+    let (c, d) = load_with_diags(src);
+    assert!(d.is_empty(), "{src}: {d:?}");
+    c
+}
+
+#[test]
+fn quick_terminal_defaults() {
+    let c = wraith_config::Config::default();
+    assert_eq!(c.quick_terminal_hotkey, Some(Trigger { mods: Mods(Mods::SUPER), key: TriggerKey::Named("backquote".into()) }));
+    assert_eq!(c.quick_terminal_position, QuickPosition::Top);
+    assert_eq!(c.quick_terminal_size, QuickSize { primary: Dim::Percent(40.0), secondary: None });
+    assert_eq!(c.quick_terminal_screen, QuickScreen::Main);
+    assert!(c.quick_terminal_autohide);
+    assert_eq!(c.quick_terminal_animation_duration, 0.2);
+}
+
+#[test]
+fn quick_terminal_keys_parse() {
+    let c = load_str("quick-terminal-position = bottom\nquick-terminal-size = 50%,800px\nquick-terminal-screen = mouse\nquick-terminal-autohide = false\nquick-terminal-animation-duration = 0\n");
+    assert_eq!(c.quick_terminal_position, QuickPosition::Bottom);
+    assert_eq!(c.quick_terminal_size, QuickSize { primary: Dim::Percent(50.0), secondary: Some(Dim::Px(800)) });
+    assert_eq!(c.quick_terminal_screen, QuickScreen::Mouse);
+    assert!(!c.quick_terminal_autohide);
+    assert_eq!(c.quick_terminal_animation_duration, 0.0);
+    assert_eq!(load_str("quick-terminal-size = 300px\n").quick_terminal_size.primary, Dim::Px(300));
+    assert_eq!(load_str("quick-terminal-screen = macos-menu-bar\n").quick_terminal_screen, QuickScreen::Main);
+}
+
+#[test]
+fn quick_terminal_bad_values_are_diagnostics() {
+    for (line, want) in [
+        ("quick-terminal-position = left", "not supported yet; using top"),
+        ("quick-terminal-size = 40", "quick-terminal-size"),
+        ("quick-terminal-size = 0%", "quick-terminal-size"),
+        ("quick-terminal-animation-duration = 2", "quick-terminal-animation-duration"),
+    ] {
+        let (c, d) = load_with_diags(line);
+        assert!(d.iter().any(|d| d.message.contains(want)), "{line}: {d:?}");
+        assert_eq!(c.quick_terminal_position, QuickPosition::Top);
+    }
+}
+
+#[test]
+fn global_keybind_sets_the_hotkey() {
+    let c = load_str("keybind = global:ctrl+shift+f12=toggle_quick_terminal\n");
+    assert_eq!(c.quick_terminal_hotkey, Some(Trigger { mods: Mods(Mods::CTRL | Mods::SHIFT), key: TriggerKey::Named("f12".into()) }));
+    assert_eq!(load_str("keybind = global:super+backquote=unbind\n").quick_terminal_hotkey, None);
+    assert_eq!(load_str("keybind = clear\n").quick_terminal_hotkey, None);
+    assert!(load_str("keybind = clear\nkeybind =\n").quick_terminal_hotkey.is_some(), "an empty keybind restores the defaults");
+    let (_, d) = load_with_diags("keybind = global:ctrl+a=new_tab");
+    assert!(d.iter().any(|d| d.message.contains("toggle_quick_terminal")), "{d:?}");
+    let (_, d) = load_with_diags("keybind = ctrl+a=toggle_quick_terminal");
+    assert!(d.iter().any(|d| d.message.contains("global:")), "{d:?}");
+}
