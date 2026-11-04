@@ -24,11 +24,16 @@ Date: 2026-11-03, Windows 11, debug build.
 | The hotkey registers | ✅ log: `quick terminal: hotkey Ctrl+Alt+Shift+F11` |
 | A second `--quick-terminal` on the same pipe exits | ✅ within 2 s, exit 0; log: `quick terminal already running` |
 | `wr ctl server-stop` ends it quietly (no dialog) | ✅ exited within 10 s; no processes left |
+| Toggle 1 (`WM_HOTKEY` posted, id 1): shows | ✅ visible, foreground; slides in (top −29 px at 120 ms); rect `0,0 3440×557`, exactly 40% of the 3440×1392 primary work area |
+| First frame | ✅ tab bar, sidebar with the "Quick" workspace, the shell's output and a focused block cursor |
+| Toggle 2: hides | ✅ not visible after the slide |
+| Toggle 3: shows the same shell again | ✅ same output and prompt; `wr ctl list` shows one pane, still running |
+| Toggle 4: hides | ✅ |
 | A normal launch starts the quick terminal | ✅ seen by accident: `server_outlives_killed_client_process` found the quick terminal's extra shell until tests turned the hotkey off |
 
 ## Not checked live
 
-- Showing and hiding: posting `WM_HOTKEY` brings the window to the front, so this waits for the user's go-ahead.
+- The cursor after the second summon: its screenshot shows none, most likely the blink's off phase; not confirmed.
 - The real Win+` press, and the toast when Windows Terminal holds it.
 - Autohide by clicking another app, and the IME candidate window not hiding it.
 - Multiple monitors, `quick-terminal-screen = mouse`, a top or left taskbar, and a 150% DPI monitor (covered only by `quick_rect`'s unit tests).
