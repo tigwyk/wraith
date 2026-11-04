@@ -47,7 +47,7 @@ These follow Ghostty's names and value syntax.
   - A single character goes through `VkKeyScanW` for the current layout.
   - A physical `[Code]` uses the scan-code table the keymap already has.
   - A key with no mapping is a diagnostic.
-- **The settings panel.** It gains rows for the hotkey, the position, the size and autohide.
+- **The settings panel.** It gains two rows on the Behaviour page: the position (a choice of top or bottom) and autohide (a toggle). The hotkey and the size stay text in the config file; the panel has no text-field kind.
 - **Reload.** Every key above applies on reload. The process re-registers the hotkey when it changes, moves and resizes the window if it is shown, and exits when no global toggle is left (§3.1).
 
 ## 3. Process and window
@@ -65,7 +65,7 @@ These follow Ghostty's names and value syntax.
 
 ### 3.2 The window
 
-- **Created hidden.** It is created with `WS_EX_TOOLWINDOW` (no taskbar button, not in Alt+Tab) and `WS_EX_TOPMOST`, and drawn without the caption buttons. The tab bar, tabs, sidebar key, palette and settings work as in any window.
+- **Created hidden.** It is created with `WS_EX_TOOLWINDOW` (no taskbar button, not in Alt+Tab) and `WS_EX_TOPMOST`. The tab bar, tabs, sidebar key, palette and settings work as in any window. The caption buttons stay: minimize and close hide it, and maximize does nothing.
 - **Rectangle.** A pure function computes it: `quick_rect(work_area, position, size, dpi) -> RECT`. It uses the monitor's work area, so the taskbar is not covered. `top` anchors to the top edge and `bottom` to the bottom edge. The secondary axis is centred when it is narrower than the work area.
 - **The monitor.** `main` is the primary monitor. `mouse` is `MonitorFromPoint(GetCursorPos())`. The rectangle is recomputed on every summon, so a monitor or DPI change applies on the next one.
 - **Showing.**
@@ -86,14 +86,14 @@ On `WM_HOTKEY`:
 Also:
 - **Losing focus** (`WM_ACTIVATE` with `WA_INACTIVE`) hides it when `quick-terminal-autohide` is on. Exceptions: focus moving to its own popups (the IME candidate window, message boxes) and the moment during a slide.
 - **Closing the window** (the close key, Alt+F4) hides it. It does not close the process.
-- **Closing the last tab** hides it. The next summon starts a new tab with the default profile.
+- **Closing the last tab** hides it. The window's existing rule gives its empty workspace a new shell, so the next summon shows a fresh tab with the default profile.
 
 ## 4. The quick workspace
 
 - **The flag.** `Workspace` gains `quick: bool`, with `#[serde(default)]` so older saved layouts still load. The default name is "Quick".
-- **The protocol.** `ClientMsg::AttachWindow` gains `quick: bool`. The wire protocol version goes up by one, and the existing version-mismatch prompt handles an old server.
+- **The protocol.** A new message, `ClientMsg::AttachQuick`, asks for the quick workspace. `AttachWindow` is unchanged. The wire protocol version goes up by one (4 to 5), and the existing version-mismatch prompt handles an old server.
 - **Server rules:**
-  - `AttachWindow { workspace: None, quick: true }` takes the workspace flagged `quick`, or creates one with the flag set.
+  - `AttachQuick` takes the workspace flagged `quick`, or creates one with the flag set.
   - `most_recent_detached()` skips quick workspaces, so a normal window never picks it up by itself.
   - Asking for the quick workspace by id from a normal window works under the existing rules: it is refused while the quick terminal holds it, and allowed when the quick terminal is not running.
   - The flag is saved with the layout, so the quick workspace and its tabs survive a server restart like any workspace.
