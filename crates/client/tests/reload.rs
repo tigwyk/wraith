@@ -117,3 +117,16 @@ fn opacity_only_change_rebuilds_looks_not_fonts() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn sidebar_keys_apply_on_reload_only_when_changed() {
+    use wraith_client::reload::sidebar_change;
+    let old = wraith_config::Config::default();
+    let mut new = old.clone();
+    assert_eq!(sidebar_change(&old, &new), None, "an unrelated reload keeps a toggled sidebar as it is");
+    new.sidebar_visible = !old.sidebar_visible;
+    assert_eq!(sidebar_change(&old, &new), Some((new.sidebar_visible, old.sidebar_width)));
+    let mut wider = old.clone();
+    wider.sidebar_width = 40;
+    assert_eq!(sidebar_change(&old, &wider), Some((old.sidebar_visible, 40)));
+}

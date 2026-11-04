@@ -229,7 +229,17 @@ pub(crate) fn apply_config(app: &mut App, new: Config) {
         app.rebuild_looks();
     }
     app.sync_swapchain(crate::app::needs_transparency(&old, &old_profiles));
+    if let Some((visible, cols)) = sidebar_change(&old, &app.config) {
+        let msgs = app.view.set_sidebar(visible, cols);
+        app.send_all(msgs);
+    }
     app.request_redraw();
+}
+
+/// The sidebar to show after a reload, when `sidebar-visible` or `sidebar-width` changed. Unchanged
+/// keys give `None`, so an unrelated reload keeps a sidebar the user toggled with its key.
+pub fn sidebar_change(old: &Config, new: &Config) -> Option<(bool, u16)> {
+    ((old.sidebar_visible, old.sidebar_width) != (new.sidebar_visible, new.sidebar_width)).then_some((new.sidebar_visible, new.sidebar_width))
 }
 
 /// Whether only the looks need rebuilding (no new fonts): the global or any profile's opacity changed.
