@@ -1265,6 +1265,11 @@ impl App {
                     // The user clicked an agent's toast: bring its pane up here.
                     let msgs = self.view.focus_pane(wparam.0 as PaneId);
                     self.send_all(msgs);
+                    if self.quick.is_some() {
+                        // Restoring would show the quick terminal unplaced and undrawn: summon it instead.
+                        crate::quick::summon(self);
+                        return Some(LRESULT(0));
+                    }
                     unsafe {
                         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_RESTORE);
                         let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
@@ -1488,6 +1493,8 @@ impl App {
         self.present_token |= signaled;
         // A hidden quick terminal only takes in server messages and config changes: no timers, no frames.
         if self.quick.as_ref().is_some_and(crate::quick::State::idle) {
+            // Hidden is out of the user's view: the server must know, or agents here count as seen.
+            self.sync_foreground();
             self.drain_server_msgs();
             crate::reload::poll(self);
             let sleep_ms = crate::reload::next_deadline(self).map_or(u32::MAX, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32 + 1);
@@ -1546,6 +1553,18 @@ impl App {
     }
 
     pub(crate) fn request_redraw(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Re-read keyboard focus from Windows after the window was shown or hidden from inside a message
+    /// handler, whose nested WM_SETFOCUS / WM_KILLFOCUS never reach the app (it is borrowed).
+    pub(crate) fn sync_focus(&mut self) {
+        let focused = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == self.win.hwnd();
+        if self.focused && !focused {
+            self.view.release();
+            self.ime.end();
+        }
+        self.focused = focused;
         self.dirty = true;
     }
 

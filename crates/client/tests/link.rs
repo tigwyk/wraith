@@ -20,6 +20,8 @@ fn unique() -> String {
 fn layout_env() -> Vec<(String, String)> {
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!("wraith-link-layout-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    // Windows reuses process ids: a folder left by an earlier run would restore its layout.
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     vec![("WRAITH_LAYOUT_PATH".into(), dir.join("layout.json").display().to_string())]
 }
@@ -130,6 +132,7 @@ fn detach_then_attach_reattaches() {
 fn server_outlives_killed_client_process() {
     let pipe = unique();
     let dir = std::env::temp_dir().join(format!("wraith-remote-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir); // a reused process id must not restore an old layout
     std::fs::create_dir_all(&dir).unwrap();
     // No quick terminal: it would add its own shell and hold the user's real Win+` while the test runs.
     std::fs::create_dir_all(dir.join("wraith")).unwrap();

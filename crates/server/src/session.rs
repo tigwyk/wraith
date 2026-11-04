@@ -75,6 +75,8 @@ struct Client {
     foreground: bool,
     /// `wr events`: gets every snapshot, like a window.
     watch: bool,
+    /// The quick terminal: it only ever shows a quick workspace (quick-terminal spec §4).
+    quick: bool,
 }
 
 /// `WRAITH_LAYOUT_PATH`, else `%LOCALAPPDATA%\wraith\layout.json` (`wraith\admin\` when elevated).
@@ -262,7 +264,7 @@ impl Server {
             };
             match ev {
                 Ev::Connected(id, tx) => {
-                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None, foreground: false, watch: false });
+                    self.clients.insert(id, Client { tx, kind: None, workspace: None, subs: HashSet::new(), refused: false, focused_at: None, foreground: false, watch: false, quick: false });
                 }
                 Ev::Gone(id) => self.drop_client(id),
                 Ev::Pane(pane, ev) => self.pane_event(pane, ev),
@@ -365,6 +367,16 @@ impl Server {
 
     /// `None`: the most recently detached workspace, else a new empty one.
     fn attach_window(&mut self, id: ClientId, requested: Option<WorkspaceId>) {
+        // The quick terminal stays on its workspace; a normal window may not take it from it (spec §4).
+        if self.clients.get(&id).is_some_and(|c| c.quick) {
+            return;
+        }
+        if let Some(w) = requested
+            && self.model.is_quick(w)
+            && self.clients.iter().any(|(&h, c)| h != id && c.quick && c.workspace == Some(w))
+        {
+            return self.send(id, ServerMsg::Error("the quick terminal is showing that workspace".into()));
+        }
         let ws = match requested {
             Some(w) if self.model.has_workspace(w) => w,
             Some(w) => return self.send(id, ServerMsg::Error(format!("no workspace {w}"))),
@@ -478,6 +490,9 @@ impl Server {
             }
             ClientMsg::AttachWindow { workspace } => self.attach_window(id, workspace),
             ClientMsg::AttachQuick => {
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.quick = true;
+                }
                 let ws = self.model.quick_workspace();
                 self.take_workspace(id, ws);
             }
@@ -582,10 +597,16 @@ impl Server {
             .map(|(&id, _)| id)
             .collect();
         for id in lost {
-            if let Some(c) = self.clients.get_mut(&id) {
+            let quick = self.clients.get_mut(&id).is_some_and(|c| {
                 c.workspace = None;
+                c.quick
+            });
+            if quick {
+                let ws = self.model.quick_workspace();
+                self.take_workspace(id, ws);
+            } else {
+                self.attach_window(id, None);
             }
-            self.attach_window(id, None);
         }
         self.push_snapshot();
     }

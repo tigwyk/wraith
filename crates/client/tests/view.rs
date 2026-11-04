@@ -1133,3 +1133,13 @@ fn zoom_cleared_on_set_workspace() {
     assert!(v.zoomed_panes().is_empty());
     assert_eq!(v.zoom(2), 0.0);
 }
+
+#[test]
+fn next_workspace_skips_the_quick_workspace() {
+    let mut v = view();
+    let mut s = three_workspaces();
+    s.workspaces[1].quick = true; // 2 is the quick terminal's
+    v.on_snapshot(s, &ctx());
+    assert_eq!(v.action(Action::NextWorkspace, &ctx()).msgs, vec![ClientMsg::AttachWindow { workspace: Some(3) }]);
+    assert_eq!(v.action(Action::PreviousWorkspace, &ctx()).msgs, vec![ClientMsg::AttachWindow { workspace: Some(3) }]);
+}

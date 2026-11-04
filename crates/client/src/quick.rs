@@ -230,13 +230,18 @@ fn place(app: &mut App, r: Rect, y: i32) {
     unsafe {
         let _ = SetWindowPos(hwnd(app), Some(HWND_TOPMOST), r.x, y, r.w, r.h, SWP_NOACTIVATE);
     }
+    catch_up(app);
+    if let Some(st) = app.quick.as_mut() {
+        st.target = r;
+    }
+}
+
+/// Size and DPI as Windows now has them, for when the messages carrying them were lost.
+fn catch_up(app: &mut App) {
     let dpi = app.win.dpi();
     let size = app.win.client_size();
     let dpi_changed = app.quick.as_mut().is_some_and(|st| std::mem::replace(&mut st.dpi, dpi) != dpi);
     app.sync_window_size(size, dpi_changed);
-    if let Some(st) = app.quick.as_mut() {
-        st.target = r;
-    }
 }
 
 fn animated(c: &Config) -> bool {
@@ -246,8 +251,14 @@ fn animated(c: &Config) -> bool {
 fn show(app: &mut App) {
     let r = target(app);
     let animate = animated(&app.config);
-    let y = if animate { slide_y(r, app.config.quick_terminal_position, 0.0, true) } else { r.y };
-    place(app, r, y);
+    // Placed on its own monitor first, so size and DPI are that monitor's; then moved off the edge.
+    place(app, r, r.y);
+    if animate {
+        let y = slide_y(r, app.config.quick_terminal_position, 0.0, true);
+        unsafe {
+            let _ = SetWindowPos(hwnd(app), None, r.x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
     // Shown before the first frame: a hidden quick terminal renders nothing.
     if let Some(st) = app.quick.as_mut() {
         st.shown = true;
@@ -260,6 +271,23 @@ fn show(app: &mut App) {
         let _ = ShowWindow(h, SW_SHOW);
         let _ = SetForegroundWindow(h);
     }
+    app.sync_focus();
+}
+
+/// Bring the quick terminal up, never hiding it (a toast click).
+pub(crate) fn summon(app: &mut App) {
+    if app.quick.as_ref().is_some_and(|st| st.shown) {
+        front(app);
+    } else {
+        show(app);
+    }
+}
+
+fn front(app: &mut App) {
+    unsafe {
+        let _ = SetForegroundWindow(hwnd(app));
+    }
+    app.sync_focus();
 }
 
 /// Slide the window out (or hide it at once); it keeps its workspace and shells.
@@ -278,6 +306,7 @@ pub(crate) fn hide(app: &mut App) {
         unsafe {
             let _ = ShowWindow(h, SW_HIDE);
         }
+        app.sync_focus();
     }
 }
 
@@ -288,9 +317,7 @@ pub(crate) fn on_hotkey(app: &mut App) {
     match toggle(st.shown, unsafe { GetForegroundWindow() } == h) {
         Toggle::Show => show(app),
         Toggle::Hide => hide(app),
-        Toggle::Front => unsafe {
-            let _ = SetForegroundWindow(h);
-        },
+        Toggle::Front => front(app),
     }
 }
 
@@ -323,10 +350,14 @@ pub(crate) fn tick(app: &mut App, now: Instant) -> Option<u32> {
         return Some(SLIDE_MS);
     }
     st.slide = None;
-    if !showing {
+    if showing {
+        // Crossing monitors during the slide sent WM_DPICHANGED from inside idle, which was lost.
+        catch_up(app);
+    } else {
         unsafe {
             let _ = ShowWindow(h, SW_HIDE);
         }
+        app.sync_focus();
     }
     None
 }

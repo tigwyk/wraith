@@ -73,6 +73,10 @@ impl Model {
         self.tabs.iter().find(|t| t.id == tab).map(|t| t.workspace)
     }
 
+    pub fn is_quick(&self, id: WorkspaceId) -> bool {
+        self.workspaces.iter().any(|w| w.id == id && w.quick)
+    }
+
     /// The quick terminal's workspace, created (empty, named "Quick") the first time.
     pub fn quick_workspace(&mut self) -> WorkspaceId {
         if let Some(w) = self.workspaces.iter().find(|w| w.quick) {
