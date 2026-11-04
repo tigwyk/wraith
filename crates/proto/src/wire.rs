@@ -10,7 +10,7 @@ use crate::pane::{PaneCmd, PaneEvent};
 pub type PaneId = u64;
 
 /// Bumped on any incompatible change to these types.
-pub const PROTO_VERSION: u32 = 4;
+pub const PROTO_VERSION: u32 = 5;
 
 /// Largest body a peer may announce; anything bigger drops the connection before allocating.
 pub const MAX_FRAME: u32 = 64 << 20;
@@ -28,6 +28,8 @@ pub enum ClientMsg {
     Hello { proto_version: u32, kind: ClientKind },
     /// Show a workspace in this window. `None`: the most recently detached one, else a new empty one.
     AttachWindow { workspace: Option<WorkspaceId> },
+    /// Show the quick terminal's workspace in this window, creating it the first time.
+    AttachQuick,
     /// Leave the workspace running in the server (window closed).
     DetachWindow,
     /// What an agent in `pane` is doing (`harness` names it on first sight).

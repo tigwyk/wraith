@@ -1137,7 +1137,8 @@ impl WindowView {
                 if running { Out { confirm_close_workspace: Some(ws), ..Out::default() } } else { Out::msgs(self.close_workspace(ws)) }
             }
             Action::NextWorkspace | Action::PreviousWorkspace if self.snap.workspaces.len() > 1 => {
-                let ids: Vec<WorkspaceId> = self.snap.workspaces.iter().map(|w| w.id).collect();
+                // The quick terminal's workspace is not on the way (quick-terminal spec §4).
+                let ids: Vec<WorkspaceId> = self.snap.workspaces.iter().filter(|w| !w.quick || w.id == ws).map(|w| w.id).collect();
                 let i = ids.iter().position(|&w| w == ws).unwrap_or(0);
                 let n = ids.len();
                 let to = ids[if a == Action::NextWorkspace { (i + 1) % n } else { (i + n - 1) % n }];

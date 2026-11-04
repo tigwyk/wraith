@@ -183,3 +183,10 @@ fn new_defaults_bound() {
     let names: Vec<&str> = all_actions().into_iter().map(|(_, s)| s).collect();
     assert!(names.contains(&"open_new_tab_menu") && names.contains(&"import_windows_terminal_profiles"));
 }
+
+#[test]
+fn parse_global_rejects_sequences() {
+    assert!(wraith_config::parse_global("ctrl+a>ctrl+b=toggle_quick_terminal").is_err());
+    assert!(wraith_config::parse_global("super+backquote=toggle_quick_terminal").unwrap().is_some());
+    assert_eq!(wraith_config::parse_global("super+backquote=unbind"), Ok(None));
+}

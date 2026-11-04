@@ -111,6 +111,7 @@ fn snap() -> ModelSnapshot {
         profile: "pwsh".into(),
         attached,
         last_used: id,
+        quick: false,
     };
     let t = |id: u64, ws, pane| Tab { id, workspace: ws, title_override: None, root: PaneNode::Leaf(pane), focused: pane, zoomed: None };
     let p = |id, cwd: Option<&str>| PaneMeta { id, title: String::new(), cwd: cwd.map(Into::into), exit: None, profile: "pwsh".into(), cmdline: String::new(), agent: None };

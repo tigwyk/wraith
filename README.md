@@ -102,6 +102,28 @@ Terminal profiles" in the palette). It copies the profiles into your config as
 schemes that only Windows Terminal has to `%APPDATA%\wraith\themes`. Set
 `windows-terminal-profiles = false` to ignore Windows Terminal without importing.
 
+### Quick terminal
+
+``Win+` `` slides a terminal down from the top of the screen, from any app, and
+the same key hides it again. It has its own workspace, so its shells keep
+running while it is hidden. It hides when you click elsewhere, and closing it
+only hides it. It is ready after Wraith has been started once in your session.
+
+The keys are Ghostty's:
+
+| Key | Default | Values |
+| --- | --- | --- |
+| `keybind = global:<key>=toggle_quick_terminal` | `global:super+backquote=toggle_quick_terminal` | Any key; `global:super+backquote=unbind` turns it off |
+| `quick-terminal-position` | `top` | `top`, `bottom` |
+| `quick-terminal-size` | `40%` | `40%`, `300px`, or `50%,800px` (height, then width) |
+| `quick-terminal-screen` | `main` | `main`, `mouse` (the monitor under the pointer) |
+| `quick-terminal-autohide` | `true` | `true`, `false` |
+| `quick-terminal-animation-duration` | `0.2` | Seconds, `0` to `1` |
+
+Only one app can hold a global key. If another one already has it (Windows
+Terminal takes ``Win+` `` while it runs), Wraith says so in a notification;
+set another key and it is picked up on save.
+
 ### Keys
 
 | Keys | Action |
@@ -174,7 +196,8 @@ Wraith is the author's daily driver and is still young.
 |  5  | Scrollback search and persistence, packaging                           |   ✅   |
 |  6  | Hover feedback and motion polish                                       |   ✅   |
 |  7  | `wr events`, `wr config check`, right-click menu, inline IME           |   ✅   |
-|  –  | Settings GUI                                                           |   ✅   |
+|  –  | Settings GUI, `wr update`                                              |   ✅   |
 |  –  | Windows Terminal profiles and the new-tab menu                         |   ✅   |
-|  –  | Per-profile font, size and padding                                     |   ❌   |
-|  –  | Drop-down (quake) window, auto-update, ARM64                           |   ❌   |
+|  –  | Per-profile font, size, padding and opacity; real transparency         |   ✅   |
+|  –  | Quick terminal: a drop-down window on a global hotkey                  |   ✅   |
+|  –  | Auto-update, ARM64                                                     |   ❌   |

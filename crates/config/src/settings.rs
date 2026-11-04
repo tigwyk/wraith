@@ -1,7 +1,7 @@
 //! The settings panel's rows (settings spec §2.1) as data: which key, which control, and the current
 //! value as the text it would be written as. Values are interpreted only by the parser.
 use crate::edit::Which;
-use crate::{CloseOnExit, Config, CursorStyle, RightClick};
+use crate::{CloseOnExit, Config, CursorStyle, QuickPosition, RightClick};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
@@ -65,7 +65,7 @@ const fn row(key: &'static str, label: &'static str, page: Page, kind: Kind, get
     Setting { key, label, page, which: Which::Last, kind, get }
 }
 
-static SETTINGS: [Setting; 20] = [
+static SETTINGS: [Setting; 22] = [
     row("theme", "Theme", Appearance, Kind::List(ListSource::Themes), |c| c.theme.clone().unwrap_or_default()),
     Setting {
         key: "font-family",
@@ -123,6 +123,10 @@ static SETTINGS: [Setting; 20] = [
         |c| c.scrollback_limit.to_string(),
     ),
     row("sidebar-visible", "Show sidebar", Behaviour, Kind::Toggle, |c| on_off(c.sidebar_visible)),
+    row("quick-terminal-position", "Quick terminal position", Behaviour, Kind::Choice(&[("top", "Top"), ("bottom", "Bottom")]), |c| {
+        (if c.quick_terminal_position == QuickPosition::Bottom { "bottom" } else { "top" }).into()
+    }),
+    row("quick-terminal-autohide", "Quick terminal hides on focus loss", Behaviour, Kind::Toggle, |c| on_off(c.quick_terminal_autohide)),
     row("sidebar-width", "Sidebar width", Behaviour, Kind::Stepper { min: 10, max: 60 }, |c| c.sidebar_width.to_string()),
     row("agent-notify", "Notify by", Agents, Kind::NotifySet, |c| {
         let n = c.agent_notify;

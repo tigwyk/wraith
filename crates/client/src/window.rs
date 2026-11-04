@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCCALCSIZE,
     PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN,
     WM_DESTROY, WM_DPICHANGED, WM_QUIT, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP,
-    WS_OVERLAPPEDWINDOW, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_PROCESSKEY;
 use windows::core::{PCWSTR, Result, w};
@@ -40,6 +40,11 @@ pub struct Window {
 
 impl Window {
     pub fn create(title: &str, w: i32, h: i32) -> Result<Window> {
+        Window::create_ex(title, w, h, false)
+    }
+
+    /// `quick`: the quick terminal's window: a frameless popup, topmost, with no taskbar button.
+    pub fn create_ex(title: &str, w: i32, h: i32, quick: bool) -> Result<Window> {
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let hinst = GetModuleHandleW(None)?;
@@ -59,11 +64,16 @@ impl Window {
             RegisterClassExW(&wc);
             let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
             // No redirection bitmap: the flip-model swap chain (HWND or composition) is the only surface.
+            let (ex, style) = if quick {
+                (WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WS_POPUP)
+            } else {
+                (WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW)
+            };
             let hwnd = CreateWindowExW(
-                WS_EX_NOREDIRECTIONBITMAP,
+                ex,
                 class,
                 PCWSTR(title.as_ptr()),
-                WS_OVERLAPPEDWINDOW,
+                style,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 w,

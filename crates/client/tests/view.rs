@@ -59,6 +59,7 @@ fn snap(active: TabId) -> ModelSnapshot {
             profile: "pwsh".into(),
             attached: true,
             last_used: 1,
+            quick: false,
         }],
         tabs: vec![tab(10, split(Axis::Horizontal, leaf(1), leaf(2)), 2), tab(11, leaf(3), 3)],
         panes: vec![meta(1, None, "pwsh", None), meta(2, Some(r"C:\work"), "cmd", None), meta(3, None, "pwsh", None)],
@@ -349,7 +350,7 @@ use std::time::Instant;
 use wraith_config::WorkspaceDef;
 
 fn ws(id: WorkspaceId, name: &str, attached: bool) -> Workspace {
-    Workspace { id, name: name.into(), root_dir: None, color: 0x3366cc, tabs: vec![], active_tab: None, profile: "pwsh".into(), attached, last_used: id }
+    Workspace { id, name: name.into(), root_dir: None, color: 0x3366cc, tabs: vec![], active_tab: None, profile: "pwsh".into(), attached, last_used: id, quick: false }
 }
 
 /// `snap(10)` plus workspaces 2 and 3 (both empty, detached).
@@ -1131,4 +1132,14 @@ fn zoom_cleared_on_set_workspace() {
     v.set_workspace(7);
     assert!(v.zoomed_panes().is_empty());
     assert_eq!(v.zoom(2), 0.0);
+}
+
+#[test]
+fn next_workspace_skips_the_quick_workspace() {
+    let mut v = view();
+    let mut s = three_workspaces();
+    s.workspaces[1].quick = true; // 2 is the quick terminal's
+    v.on_snapshot(s, &ctx());
+    assert_eq!(v.action(Action::NextWorkspace, &ctx()).msgs, vec![ClientMsg::AttachWindow { workspace: Some(3) }]);
+    assert_eq!(v.action(Action::PreviousWorkspace, &ctx()).msgs, vec![ClientMsg::AttachWindow { workspace: Some(3) }]);
 }

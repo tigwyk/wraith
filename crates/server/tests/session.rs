@@ -105,7 +105,11 @@ impl Client {
     }
     /// Attach a window and return the workspace it got (after its first snapshot).
     fn attach_window(&mut self, ws: Option<WorkspaceId>) -> WorkspaceId {
-        self.send(ClientMsg::AttachWindow { workspace: ws });
+        self.attach(ClientMsg::AttachWindow { workspace: ws })
+    }
+    /// Send an attach message and return the workspace it got (after its first snapshot).
+    fn attach(&mut self, m: ClientMsg) -> WorkspaceId {
+        self.send(m);
         let mut got = None;
         loop {
             match self.next(secs(5)).expect("attach reply") {
@@ -941,4 +945,51 @@ fn clients_cannot_send_save_scrollback() {
     c.list();
     thread::sleep(Duration::from_millis(500));
     assert!(!target.exists(), "only the server itself may write snapshots");
+}
+
+#[test]
+fn attach_quick_gets_the_quick_workspace_and_takes_it_back() {
+    let pipe = server();
+    let mut q = Client::gui(&pipe);
+    let wq = q.attach(ClientMsg::AttachQuick);
+    assert!(q.snap.workspace(wq).unwrap().quick);
+    q.send(ClientMsg::DetachWindow);
+    thread::sleep(Duration::from_millis(100));
+    let mut a = Client::gui(&pipe);
+    assert_ne!(a.attach_window(None), wq, "a normal window skips the quick workspace");
+    assert_eq!(a.attach_window(Some(wq)), wq, "but may open it by id while the quick terminal is gone");
+    let mut q2 = Client::gui(&pipe);
+    assert_eq!(q2.attach(ClientMsg::AttachQuick), wq);
+    assert!(std::iter::from_fn(|| a.next(secs(2))).any(|m| matches!(m, ServerMsg::WorkspaceTaken { workspace } if workspace == wq)));
+}
+
+#[test]
+fn quick_terminal_closing_its_last_tab_gets_a_new_quick_workspace() {
+    let pipe = server();
+    let mut normal = Client::gui(&pipe);
+    let wn = normal.attach_window(None);
+    normal.send(ClientMsg::DetachWindow);
+    thread::sleep(Duration::from_millis(100));
+    let mut q = Client::gui(&pipe);
+    q.attach(ClientMsg::AttachQuick);
+    let (tab, _) = q.new_tab("cmd.exe /k");
+    q.model(ModelCmd::CloseTab(tab)).unwrap();
+    assert_ne!(q.ws, wn, "never the user's detached normal workspace");
+    assert!(q.snap.workspace(q.ws).is_some_and(|w| w.quick), "re-attached to a quick workspace: {:?}", q.snap.workspaces);
+}
+
+#[test]
+fn quick_workspace_is_refused_while_the_quick_terminal_holds_it() {
+    let pipe = server();
+    let mut q = Client::gui(&pipe);
+    let wq = q.attach(ClientMsg::AttachQuick);
+    let mut a = Client::gui(&pipe);
+    a.attach_window(None);
+    a.send(ClientMsg::AttachWindow { workspace: Some(wq) });
+    assert!(std::iter::from_fn(|| a.next(secs(2))).any(|m| matches!(m, ServerMsg::Error(_))), "refused");
+    q.send(ClientMsg::AttachWindow { workspace: None });
+    q.send(ClientMsg::List);
+    let moved = std::iter::from_fn(|| q.next(secs(2))).any(|m| matches!(m, ServerMsg::WorkspaceTaken { .. } | ServerMsg::WindowAttached { .. }));
+    assert!(!moved, "the quick terminal keeps its workspace");
+    assert_eq!(q.ws, wq);
 }

@@ -21,6 +21,10 @@ fn ui_thread_never_holds_pane_output() {
     let pipe = format!(r"\\.\pipe\wraith-latency-test-{}", std::process::id());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // No quick terminal: it would add its own shell and hold the user's real Win+` while the test runs.
+    std::fs::create_dir_all(dir.join("wraith")).unwrap();
+    std::fs::write(dir.join("wraith").join("config"), "keybind = global:super+backquote=unbind
+").unwrap();
     // 300 frames of 40 rows, one write every ~15 ms, like a TUI redrawing per streamed token.
     let script = "$e=[char]27; $o=[Console]::Out; for($i=0;$i -lt 300;$i++){                   $f=-join (0..39 | % { \"$e[3$($_%7+1)m row $_ frame $i the quick brown fox$e[0m$e[K`r`n\" });                   $o.Write(\"$e[H$f\"); $o.Flush(); Start-Sleep -Milliseconds 15 }";
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_wraith"))

@@ -41,8 +41,9 @@ fn main() {
         }
         return;
     }
-    let _log = init_logging("client");
-    if let Err(e) = wraith_client::app::run() {
+    let quick = std::env::args().any(|a| a == "--quick-terminal");
+    let _log = init_logging(if quick { "quick" } else { "client" });
+    if let Err(e) = wraith_client::app::run(quick) {
         tracing::error!("{e}");
         let _ = writeln!(std::io::stderr(), "wraith: {e}");
         std::process::exit(1);

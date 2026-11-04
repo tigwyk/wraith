@@ -1,5 +1,5 @@
 //! Typed key table: key name → setter on `Config`.
-use crate::{AgentNotify, CloseOnExit, Config, CursorStyle, Rgb, RightClick, WorkspaceDef};
+use crate::{AgentNotify, CloseOnExit, Config, CursorStyle, QuickPosition, QuickScreen, Rgb, RightClick, WorkspaceDef};
 
 /// Set `key` from `value`. An empty value resets the key to its default.
 pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
@@ -183,7 +183,37 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
         "sidebar-width" => set!(sidebar_width, |v: &str| v.parse::<u16>().map(|n| n.clamp(10, 60)).map_err(|_| bad(v))),
         "unfocused-split-opacity" => set!(unfocused_split_opacity, |v: &str| num(v).map(|n| n.clamp(0.15, 1.0)).ok_or_else(|| bad(v))),
         "image-storage-limit" => set!(image_storage_limit, |v: &str| v.parse::<u64>().map_err(|_| bad(v))),
-        "keybind" => crate::keybind::apply(&mut c.keybinds, value)?,
+        "keybind" => {
+            if let Some(global) = value.strip_prefix("global:") {
+                c.quick_terminal_hotkey = crate::keybind::parse_global(global)?;
+            } else {
+                if value.rsplit_once('=').is_some_and(|(_, a)| a.trim() == "toggle_quick_terminal") {
+                    return Err("toggle_quick_terminal needs `global:`".into());
+                }
+                crate::keybind::apply(&mut c.keybinds, value)?;
+                if value.is_empty() {
+                    c.quick_terminal_hotkey = d.quick_terminal_hotkey.clone();
+                } else if value == "clear" {
+                    c.quick_terminal_hotkey = None;
+                }
+            }
+        }
+        "quick-terminal-position" => set!(quick_terminal_position, |v| match v {
+            "top" => Ok(QuickPosition::Top),
+            "bottom" => Ok(QuickPosition::Bottom),
+            "left" | "right" | "center" => Err(format!("`{v}` is not supported yet; using top")),
+            _ => Err(bad(v)),
+        }),
+        "quick-terminal-size" => set!(quick_terminal_size, crate::quick_size),
+        "quick-terminal-screen" => set!(quick_terminal_screen, |v| match v {
+            "main" | "macos-menu-bar" => Ok(QuickScreen::Main),
+            "mouse" => Ok(QuickScreen::Mouse),
+            _ => Err(bad(v)),
+        }),
+        "quick-terminal-autohide" => set!(quick_terminal_autohide, boolean),
+        "quick-terminal-animation-duration" => set!(quick_terminal_animation_duration, |v: &str| num(v)
+            .filter(|n| (0.0..=1.0).contains(n))
+            .ok_or_else(|| format!("invalid quick-terminal-animation-duration `{v}`: use 0 to 1 seconds"))),
         _ => return Err(format!("unknown key `{key}`")),
     }
     Ok(())
