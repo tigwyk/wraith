@@ -130,3 +130,18 @@ fn sidebar_keys_apply_on_reload_only_when_changed() {
     wider.sidebar_width = 40;
     assert_eq!(sidebar_change(&old, &wider), Some((old.sidebar_visible, 40)));
 }
+
+#[test]
+fn echo_latency_runs_from_key_to_the_present_after_the_next_frame() {
+    use wraith_client::reload::Echo;
+    let t0 = Instant::now();
+    let mut e = Echo::default();
+    assert_eq!(e.presented(t0), None, "no key yet");
+    e.key(t0);
+    assert_eq!(e.presented(t0 + Duration::from_millis(1)), None, "a local repaint before the echo arrived");
+    e.frame();
+    assert_eq!(e.presented(t0 + Duration::from_millis(7)), Some(Duration::from_millis(7)));
+    assert_eq!(e.presented(t0 + Duration::from_millis(9)), None, "counted once");
+    e.frame();
+    assert_eq!(e.presented(t0 + Duration::from_millis(12)), None, "output with no key is not latency");
+}

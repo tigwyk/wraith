@@ -1372,6 +1372,7 @@ impl App {
                 let fonts = self.fonts.get(self.view.look(pane).font);
                 self.grids.entry(pane).or_insert_with(|| GridRenderer::with_pipeline(pipe)).apply(&f, fonts);
                 tracing::debug!(seq = f.seq, rows = f.dirty_rows.len(), apply_us = t.elapsed().as_micros() as u64, "frame arrived");
+                crate::reload::note_frame(self);
                 // Ack on apply, not on present: the pane can send the newest state while we wait for
                 // vsync, so what we draw is fresh. One frame in flight still bounds the queue.
                 self.send_pane(pane, PaneCmd::Ready(f.seq));
