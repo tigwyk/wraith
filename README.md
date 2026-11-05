@@ -43,7 +43,9 @@ Alacritty, as faithful as Ghostty, and native to Windows.
   screenshots).
 - **Always fast.** Keystrokes are written before output is parsed, frames only
   re-shape what changed, and memory stays bounded. Typing stays quick after
-  millions of lines of output, even while another pane floods.
+  millions of lines of output, even while another pane floods. Measured: a key's
+  echo is ready in 0.4 ms (median) and output runs at 188 MB/s; see
+  [benchmarks](docs/benchmarks.md) and `scriptsench.ps1`.
 - **Ghostty-style config.** Same file syntax and key names, the whole Ghostty
   theme set, keybind sequences, and hot reload.
 
@@ -140,7 +142,7 @@ set another key and it is picked up on save.
 | `Ctrl+Shift+F` | Find in scrollback |
 | `Ctrl+Shift+B` | Show or hide the sidebar |
 | `Ctrl+Shift+N` | New window |
-| `Ctrl+Shift+F12` | Frame-time and latency overlay |
+| `Ctrl+Shift+F12` | Frame-time and key-to-echo overlay |
 
 ### Coding agents
 

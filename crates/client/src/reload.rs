@@ -65,7 +65,7 @@ pub(crate) struct State {
     pub(crate) diags: Vec<Diagnostic>,
     toast_until: Option<Instant>,
     overlay: bool,
-    last_input: Option<Instant>,
+    echo: Echo,
     render_start: Option<Instant>,
 }
 
@@ -128,8 +128,38 @@ pub(crate) fn action(app: &mut App, a: Action) {
     }
 }
 
+/// Key to the first present after the server's next frame: the time to see a typed character's echo.
+/// A repaint before that frame (cursor blink, local state) isn't the echo, so it doesn't count.
+#[derive(Default)]
+pub struct Echo {
+    key: Option<Instant>,
+    frame: bool,
+}
+
+impl Echo {
+    pub fn key(&mut self, t: Instant) {
+        *self = Echo { key: Some(t), frame: false };
+    }
+
+    pub fn frame(&mut self) {
+        self.frame = self.key.is_some();
+    }
+
+    pub fn presented(&mut self, t: Instant) -> Option<std::time::Duration> {
+        if !self.frame {
+            return None;
+        }
+        self.frame = false;
+        Some(t.duration_since(self.key.take()?))
+    }
+}
+
 pub(crate) fn note_input(app: &mut App) {
-    app.rs.last_input = Some(Instant::now());
+    app.rs.echo.key(Instant::now());
+}
+
+pub(crate) fn note_frame(app: &mut App) {
+    app.rs.echo.frame();
 }
 
 pub(crate) fn render_start(app: &mut App) {
@@ -161,14 +191,18 @@ pub(crate) fn next_deadline(app: &App) -> Option<Instant> {
 }
 
 pub(crate) fn presented(app: &mut App) {
+    let now = Instant::now();
+    let echo = app.rs.echo.presented(now);
+    if let Some(d) = echo {
+        tracing::debug!(echo_us = d.as_micros() as u64, "key echoed"); // read by scripts/bench.ps1
+    }
     if !app.rs.overlay {
         return;
     }
-    let now = Instant::now();
-    let latency = app.rs.last_input.take().map(|t| now.duration_since(t).as_secs_f32() * 1000.0);
+    let latency = echo.map(|d| d.as_secs_f32() * 1000.0);
     let frame = app.rs.render_start.map_or(0.0, |t| now.duration_since(t).as_secs_f32() * 1000.0);
     let text = match latency {
-        Some(l) => format!(" input→present {l:.1} ms · frame {frame:.1} ms · atlas {:.0}% ", app.atlas.fill_ratio() * 100.0),
+        Some(l) => format!(" key→echo {l:.1} ms · frame {frame:.1} ms · atlas {:.0}% ", app.atlas.fill_ratio() * 100.0),
         None => format!(" frame {frame:.1} ms · atlas {:.0}% ", app.atlas.fill_ratio() * 100.0),
     };
     app.stats = Some(text);
