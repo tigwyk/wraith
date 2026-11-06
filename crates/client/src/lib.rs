@@ -1,6 +1,7 @@
 pub mod app;
 pub mod atlas;
 pub mod chrome;
+pub mod crash;
 pub mod font;
 pub mod font_table;
 pub mod gpu;
