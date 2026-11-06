@@ -115,7 +115,7 @@ impl Gpu {
             // One queued frame: input-to-photon latency over throughput.
             sc.SetMaximumFrameLatency(1)?;
             let waitable = sc.GetFrameLatencyWaitableObject();
-            let mut s = SwapChain { rtv: None, sc, waitable, device: self.device.clone(), _comp: comp };
+            let mut s = SwapChain { rtv: None, sc, waitable, device: self.device.clone(), _comp: comp, size: (w.max(1), h.max(1)) };
             s.make_rtv()?;
             Ok(s)
         }
@@ -165,6 +165,8 @@ pub struct SwapChain {
     device: ID3D11Device,
     /// The DirectComposition device, target and visual that show a composition swap chain.
     _comp: Option<(IDCompositionDevice, IDCompositionTarget, IDCompositionVisual)>,
+    /// The last size ResizeBuffers accepted.
+    size: (u32, u32),
 }
 
 impl Drop for SwapChain {
@@ -186,24 +188,32 @@ impl SwapChain {
         Ok(())
     }
 
-    pub fn rtv(&self) -> &ID3D11RenderTargetView {
-        self.rtv.as_ref().unwrap()
+    /// None only if a resize failed and going back to the old size failed too; skip the frame then.
+    pub fn rtv(&self) -> Option<&ID3D11RenderTargetView> {
+        self.rtv.as_ref()
     }
 
     pub fn is_composition(&self) -> bool {
         self._comp.is_some()
     }
 
+    /// A failed ResizeBuffers leaves no usable buffer, so on failure this goes back to the last size that
+    /// worked: the window shows a stretched frame instead of none, and the next resize tries again.
     pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {
-        self.rtv = None;
+        let want = (w.max(1), h.max(1));
+        let r = self.resize_buffers(want);
+        if r.is_ok() {
+            self.size = want;
+        } else {
+            let _ = self.resize_buffers(self.size);
+        }
+        r
+    }
+
+    fn resize_buffers(&mut self, (w, h): (u32, u32)) -> Result<()> {
+        self.rtv = None; // ResizeBuffers fails while a view on the back buffer is alive
         unsafe {
-            self.sc.ResizeBuffers(
-                0,
-                w.max(1),
-                h.max(1),
-                DXGI_FORMAT::default(),
-                DXGI_SWAP_CHAIN_FLAG(DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0),
-            )?;
+            self.sc.ResizeBuffers(0, w, h, DXGI_FORMAT::default(), DXGI_SWAP_CHAIN_FLAG(DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0))?;
         }
         self.make_rtv()
     }
