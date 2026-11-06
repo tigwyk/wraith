@@ -480,7 +480,9 @@ impl App {
         self.size_px = (w, h);
         let msgs = self.view.set_geometry(self.geometry());
         self.send_all(msgs);
-        let _ = self.sc.resize(w, h);
+        if let Err(e) = self.sc.resize(w, h) {
+            tracing::warn!("swap chain resize to {w}x{h}: {e}");
+        }
         self.dirty = true;
     }
 
@@ -1615,6 +1617,12 @@ impl App {
 
     fn render(&mut self) {
         self.dirty = false;
+        if self.sc.rtv().is_none() {
+            // A resize failed and couldn't go back: nothing to draw on. Keep the present slot (it wasn't
+            // used) so drawing resumes when the next resize works.
+            self.present_token = true;
+            return;
+        }
         crate::reload::render_start(self);
         let t0 = Instant::now();
         let m = self.fonts.get(0).metrics();
@@ -2212,7 +2220,8 @@ impl App {
         batches.push(Batch { quads: q, texture: None });
         // shortcut: icons draw above every chrome quad, toasts included; fine while nothing else overlaps the menu.
         batches.extend(icon_quads.into_iter().map(|(srv, quad)| Batch { quads: vec![quad], texture: Some(srv) }));
-        self.pipe.submit(&self.gpu, self.sc.rtv(), self.size_px, &self.atlas, &batches, [0.0; 4]);
+        let Some(rtv) = self.sc.rtv() else { return }; // checked at the top
+        self.pipe.submit(&self.gpu, rtv, self.size_px, &self.atlas, &batches, [0.0; 4]);
         let _ = self.sc.present();
         tracing::debug!(seq = ?self.last_seq, total_us = t0.elapsed().as_micros() as u64, "presented");
         crate::reload::presented(self);

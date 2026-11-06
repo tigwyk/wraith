@@ -74,7 +74,7 @@ fn smoke_test() -> windows::core::Result<()> {
     let (w, h) = win.client_size();
     let sc = gpu.create_swapchain(win.hwnd(), w, h, false)?;
     sc.wait();
-    gpu.clear(sc.rtv(), [0.1, 0.1, 0.1, 1.0]);
+    gpu.clear(sc.rtv().ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?, [0.1, 0.1, 0.1, 1.0]);
     sc.present()?;
     let _ = writeln!(std::io::stdout(), "presented {w}x{h}");
     Ok(())
