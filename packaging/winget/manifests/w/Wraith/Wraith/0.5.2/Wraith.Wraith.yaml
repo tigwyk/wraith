@@ -1,6 +1,0 @@
-# Local manifest (not submitted). Validate: winget validate --manifest packaging\winget\manifests\w\Wraith\Wraith\0.5.2
-PackageIdentifier: Wraith.Wraith
-PackageVersion: 0.5.2
-DefaultLocale: en-US
-ManifestType: version
-ManifestVersion: 1.6.0

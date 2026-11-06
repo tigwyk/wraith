@@ -130,3 +130,14 @@ fn codex_install_refuses_multiline_notify() {
     assert!(!out.status.success());
     assert_eq!(read(&f), user);
 }
+
+#[test]
+fn claude_uninstall_keeps_a_users_lookalike_hook() {
+    let f = tmp("settings.json");
+    let own = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/writer hook claude Stop"}]}]}}"#;
+    std::fs::write(&f, own).unwrap();
+    let out = wr(&["uninstall-hooks", "claude", "--file", f.to_str().unwrap(), "--yes"], "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&read(&f)).unwrap();
+    assert_eq!(v, serde_json::from_str::<serde_json::Value>(own).unwrap(), "the user's own hook stays");
+}
