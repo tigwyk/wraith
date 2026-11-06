@@ -94,8 +94,16 @@ fn wr_path(distro: Option<&str>) -> Result<String, String> {
     }
 }
 
+/// `"<dir>/wr.exe" hook claude <Event>` as `claude_add` writes it (a WSL path may drop the `.exe`).
 fn is_ours(cmd: &str) -> bool {
-    cmd.contains(" hook claude") && cmd.to_ascii_lowercase().contains("wr")
+    let cmd = cmd.trim_start();
+    let split = match cmd.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"'),
+        None => cmd.split_once(' '),
+    };
+    let Some((exe, rest)) = split else { return false };
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_ascii_lowercase();
+    matches!(name.as_str(), "wr" | "wr.exe") && rest.trim_start().starts_with("hook claude")
 }
 
 /// Remove every hook entry `wr` added, and any group or event list that leaves empty.

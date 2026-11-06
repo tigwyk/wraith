@@ -1,7 +1,7 @@
 # Build a release and package it as dist\wraith-<version>-x64.zip (per-user install; spec M5).
 #   scripts\dist.ps1            build, then package
 #   scripts\dist.ps1 -NoBuild   package the existing target\release build
-# Prints the zip's SHA256 and writes it into the local winget installer manifest.
+# Prints the zip's SHA256.
 param([switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -30,9 +30,5 @@ Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 $sha = (Get-FileHash $zip -Algorithm SHA256).Hash
 
-$manifest = Get-ChildItem "packaging\winget" -Recurse -Filter '*.installer.yaml' | Where-Object { $_.FullName -match [regex]::Escape($version) } | Select-Object -First 1
-if ($manifest) {
-    (Get-Content $manifest.FullName) -replace '^(\s*InstallerSha256:).*', "`$1 $sha" | Set-Content $manifest.FullName
-}
 "$zip"
 "SHA256 $sha"

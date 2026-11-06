@@ -18,7 +18,8 @@ if ($tag.TrimStart('v') -eq $env:WR_VERSION) { "Wraith $env:WR_VERSION is the la
 "updating Wraith $env:WR_VERSION -> $tag"
 
 function Ours { Get-CimInstance Win32_Process -Filter "Name='wraith.exe'" | Where-Object { $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath) -eq $exe } }
-$windows = @(Ours | Where-Object CommandLine -NotLike '*--server*').Count
+# The quick terminal isn't counted: the first window starts it again.
+$windows = @(Ours | Where-Object { $_.CommandLine -notlike '*--server*' -and $_.CommandLine -notlike '*--quick-terminal*' }).Count
 if (Ours | Where-Object CommandLine -Like '*--server*') {
     "stopping the server (tabs and history are saved)"
     & $wr ctl server-stop

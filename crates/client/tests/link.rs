@@ -16,14 +16,17 @@ fn unique() -> String {
     format!(r"\\.\pipe\wraith-remote-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Env for a server a test starts: its own layout file, never the user's.
+/// Env for a server a test starts: its own layout file and logs, never the user's.
 fn layout_env() -> Vec<(String, String)> {
     static N: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!("wraith-link-layout-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     // Windows reuses process ids: a folder left by an earlier run would restore its layout.
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    vec![("WRAITH_LAYOUT_PATH".into(), dir.join("layout.json").display().to_string())]
+    vec![
+        ("WRAITH_LAYOUT_PATH".into(), dir.join("layout.json").display().to_string()),
+        ("LOCALAPPDATA".into(), dir.display().to_string()),
+    ]
 }
 
 /// A window as the app opens one: attach, open a tab if the workspace has none, use its focused pane.
