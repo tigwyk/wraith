@@ -51,8 +51,9 @@ fn main() {
 }
 
 /// Daily files `%LOCALAPPDATA%\wraith\logs\<prefix>.YYYY-MM-DD.log`, 7 kept; level from `WRAITH_LOG` (default info).
-fn init_logging(prefix: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+fn init_logging(prefix: &'static str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("wraith").join("logs");
+    wraith_client::crash::install(dir.clone(), prefix);
     let appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_prefix(prefix)
