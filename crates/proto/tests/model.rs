@@ -186,6 +186,8 @@ fn tab_title_prefers_override() {
     s.tabs[0].title_override = Some("build".into());
     assert_eq!(s.tab_title(10), "build");
     s.tabs[0].title_override = None;
+    s.panes[0].title.clear();
+    assert_eq!(s.tab_title(10), "pwsh", "an untitled shell is named by its profile");
     s.tabs[0].focused = 3;
     assert_eq!(s.tab_title(10), "shell");
 }
