@@ -294,7 +294,7 @@ pub(crate) struct App {
     images: ImageStore,
     /// Profile icon textures by file; `None` when the file could not be drawn (the letter tile shows).
     icons: HashMap<PathBuf, Option<Icon>>,
-    link: ServerLink,
+    pub(crate) link: ServerLink,
     pub(crate) view: WindowView,
     pub(crate) spawn_ctx: SpawnCtx,
     pub(crate) pipe_name: String,
@@ -398,6 +398,14 @@ impl App {
 
     pub(crate) fn send_all(&self, msgs: Vec<ClientMsg>) {
         for m in msgs {
+            // The quick terminal holds the quick workspace (server refuses it): show that window instead.
+            if let ClientMsg::AttachWindow { workspace: Some(w) } = m
+                && self.quick.is_none()
+                && self.view.snapshot().workspaces.iter().any(|ws| ws.id == w && ws.quick && ws.attached)
+                && crate::quick::summon_other()
+            {
+                continue;
+            }
             self.link.send(m);
         }
     }
@@ -822,7 +830,11 @@ impl App {
         match attach_with_restart(self.win.hwnd(), &self.pipe_name) {
             Some(link) => {
                 start_forwarder(&link, self.forward_tx.clone(), self.woken.clone(), self.server_lost.clone(), self.win.hwnd());
-                link.send(if self.quick.is_some() { ClientMsg::AttachQuick } else { ClientMsg::AttachWindow { workspace: None } });
+                match &self.quick {
+                    Some(st) if st.attached => _ = link.send(ClientMsg::AttachQuick),
+                    Some(_) => {} // not summoned yet: it attaches on the first show
+                    None => _ = link.send(ClientMsg::AttachWindow { workspace: None }),
+                }
                 self.link = link;
                 self.foreground = false; // a new server starts at false; resent by the next sync
                 self.view.on_reconnect();
@@ -2514,7 +2526,10 @@ pub fn run(quick: bool) -> Result<()> {
     let woken = Arc::new(AtomicBool::new(false));
     let server_lost = Arc::new(AtomicBool::new(false));
     start_forwarder(&link, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
-    link.send(if quick { ClientMsg::AttachQuick } else { ClientMsg::AttachWindow { workspace: None } });
+    // The quick terminal attaches on its first summon (quick::show), so "Quick" appears only once used.
+    if !quick {
+        link.send(ClientMsg::AttachWindow { workspace: None });
+    }
     if !quick && config.quick_terminal_hotkey.is_some() {
         crate::quick::ensure_running(&pipe_name);
     }

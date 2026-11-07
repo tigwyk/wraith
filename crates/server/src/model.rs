@@ -104,9 +104,14 @@ impl Model {
     fn add_workspace(&mut self, name: Option<String>, root_dir: Option<String>, profile: &str) -> WorkspaceId {
         let id = self.next_ws;
         self.next_ws += 1;
+        // The lowest "Workspace N" not already shown, so names follow what the user sees, not the id counter.
+        let name = name.unwrap_or_else(|| {
+            let n = (1..).find(|n| !self.workspaces.iter().any(|w| w.name == format!("Workspace {n}"))).unwrap_or(id);
+            format!("Workspace {n}")
+        });
         self.workspaces.push(Workspace {
             id,
-            name: name.unwrap_or_else(|| format!("Workspace {id}")),
+            name,
             root_dir,
             color: COLORS[id as usize % COLORS.len()],
             tabs: vec![],
