@@ -194,9 +194,11 @@ impl Pane {
             // would home it and the marker would overwrite old output), write a marker right after the
             // old output, then scroll it all into history so the fresh shell starts on a clean screen.
             // Leave the alternate screen only if in it: 1049l also restores the saved cursor.
+            // The final home keeps the cursor off the bottom row: there, a taller window pulls history
+            // back down and the first resize flashes the old screen and the marker.
             let leave_alt = if matches!(term.active_screen(), Ok(Screen::Alternate)) { "\x1b[?1049l" } else { "" };
             let restored = format!(
-                "{leave_alt}\x1b[0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b[?25h\r\n\x1b[2m── restored {} ──\x1b[0m{}",
+                "{leave_alt}\x1b[0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b[?25h\r\n\x1b[2m── restored {} ──\x1b[0m{}\x1b[H",
                 local_time(),
                 "\r\n".repeat(usize::from(rows))
             );
