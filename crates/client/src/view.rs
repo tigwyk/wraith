@@ -221,6 +221,22 @@ pub fn round_zoom(delta: f32) -> f32 {
     if d.abs() < 0.005 { 0.0 } else { d }
 }
 
+/// Where a tab dragged over the sidebar would land.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabDrop {
+    /// A workspace's row: at the end of its tabs.
+    Workspace(WorkspaceId),
+    /// A tab's row: just before that tab.
+    Before(TabId),
+}
+
+struct TabDrag {
+    tab: TabId,
+    /// Its place in the bar when the drag began, restored when the drag leaves the bar or is cancelled.
+    origin: usize,
+    over: Option<TabDrop>,
+}
+
 pub struct WindowView {
     geom: Geometry,
     snap: ModelSnapshot,
@@ -234,8 +250,8 @@ pub struct WindowView {
     dim_opacity: f32,
     double_click: Duration,
     drag: Option<Drag>,
-    /// The tab being dragged along the tab bar.
-    tab_drag: Option<TabId>,
+    /// The tab being dragged: along the tab bar (reorder) or over the sidebar (move tab).
+    tab_drag: Option<TabDrag>,
     sidebar_visible: bool,
     sidebar_cols: u16,
     hover: Hover,
@@ -1281,26 +1297,113 @@ impl WindowView {
     }
 
     pub fn start_tab_drag(&mut self, tab: TabId) {
-        self.tab_drag = Some(tab);
+        let origin = self.workspace.and_then(|w| self.snap.workspace(w)).and_then(|w| w.tabs.iter().position(|&t| t == tab));
+        self.tab_drag = origin.map(|origin| TabDrag { tab, origin, over: None });
+    }
+
+    /// A press on a tab listed in the sidebar; only this workspace's tabs are ours to move.
+    pub fn start_sidebar_tab_drag(&mut self, tab: TabId) {
+        if self.snap.tab(tab).is_some_and(|t| Some(t.workspace) == self.workspace) {
+            self.start_tab_drag(tab);
+        }
     }
 
     pub fn dragging_tab(&self) -> bool {
         self.tab_drag.is_some()
     }
 
-    /// Move the dragged tab to the slot under `x`; the bar shows it at once and the server is told.
-    pub fn drag_tab(&mut self, x: i32) -> Vec<ClientMsg> {
-        let (Some(tab), Some(ws)) = (self.tab_drag, self.workspace) else { return Vec::new() };
+    /// The pointer moved during a tab drag. Over the sidebar it picks a drop target (undoing any
+    /// reorder made on the way); elsewhere the tab takes the bar slot under `x`, shown at once and
+    /// sent to the server.
+    pub fn drag_tab(&mut self, x: i32, y: i32) -> Vec<ClientMsg> {
+        let Some(tab) = self.tab_drag.as_ref().map(|d| d.tab) else { return Vec::new() };
+        let quick = self.workspace.and_then(|w| self.snap.workspace(w)).is_some_and(|w| w.quick);
+        if !quick && self.sidebar_rect().is_some_and(|s| s.contains(x, y)) {
+            let over = self.sidebar_target(tab, x, y);
+            let msgs = self.restore_tab_order();
+            if let Some(d) = &mut self.tab_drag {
+                d.over = over;
+            }
+            return msgs;
+        }
+        if let Some(d) = &mut self.tab_drag {
+            d.over = None;
+        }
         let (rects, _) = self.tab_layout();
-        let Some(from) = rects.iter().position(|(t, _)| *t == tab) else { return Vec::new() };
-        let to = rects.iter().position(|(_, r)| x < r.x + r.w).unwrap_or(rects.len() - 1);
+        let to = rects.iter().position(|(_, r)| x < r.x + r.w).unwrap_or(rects.len().saturating_sub(1));
+        self.place_tab(tab, to)
+    }
+
+    /// The drop target under the pointer and whether it takes the tab (for the highlight and cursor).
+    pub fn tab_drop(&self) -> Option<(TabDrop, bool)> {
+        let d = self.tab_drag.as_ref()?;
+        d.over.map(|o| (o, self.accepts(d.tab, o)))
+    }
+
+    /// The button went up: move the tab to the target under the pointer, if it takes it.
+    pub fn drop_tab(&mut self) -> Vec<ClientMsg> {
+        let Some(d) = self.tab_drag.take() else { return Vec::new() };
+        let Some(over) = d.over.filter(|&o| self.accepts(d.tab, o)) else { return Vec::new() };
+        let (to, index) = match over {
+            TabDrop::Workspace(w) => (w, None),
+            TabDrop::Before(t) => {
+                let Some(to) = self.snap.tab(t).map(|t| t.workspace) else { return Vec::new() };
+                let tabs = self.snap.workspace(to).map(|w| w.tabs.as_slice()).unwrap_or_default();
+                let at = tabs.iter().position(|&x| x == t).unwrap_or(tabs.len());
+                // Within one workspace the server takes the tab out first, so later slots shift down.
+                let from = tabs.iter().position(|&x| x == d.tab);
+                (to, Some(if from.is_some_and(|f| f < at) { at - 1 } else { at }))
+            }
+        };
+        vec![ClientMsg::Model(ModelCmd::MoveTab { tab: d.tab, to, index })]
+    }
+
+    /// Esc during a tab drag: put the tab back where it started.
+    pub fn cancel_tab_drag(&mut self) -> Vec<ClientMsg> {
+        let msgs = self.restore_tab_order();
+        self.tab_drag = None;
+        msgs
+    }
+
+    fn sidebar_target(&self, tab: TabId, x: i32, y: i32) -> Option<TabDrop> {
+        let (rows, _, _) = self.sidebar_layout();
+        if let Some((w, _)) = rows.iter().find(|(_, r)| r.contains(x, y)) {
+            return Some(TabDrop::Workspace(*w));
+        }
+        let tabs = self.sidebar_tab_rects();
+        tabs.iter().find(|(t, r)| *t != tab && r.contains(x, y)).map(|(t, _)| TabDrop::Before(*t))
+    }
+
+    /// Refused: the quick terminal's workspace, one another window shows, and our own row when the
+    /// tab is its only one (it would have nowhere to go back to).
+    fn accepts(&self, tab: TabId, drop: TabDrop) -> bool {
+        let dest = match drop {
+            TabDrop::Workspace(w) => Some(w),
+            TabDrop::Before(t) => self.snap.tab(t).map(|t| t.workspace),
+        };
+        let Some(w) = dest.and_then(|d| self.snap.workspace(d)) else { return false };
+        let here = Some(w.id) == self.workspace;
+        !w.quick && (here || !w.attached) && !(here && w.tabs == [tab])
+    }
+
+    fn restore_tab_order(&mut self) -> Vec<ClientMsg> {
+        match self.tab_drag.as_ref() {
+            Some(d) => self.place_tab(d.tab, d.origin),
+            None => Vec::new(),
+        }
+    }
+
+    /// Put `tab` at bar slot `to` here at once and tell the server; nothing if it is already there.
+    fn place_tab(&mut self, tab: TabId, to: usize) -> Vec<ClientMsg> {
+        let Some(ws) = self.workspace else { return Vec::new() };
+        let Some(w) = self.snap.workspaces.iter_mut().find(|w| w.id == ws) else { return Vec::new() };
+        let Some(from) = w.tabs.iter().position(|&t| t == tab) else { return Vec::new() };
+        let to = to.min(w.tabs.len() - 1);
         if to == from {
             return Vec::new();
         }
-        if let Some(w) = self.snap.workspaces.iter_mut().find(|w| w.id == ws) {
-            w.tabs.retain(|&t| t != tab);
-            w.tabs.insert(to.min(w.tabs.len()), tab);
-        }
+        w.tabs.remove(from);
+        w.tabs.insert(to, tab);
         vec![ClientMsg::Model(ModelCmd::MoveTab { tab, to: ws, index: Some(to) })]
     }
 

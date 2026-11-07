@@ -579,17 +579,19 @@ impl Server {
     }
 
     fn model_cmd(&mut self, id: ClientId, cmd: ModelCmd) {
+        let follow = if let ModelCmd::MoveTab { to, .. } = cmd { Some(to) } else { None };
         match self.model.apply(cmd) {
             Ok(fx) => {
                 self.run_effects(fx);
-                self.after_model_change();
+                self.after_model_change(follow);
             }
             Err(e) => self.send(id, ServerMsg::Error(e)),
         }
     }
 
-    /// Windows whose workspace was deleted move to another one; everyone gets the new snapshot.
-    fn after_model_change(&mut self) {
+    /// Windows whose workspace was deleted move to another one (`follow`, where the last tab went,
+    /// if given); everyone gets the new snapshot.
+    fn after_model_change(&mut self, follow: Option<WorkspaceId>) {
         let lost: Vec<ClientId> = self
             .clients
             .iter()
@@ -605,7 +607,7 @@ impl Server {
                 let ws = self.model.quick_workspace();
                 self.take_workspace(id, ws);
             } else {
-                self.attach_window(id, None);
+                self.attach_window(id, follow.filter(|&w| self.model.has_workspace(w)));
             }
         }
         self.push_snapshot();
