@@ -1197,6 +1197,11 @@ impl WindowView {
         if mine && panes == 1 { ExitOut::CloseWindow(msgs) } else { ExitOut::ClosePane(msgs) }
     }
 
+    /// Another workspace no window shows: when ours closes, the server moves us there instead.
+    pub fn has_free_workspace(&self) -> bool {
+        self.snap.workspaces.iter().any(|w| Some(w.id) != self.workspace && !w.attached && !w.quick)
+    }
+
     pub fn pane_exit(&self, pane: PaneId) -> Option<u32> {
         self.snap.pane(pane).and_then(|p| p.exit)
     }

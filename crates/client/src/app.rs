@@ -1442,6 +1442,8 @@ impl App {
                         // The quick terminal hides; its empty workspace gets a new shell (spec §3.3).
                         if self.quick.is_some() {
                             crate::quick::hide(self);
+                        } else if self.view.has_free_workspace() {
+                            // Our workspace closes with its last pane; the server moves us to a free one.
                         } else {
                             self.detach_and_close();
                         }
