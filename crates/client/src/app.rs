@@ -1282,6 +1282,14 @@ impl App {
                 }
                 WM_SETTINGCHANGE => {
                     self.motion.on = crate::window::animations_enabled();
+                    // An installer changed PATH (or another variable): new shells get it, as in Windows Terminal.
+                    if lparam.0 != 0
+                        && unsafe { PCWSTR(lparam.0 as *const u16).to_string() }.is_ok_and(|s| s == "Environment")
+                        && let Some(fresh) = registry_env()
+                    {
+                        self.spawn_ctx.env = merge_env(&self.spawn_ctx.env, fresh);
+                        tracing::info!("environment reloaded from the registry");
+                    }
                 }
                 WM_CAPTURECHANGED => {
                     if self.view.dragging_tab() {
@@ -2629,4 +2637,46 @@ pub fn spawn_env() -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "TERM_PROGRAM").collect();
     env.push(("TERM_PROGRAM".into(), "wraith".into()));
     env
+}
+
+/// `old` with every variable `fresh` defines replaced; names compare case-insensitively, as on Windows.
+/// shortcut: a variable deleted from the registry stays until the window restarts; drop it if that matters.
+pub fn merge_env(old: &[(String, String)], fresh: Vec<(String, String)>) -> Vec<(String, String)> {
+    let fresh: Vec<_> = fresh.into_iter().filter(|(k, _)| !k.eq_ignore_ascii_case("TERM_PROGRAM")).collect();
+    let mut env: Vec<_> = old.iter().filter(|(k, _)| !fresh.iter().any(|(f, _)| f.eq_ignore_ascii_case(k))).cloned().collect();
+    env.extend(fresh);
+    env
+}
+
+/// The user's and the system's variables as the registry has them now (what Explorer gives a new program).
+pub fn registry_env() -> Option<Vec<(String, String)>> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+        let mut block = std::ptr::null_mut();
+        let made = CreateEnvironmentBlock(&mut block, Some(token), false);
+        let _ = CloseHandle(token);
+        made.ok()?;
+        // NAME=value strings, each NUL-terminated, the block ending with an empty one.
+        let mut vars = Vec::new();
+        let mut p = block as *const u16;
+        loop {
+            let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+            if len == 0 {
+                break;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+            // Hidden per-drive entries (`=C:=C:\...`) start with '='; skip them.
+            if let Some((k, v)) = s.split_once('=').filter(|(k, _)| !k.is_empty()) {
+                vars.push((k.to_string(), v.to_string()));
+            }
+            p = p.add(len + 1);
+        }
+        let _ = DestroyEnvironmentBlock(block);
+        Some(vars)
+    }
 }

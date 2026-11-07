@@ -217,6 +217,23 @@ fn shells_get_the_launching_windows_environment() {
 }
 
 #[test]
+fn an_environment_change_replaces_registry_variables_and_keeps_the_rest() {
+    use wraith_client::app::merge_env;
+    let v = |p: &[(&str, &str)]| p.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let old = v(&[("Path", "C:/old"), ("WRAITH_PIPE", "p"), ("TERM_PROGRAM", "wraith")]);
+    let mut got = merge_env(&old, v(&[("PATH", "C:/old;C:/omp"), ("TERM_PROGRAM", "x")]));
+    got.sort();
+    assert_eq!(got, v(&[("PATH", "C:/old;C:/omp"), ("TERM_PROGRAM", "wraith"), ("WRAITH_PIPE", "p")]));
+}
+
+#[test]
+fn the_registry_environment_has_a_path() {
+    let env = wraith_client::app::registry_env().expect("CreateEnvironmentBlock");
+    assert!(env.iter().any(|(k, v)| k.eq_ignore_ascii_case("PATH") && !v.is_empty()), "{env:?}");
+    assert!(env.iter().all(|(k, _)| !k.is_empty() && !k.starts_with('=')));
+}
+
+#[test]
 fn link_attach_window_and_open_a_tab() {
     let pipe = unique();
     let mut link = ServerLink::connect_with_env(&pipe, exe(), &layout_env()).unwrap();
