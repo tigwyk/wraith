@@ -130,6 +130,20 @@ fn close_last_tab_closes_workspace() {
 }
 
 #[test]
+fn default_names_take_the_lowest_free_number() {
+    let mut m = Model::new();
+    m.quick_workspace();
+    let names = |m: &Model| m.snapshot().workspaces.iter().map(|w| w.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&m), ["Workspace 1", "Quick"]);
+    let b = m.new_empty_workspace();
+    m.new_empty_workspace();
+    assert_eq!(names(&m), ["Workspace 1", "Quick", "Workspace 2", "Workspace 3"]);
+    m.apply(ModelCmd::CloseWorkspace(b)).unwrap();
+    m.new_empty_workspace();
+    assert_eq!(names(&m), ["Workspace 1", "Quick", "Workspace 3", "Workspace 2"]);
+}
+
+#[test]
 fn close_last_workspace_leaves_empty_default() {
     let mut m = Model::new();
     let ws = ws0(&m);

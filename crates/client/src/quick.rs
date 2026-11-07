@@ -109,9 +109,11 @@ use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATIO
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, MAPVK_VSC_TO_VK_EX, MapVirtualKeyW, RegisterHotKey, UnregisterHotKey};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GA_ROOTOWNER, GetAncestor, GetCursorPos, GetForegroundWindow, HWND_TOPMOST, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-    SetForegroundWindow, SetWindowPos, ShowWindow,
+    AllowSetForegroundWindow, FindWindowExW, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongW,
+    GetWindowThreadProcessId, HWND_TOPMOST, PostMessageW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowPos, ShowWindow, WM_HOTKEY, WS_EX_TOOLWINDOW,
 };
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::core::HSTRING;
 use wraith_config::{Config, QuickScreen};
 
@@ -128,13 +130,15 @@ pub(crate) struct State {
     target: Rect,
     registered: Option<Trigger>,
     dpi: u32,
+    /// Asked the server for the quick workspace: deferred to the first summon so it only exists once used.
+    pub(crate) attached: bool,
     /// Held for the process's life: one quick terminal per user and pipe.
     _mutex: HANDLE,
 }
 
 impl State {
     pub(crate) fn new(mutex: HANDLE, dpi: u32) -> State {
-        State { shown: false, slide: None, target: Rect::default(), registered: None, dpi, _mutex: mutex }
+        State { shown: false, slide: None, target: Rect::default(), registered: None, dpi, attached: false, _mutex: mutex }
     }
 
     /// Hidden with nothing moving: the process may sleep until a message arrives.
@@ -261,6 +265,9 @@ fn show(app: &mut App) {
     }
     // Shown before the first frame: a hidden quick terminal renders nothing.
     if let Some(st) = app.quick.as_mut() {
+        if !std::mem::replace(&mut st.attached, true) {
+            app.link.send(wraith_proto::wire::ClientMsg::AttachQuick);
+        }
         st.shown = true;
         st.slide = animate.then(|| (Instant::now(), true));
     }
@@ -308,6 +315,26 @@ pub(crate) fn hide(app: &mut App) {
         }
         app.sync_focus();
     }
+}
+
+/// From a normal window: bring up the running quick terminal (it holds the quick workspace).
+/// False when there is none, so the caller can attach the workspace itself.
+pub(crate) fn summon_other() -> bool {
+    let mut h = None;
+    // The quick terminal is the only `WraithWindow` with `WS_EX_TOOLWINDOW`.
+    while let Ok(w) = unsafe { FindWindowExW(None, h, windows::core::w!("WraithWindow"), None) } {
+        if unsafe { GetWindowLongW(w, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+            let mut pid = 0;
+            unsafe {
+                GetWindowThreadProcessId(w, Some(&mut pid));
+                // We are foreground (the user just clicked us), so we may hand foreground over.
+                let _ = AllowSetForegroundWindow(pid);
+                return PostMessageW(Some(w), WM_HOTKEY, WPARAM(0), LPARAM(0)).is_ok();
+            }
+        }
+        h = Some(w);
+    }
+    false
 }
 
 /// `WM_HOTKEY` (spec §3.3).

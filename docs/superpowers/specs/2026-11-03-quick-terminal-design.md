@@ -56,7 +56,7 @@ These follow Ghostty's names and value syntax.
 
 - **Start.** `wraith.exe --quick-terminal` is a client process like any other. Every normal client launch starts it after attaching to the server, when the config has a global toggle and no quick-terminal process holds the mutex. It is started detached, outside the client's job, the same way `link::spawn_server` starts the server, with the same environment rules.
 - **One per user and pipe.** It is single-instance through a named mutex, `Local\wraith-quick-<hash of the pipe name>`. A second `--quick-terminal` that cannot take the mutex exits at once. Private test pipes therefore get their own quick terminal.
-- **Start-up.** It creates the window, the GPU device, the fonts, the swap chain and the server link as `app::run` does, then leaves the window hidden and registers the hotkey with `RegisterHotKey(hwnd, 1, ...)`.
+- **Start-up.** It creates the window, the GPU device, the fonts, the swap chain and the server link as `app::run` does, then leaves the window hidden and registers the hotkey with `RegisterHotKey(hwnd, 1, ...)`. It sends `AttachQuick` only on its first show, so the quick workspace does not exist until the quick terminal is first used.
 - **Hotkey taken.** If `RegisterHotKey` fails, it shows one Windows notification through the existing notifier: "Wraith quick terminal: <key> is in use by another app. Set another key with `keybind = global:...=toggle_quick_terminal`." It keeps running and tries again on each config reload.
 - **Exit.** It exits when:
   - the server stops or is lost, the same as a normal window today;
@@ -93,7 +93,7 @@ Also:
 - **The flag.** `Workspace` gains `quick: bool`, with `#[serde(default)]` so older saved layouts still load. The default name is "Quick".
 - **The protocol.** A new message, `ClientMsg::AttachQuick`, asks for the quick workspace. `AttachWindow` is unchanged. The wire protocol version goes up by one (4 to 5), and the existing version-mismatch prompt handles an old server.
 - **Server rules:**
-  - `AttachQuick` takes the workspace flagged `quick`, or creates one with the flag set.
+  - `AttachQuick` takes the workspace flagged `quick`, or creates one with the flag set. Unnamed normal workspaces take the lowest free "Workspace N".
   - `most_recent_detached()` skips quick workspaces, so a normal window never picks it up by itself.
   - Asking for the quick workspace by id from a normal window works under the existing rules: it is refused while the quick terminal holds it, and allowed when the quick terminal is not running.
   - The flag is saved with the layout, so the quick workspace and its tabs survive a server restart like any workspace.
