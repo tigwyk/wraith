@@ -1013,3 +1013,28 @@ fn quick_workspace_is_refused_while_the_quick_terminal_holds_it() {
     assert!(!moved, "the quick terminal keeps its workspace");
     assert_eq!(q.ws, wq);
 }
+
+/// A window taller than the saved pane must not pull the old screen and the restore marker back into
+/// view: the first resize after launch used to flash them for a frame.
+#[test]
+fn growing_a_restored_pane_shows_no_old_screen() {
+    let path = layout_path("restore-grow");
+    let pipe = unique();
+    let pane = pane_with_history(&path, &pipe, "M5-GROW");
+    let h = restart_server_at(&pipe, &path);
+    let mut c = Client::gui(&pipe);
+    c.attach_window(None);
+    c.subscribe(&[pane]);
+    c.send(ClientMsg::Cmd { pane, cmd: PaneCmd::Resize { cols: 100, rows: 40, cell_w_px: 9, cell_h_px: 18 } });
+    let mut seen = None;
+    c.pump_until(pane, secs(5), |text, _| {
+        if text.contains("restored") {
+            seen = Some(text.to_string());
+        }
+        seen.is_some()
+    });
+    assert!(seen.is_none(), "old screen pulled into view after a grow:
+{}", seen.unwrap_or_default());
+    drop(c);
+    stop_and_join(&pipe, h);
+}
