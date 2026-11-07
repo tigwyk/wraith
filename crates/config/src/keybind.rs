@@ -194,17 +194,17 @@ pub fn parse_keybind(value: &str) -> Result<Keybind, String> {
     Ok(Keybind { trigger, action: parse_action(action.trim())? })
 }
 
-/// The part of `keybind = global:...` after `global:`. `Some` for `toggle_quick_terminal`, `None` for
-/// `unbind` (quick-terminal spec §2); a global binding takes one key, not a sequence.
-pub fn parse_global(value: &str) -> Result<Option<Trigger>, String> {
+/// The part of `keybind = global:...` after `global:`: its key, and true for `toggle_quick_terminal`,
+/// false for `unbind` (quick-terminal spec §2); a global binding takes one key, not a sequence.
+pub fn parse_global(value: &str) -> Result<(Trigger, bool), String> {
     let (trig, action) = value.rsplit_once('=').ok_or_else(|| format!("expected `trigger=action`, got `{value}`"))?;
     if trig.contains('>') {
         return Err("a global keybind takes one key".into());
     }
     let trigger = parse_trigger(trig)?;
     match action.trim() {
-        "toggle_quick_terminal" => Ok(Some(trigger)),
-        "unbind" => Ok(None),
+        "toggle_quick_terminal" => Ok((trigger, true)),
+        "unbind" => Ok((trigger, false)),
         _ => Err("`global:` only supports toggle_quick_terminal".into()),
     }
 }

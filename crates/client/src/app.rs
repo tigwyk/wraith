@@ -297,7 +297,7 @@ pub(crate) struct App {
     link: ServerLink,
     pub(crate) view: WindowView,
     pub(crate) spawn_ctx: SpawnCtx,
-    pipe_name: String,
+    pub(crate) pipe_name: String,
     /// Set by the wake thread when the server's pipe closes (spec §8).
     server_lost: Arc<AtomicBool>,
     server_stopped: bool,
@@ -2478,11 +2478,8 @@ pub fn run(quick: bool) -> Result<()> {
     let server_lost = Arc::new(AtomicBool::new(false));
     start_forwarder(&link, tx.clone(), woken.clone(), server_lost.clone(), win.hwnd());
     link.send(if quick { ClientMsg::AttachQuick } else { ClientMsg::AttachWindow { workspace: None } });
-    if !quick && config.quick_terminal_hotkey.is_some() && !crate::quick::running(&pipe_name) {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wraith.exe"));
-        if let Err(e) = crate::link::spawn_detached(&exe, "--quick-terminal", &pipe_name, &spawn_env()) {
-            tracing::warn!("quick terminal: start: {e}");
-        }
+    if !quick && config.quick_terminal_hotkey.is_some() {
+        crate::quick::ensure_running(&pipe_name);
     }
     let quick_state = mutex.map(|m| crate::quick::State::new(m, win.dpi()));
 

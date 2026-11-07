@@ -250,7 +250,7 @@ impl Default for Config {
             sidebar_width: 24,
             unfocused_split_opacity: 0.85,
             image_storage_limit: 320 * 1024 * 1024,
-            quick_terminal_hotkey: keybind::parse_global("super+backquote=toggle_quick_terminal").expect("default hotkey"),
+            quick_terminal_hotkey: Some(keybind::parse_global("super+backquote=toggle_quick_terminal").expect("default hotkey").0),
             quick_terminal_position: QuickPosition::Top,
             quick_terminal_size: QuickSize { primary: Dim::Percent(40.0), secondary: None },
             quick_terminal_screen: QuickScreen::Main,
