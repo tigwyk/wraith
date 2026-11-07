@@ -538,6 +538,26 @@ fn closing_the_last_tab_moves_the_window_to_a_workspace() {
     assert!(a.snap.workspace(ws).is_none());
 }
 
+#[test]
+fn moving_the_last_tab_takes_the_window_with_it() {
+    let pipe = server();
+    let mut a = Client::gui(&pipe);
+    let home = a.attach_window(None);
+    let (tab, _) = a.new_tab("cmd.exe /k");
+    let new_ws = |a: &mut Client, name: &str| {
+        a.model(ModelCmd::NewWorkspace { name: Some(name.into()), root_dir: None, profile: "test".into(), layout: "single".into(), spawn: spawn("cmd.exe /k") }).unwrap();
+        a.snap.workspaces.iter().find(|w| w.name == name).unwrap().id
+    };
+    let (recent, dest) = (new_ws(&mut a, "recent"), new_ws(&mut a, "dest"));
+    // Visit `recent` so it is the workspace a lost window would be given by default.
+    a.attach_window(Some(recent));
+    a.attach_window(Some(home));
+    a.model(ModelCmd::MoveTab { tab, to: dest, index: None }).unwrap();
+    assert!(a.snap.workspace(home).is_none());
+    assert_eq!(a.ws, dest, "the window follows its last tab");
+    assert!(a.snap.workspace(dest).is_some_and(|w| w.attached && w.active_tab == Some(tab)));
+}
+
 fn stop_and_join(pipe: &str, handle: thread::JoinHandle<std::io::Result<()>>) {
     let mut c = Client::connect(pipe, ClientKind::Cli);
     c.send(ClientMsg::ServerStop);

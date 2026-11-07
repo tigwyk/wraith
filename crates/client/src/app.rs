@@ -11,7 +11,7 @@ use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCMOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
     WA_INACTIVE, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_HOTKEY,
     AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
+    GetCursorPos, HTCLIENT, WM_SETTINGCHANGE, IDC_ARROW, IDC_IBEAM, IDC_NO, IDC_SIZENS, IDC_SIZEWE, LoadCursorW, SetCursor, WM_CAPTURECHANGED, WM_SETCURSOR,
 };
 use windows::core::{PCWSTR, Result};
 use wraith_config::{Action, Config, Keybind, RightClick, Trigger, TriggerKey};
@@ -38,7 +38,7 @@ use crate::paint::Painter;
 use crate::titlebar::{self, Caption, NcGeom};
 use crate::new_tab_menu::{MenuDo, MenuHit, MenuOutcome, MenuRow, letter_tile, menu_action};
 use crate::palette::Mode;
-use crate::view::{ExitOut, Geometry, Look, Out, SpawnCtx, Ui, WindowView};
+use crate::view::{ExitOut, Geometry, Look, Out, SpawnCtx, TabDrop, Ui, WindowView};
 use crate::settings::{Edit, SettingsHit, SettingsView, Sources};
 
 use crate::atlas::GlyphAtlas;
@@ -789,6 +789,18 @@ impl App {
     }
 
     /// Close one tab, asking first if a shell in it is still running.
+    /// Esc or a lost capture during a tab drag: the tab goes back where it started.
+    fn cancel_tab_drag(&mut self) {
+        let msgs = self.view.cancel_tab_drag();
+        self.send_all(msgs);
+        self.view.end_drag();
+        self.view.release();
+        self.dirty = true;
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+    }
+
     fn close_tab(&mut self, tab: TabId) {
         let running = self.view.snapshot().tab(tab).is_some_and(|t| t.root.leaves().iter().any(|p| self.view.pane_exit(*p).is_none()));
         if !running || self.confirm("A process is still running in this tab. End it?") {
@@ -866,11 +878,13 @@ impl App {
         if self.view.dragging() || self.view.dragging_tab() {
             match msg {
                 WM_MOUSEMOVE => {
-                    let msgs = if self.view.dragging_tab() { self.view.drag_tab(x) } else { self.view.drag_divider(x, y) };
+                    let msgs = if self.view.dragging_tab() { self.view.drag_tab(x, y) } else { self.view.drag_divider(x, y) };
                     self.send_all(msgs);
                     self.dirty = true;
                 }
                 WM_LBUTTONUP => {
+                    let msgs = self.view.drop_tab();
+                    self.send_all(msgs);
                     self.view.end_drag();
                     self.view.release();
                     self.dirty = true;
@@ -951,7 +965,15 @@ impl App {
                 Hit::Gear => return self.toggle_settings(),
                 Hit::SidebarTab(t) => {
                     let msgs = self.view.tab_click(t);
-                    return self.send_all(msgs);
+                    self.send_all(msgs);
+                    // A press on one of this workspace's tabs may become a drag onto another workspace.
+                    self.view.start_sidebar_tab_drag(t);
+                    if self.view.dragging_tab() {
+                        unsafe {
+                            SetCapture(self.win.hwnd());
+                        }
+                    }
+                    return;
                 }
                 Hit::Agent(p) => {
                     let msgs = self.view.focus_pane(p);
@@ -1107,6 +1129,10 @@ impl App {
                     unsafe {
                         let _ = GetKeyboardState(&mut state);
                     }
+                    if vk == VK_ESCAPE.0 && self.view.dragging_tab() {
+                        self.cancel_tab_drag();
+                        return Some(LRESULT(0));
+                    }
                     if msg == WM_SYSKEYDOWN && vk == VK_F4.0 {
                         return None; // Alt+F4 closes the window as usual.
                     }
@@ -1229,6 +1255,7 @@ impl App {
                     let hit = self.view.hit(pt.x, pt.y);
                     let tracking = matches!(hit, Hit::Pane(p) if self.view.panes.get(&p).is_some_and(|v| v.mouse_tracking));
                     let id = match chrome::cursor_for(&hit, &self.view.dividers(), tracking) {
+                        _ if matches!(self.view.tab_drop(), Some((_, false))) => IDC_NO,
                         Cursor::Arrow => IDC_ARROW,
                         Cursor::IBeam => IDC_IBEAM,
                         Cursor::SizeWE => IDC_SIZEWE,
@@ -1245,6 +1272,9 @@ impl App {
                     self.motion.on = crate::window::animations_enabled();
                 }
                 WM_CAPTURECHANGED => {
+                    if self.view.dragging_tab() {
+                        self.cancel_tab_drag();
+                    }
                     if self.view.pressed().is_some() {
                         self.view.release();
                         self.dirty = true;
@@ -1848,11 +1878,15 @@ impl App {
             let (rects, new_row) = self.view.workspace_rects();
             let rows = self.view.sidebar_rows();
             let chip = m.h as i32 / 2;
+            let drop = self.view.tab_drop().filter(|&(_, ok)| ok).map(|(d, _)| d);
             for ((_, r), row) in rects.iter().zip(&rows) {
                 if row.current {
                     p.rect(*r, col.tab_active_bg, 1.0);
                 } else if let Some(c) = wash(&Hit::Workspace(row.id)) {
                     p.rect(*r, c, 1.0);
+                }
+                if drop == Some(TabDrop::Workspace(row.id)) {
+                    p.rect(*r, accent, 0.3);
                 }
                 let c = ((row.color >> 16) as u8, (row.color >> 8) as u8, row.color as u8);
                 p.rect(Rect { x: r.x + pad_x, y: r.y + (r.h - chip) / 2, w: chip, h: chip }, c, 1.0);
@@ -1880,6 +1914,9 @@ impl App {
                     p.rect(r, col.tab_active_bg, 1.0);
                 } else if let Some(c) = wash(&Hit::SidebarTab(t)) {
                     p.rect(r, c, 1.0);
+                }
+                if drop == Some(TabDrop::Before(t)) {
+                    p.rect(Rect { x: r.x, y: r.y - 1, w: r.w, h: 2 }, accent, 1.0);
                 }
                 let title = snap.tab_title(t);
                 let label = agent.map_or(title.clone(), |(icon, _)| format!("{icon} {title}"));

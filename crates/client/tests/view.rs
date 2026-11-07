@@ -314,13 +314,14 @@ fn dragging_a_tab_over_another_reorders_once() {
     v.on_snapshot(snap(10), &ctx());
     let (tabs, _) = v.tab_layout();
     let over_second = tabs[1].1.x + tabs[1].1.w / 2;
+    let y = tabs[0].1.y + 3;
     v.start_tab_drag(10);
-    assert!(v.drag_tab(tabs[0].1.x + 3).is_empty(), "still over its own slot");
-    assert_eq!(v.drag_tab(over_second), vec![ClientMsg::Model(ModelCmd::MoveTab { tab: 10, to: 1, index: Some(1) })]);
-    assert!(v.drag_tab(over_second + 2).is_empty(), "the move is shown at once, so it is not sent again");
+    assert!(v.drag_tab(tabs[0].1.x + 3, y).is_empty(), "still over its own slot");
+    assert_eq!(v.drag_tab(over_second, y), vec![ClientMsg::Model(ModelCmd::MoveTab { tab: 10, to: 1, index: Some(1) })]);
+    assert!(v.drag_tab(over_second + 2, y).is_empty(), "the move is shown at once, so it is not sent again");
     assert_eq!(v.tab_layout().0.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![11, 10]);
-    v.end_drag();
-    assert!(v.drag_tab(0).is_empty(), "no drag after release");
+    assert!(v.drop_tab().is_empty(), "a reorder is already sent; release adds nothing");
+    assert!(v.drag_tab(0, y).is_empty(), "no drag after release");
 }
 
 #[test]
@@ -494,6 +495,125 @@ fn sidebar_rows_list_workspaces() {
     assert!(rows.iter().all(|r| !r.attention), "no agents, no dots");
     assert!(rows[0].current && !rows[1].current);
     assert_eq!(rows[1].name, "web");
+}
+
+// ---- Move tab by drag (into the sidebar) ----
+
+use wraith_client::view::TabDrop;
+
+fn mv(tab: TabId, to: WorkspaceId, index: Option<usize>) -> Vec<ClientMsg> {
+    vec![ClientMsg::Model(ModelCmd::MoveTab { tab, to, index })]
+}
+
+fn mid(r: Rect) -> (i32, i32) {
+    (r.x + r.w / 2, r.y + r.h / 2)
+}
+
+fn row(v: &WindowView, id: WorkspaceId) -> (i32, i32) {
+    mid(v.workspace_rects().0.into_iter().find(|(w, _)| *w == id).unwrap().1)
+}
+
+fn tab_row(v: &WindowView, id: TabId) -> (i32, i32) {
+    mid(v.sidebar_tab_rects().into_iter().find(|(t, _)| *t == id).unwrap().1)
+}
+
+/// `three_workspaces` with tab 12 = [4] in workspace 2.
+fn with_tab_in_web() -> ModelSnapshot {
+    let mut s = three_workspaces();
+    s.workspaces[1].tabs = vec![12];
+    s.workspaces[1].active_tab = Some(12);
+    s.tabs.push(Tab { workspace: 2, ..tab(12, leaf(4), 4) });
+    s.panes.push(meta(4, None, "pwsh", None));
+    s
+}
+
+#[test]
+fn dragging_a_tab_onto_a_workspace_row_moves_it_there() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let (tabs, _) = v.tab_layout();
+    let bar_y = tabs[0].1.y + 3;
+    v.start_tab_drag(10);
+    assert_eq!(v.drag_tab(tabs[1].1.x + tabs[1].1.w / 2, bar_y), mv(10, 1, Some(1)), "over the bar it reorders");
+    let (x, y) = row(&v, 2);
+    assert_eq!(v.drag_tab(x, y), mv(10, 1, Some(0)), "over the sidebar the reorder is undone");
+    assert_eq!(v.tab_drop(), Some((TabDrop::Workspace(2), true)));
+    assert_eq!(v.drop_tab(), mv(10, 2, None), "a workspace row takes it at the end");
+    assert!(!v.dragging_tab());
+}
+
+#[test]
+fn dropping_on_a_sidebar_tab_row_inserts_before_that_tab() {
+    let mut v = with_sidebar();
+    v.on_snapshot(with_tab_in_web(), &ctx());
+    v.start_tab_drag(10);
+    let (x, y) = tab_row(&v, 12);
+    assert!(v.drag_tab(x, y).is_empty());
+    assert_eq!(v.tab_drop(), Some((TabDrop::Before(12), true)));
+    assert_eq!(v.drop_tab(), mv(10, 2, Some(0)));
+}
+
+#[test]
+fn a_sidebar_tab_of_this_workspace_can_be_dragged_and_reordered() {
+    let mut v = with_sidebar();
+    v.on_snapshot(with_tab_in_web(), &ctx());
+    v.start_sidebar_tab_drag(12);
+    assert!(!v.dragging_tab(), "another workspace's tab is not this window's to move");
+    v.start_sidebar_tab_drag(11);
+    let (x, y) = tab_row(&v, 10);
+    v.drag_tab(x, y);
+    assert_eq!(v.drop_tab(), mv(11, 1, Some(0)));
+}
+
+#[test]
+fn refused_rows_take_no_drop() {
+    let mut v = with_sidebar();
+    let mut s = with_tab_in_web();
+    s.workspaces[1].attached = true; // another window shows "web"
+    s.workspaces[2].quick = true;
+    v.on_snapshot(s, &ctx());
+    v.start_tab_drag(10);
+    for (target, (x, y)) in [(TabDrop::Workspace(2), row(&v, 2)), (TabDrop::Before(12), tab_row(&v, 12)), (TabDrop::Workspace(3), row(&v, 3))] {
+        v.drag_tab(x, y);
+        assert_eq!(v.tab_drop(), Some((target, false)));
+    }
+    assert!(v.drop_tab().is_empty());
+
+    // The source's own row, when the dragged tab is its only one.
+    let mut s = three_workspaces();
+    s.workspaces[0].tabs = vec![11];
+    s.tabs.retain(|t| t.id == 11);
+    v.on_snapshot(s, &ctx());
+    v.start_tab_drag(11);
+    let (x, y) = row(&v, 1);
+    v.drag_tab(x, y);
+    assert_eq!(v.tab_drop(), Some((TabDrop::Workspace(1), false)));
+    let (x, y) = row(&v, 2);
+    v.drag_tab(x, y);
+    assert_eq!(v.tab_drop(), Some((TabDrop::Workspace(2), true)), "its last tab may still go elsewhere");
+}
+
+#[test]
+fn escape_cancels_a_tab_drag_and_restores_the_order() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    let (tabs, _) = v.tab_layout();
+    v.start_tab_drag(10);
+    v.drag_tab(tabs[1].1.x + tabs[1].1.w / 2, tabs[1].1.y + 3);
+    assert_eq!(v.cancel_tab_drag(), mv(10, 1, Some(0)));
+    assert!(!v.dragging_tab());
+    assert!(v.drop_tab().is_empty());
+}
+
+#[test]
+fn releasing_off_any_target_moves_nothing() {
+    let mut v = with_sidebar();
+    v.on_snapshot(three_workspaces(), &ctx());
+    v.start_tab_drag(10);
+    let (_, new_ws) = v.workspace_rects();
+    v.drag_tab(new_ws.x + 4, new_ws.y + new_ws.h + 40);
+    assert_eq!(v.tab_drop(), None);
+    assert!(v.drop_tab().is_empty());
 }
 
 // ---- Task 10: command palette and workspace picker in the view ----
