@@ -397,3 +397,13 @@ fn global_keybind_sets_the_hotkey() {
     let (_, d) = load_with_diags("keybind = ctrl+a=toggle_quick_terminal");
     assert!(d.iter().any(|d| d.message.contains("global:")), "{d:?}");
 }
+
+#[test]
+fn unbinding_another_global_key_keeps_the_quick_hotkey() {
+    let moved = "keybind = global:ctrl+shift+f12=toggle_quick_terminal\n";
+    let c = load_str(&format!("{moved}keybind = global:super+backquote=unbind\n"));
+    assert!(c.quick_terminal_hotkey.is_some());
+    assert_eq!(c.quick_terminal_hotkey, load_str(moved).quick_terminal_hotkey);
+    // Unbinding the hotkey itself still turns it off.
+    assert_eq!(load_str(&format!("{moved}keybind = global:ctrl+shift+f12=unbind\n")).quick_terminal_hotkey, None);
+}

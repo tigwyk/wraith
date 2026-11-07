@@ -187,6 +187,6 @@ fn new_defaults_bound() {
 #[test]
 fn parse_global_rejects_sequences() {
     assert!(wraith_config::parse_global("ctrl+a>ctrl+b=toggle_quick_terminal").is_err());
-    assert!(wraith_config::parse_global("super+backquote=toggle_quick_terminal").unwrap().is_some());
-    assert_eq!(wraith_config::parse_global("super+backquote=unbind"), Ok(None));
+    assert!(wraith_config::parse_global("super+backquote=toggle_quick_terminal").unwrap().1);
+    assert!(!wraith_config::parse_global("super+backquote=unbind").unwrap().1);
 }

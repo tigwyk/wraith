@@ -372,14 +372,32 @@ pub(crate) fn replace(app: &mut App) {
 }
 
 /// After a config reload (spec §2): no hotkey left ends the process; a new one is registered.
+/// Start the `--quick-terminal` process for `pipe` unless one is running.
+pub(crate) fn ensure_running(pipe: &str) {
+    if running(pipe) {
+        return;
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wraith.exe"));
+    if let Err(e) = crate::link::spawn_detached(&exe, "--quick-terminal", pipe, &crate::app::spawn_env()) {
+        tracing::warn!("quick terminal: start: {e}");
+    }
+}
+
 pub(crate) fn on_reload(app: &mut App, old: &Config) {
-    let Some(st) = app.quick.as_ref() else { return };
+    if app.quick.is_none() {
+        // A normal window: a hotkey added since launch needs the quick terminal started.
+        if app.config.quick_terminal_hotkey.is_some() && old.quick_terminal_hotkey.is_none() {
+            ensure_running(&app.pipe_name);
+        }
+        return;
+    }
     if app.config.quick_terminal_hotkey.is_none() {
         tracing::info!("quick terminal: no global toggle left; exiting");
         app.quit = true;
         return;
     }
-    if st.registered.as_ref() != app.config.quick_terminal_hotkey.as_ref() {
+    // Only a changed hotkey: a key Windows refused would toast "in use" again on every reload.
+    if old.quick_terminal_hotkey != app.config.quick_terminal_hotkey {
         register(app);
     }
     let placement = |c: &Config| (c.quick_terminal_position, c.quick_terminal_size.clone(), c.quick_terminal_screen);

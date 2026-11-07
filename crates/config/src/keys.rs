@@ -185,7 +185,12 @@ pub fn apply(c: &mut Config, key: &str, value: &str) -> Result<(), String> {
         "image-storage-limit" => set!(image_storage_limit, |v: &str| v.parse::<u64>().map_err(|_| bad(v))),
         "keybind" => {
             if let Some(global) = value.strip_prefix("global:") {
-                c.quick_terminal_hotkey = crate::keybind::parse_global(global)?;
+                match crate::keybind::parse_global(global)? {
+                    (t, true) => c.quick_terminal_hotkey = Some(t),
+                    // Unbinding another key leaves the quick terminal's hotkey alone.
+                    (t, false) if c.quick_terminal_hotkey.as_ref() == Some(&t) => c.quick_terminal_hotkey = None,
+                    (_, false) => {}
+                }
             } else {
                 if value.rsplit_once('=').is_some_and(|(_, a)| a.trim() == "toggle_quick_terminal") {
                     return Err("toggle_quick_terminal needs `global:`".into());
