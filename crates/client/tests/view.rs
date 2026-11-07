@@ -309,6 +309,18 @@ fn clean_exit_of_the_windows_last_pane_closes_the_window() {
 }
 
 #[test]
+fn a_free_workspace_has_no_window_and_is_not_ours_or_the_quick_one() {
+    let mut v = view(); // shows workspace 1
+    let mut s = three_workspaces(); // 1 (ours), web (2), infra (3), both detached
+    v.on_snapshot(s.clone(), &ctx());
+    assert!(v.has_free_workspace());
+    s.workspaces[1].attached = true;
+    s.workspaces[2].quick = true;
+    v.on_snapshot(s, &ctx());
+    assert!(!v.has_free_workspace(), "web has a window, infra is the quick workspace");
+}
+
+#[test]
 fn dragging_a_tab_over_another_reorders_once() {
     let mut v = view();
     v.on_snapshot(snap(10), &ctx());
