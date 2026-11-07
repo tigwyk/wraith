@@ -320,12 +320,15 @@ impl ModelSnapshot {
         self.panes.iter().find(|p| p.id == id)
     }
 
-    /// The tab's name: its override, else the focused pane's title, else "shell".
+    /// The tab's name: its override, else the focused pane's title, else its profile's name (as in
+    /// Windows Terminal, for shells that never set a title), else "shell".
     pub fn tab_title(&self, id: TabId) -> String {
         let Some(t) = self.tab(id) else { return "shell".into() };
+        let pane = self.pane(t.focused);
         t.title_override
             .clone()
-            .or_else(|| self.pane(t.focused).map(|p| p.title.clone()).filter(|s| !s.is_empty()))
+            .or_else(|| pane.map(|p| p.title.clone()).filter(|s| !s.is_empty()))
+            .or_else(|| pane.map(|p| p.profile.clone()).filter(|s| !s.is_empty()))
             .unwrap_or_else(|| "shell".into())
     }
 }
