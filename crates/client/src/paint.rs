@@ -39,6 +39,23 @@ impl Painter<'_> {
         self.text_in(gpu, atlas, fonts, 0, x, y, s, rgb, alpha)
     }
 
+    /// Draw the first glyph of `s` with its ink centered in `r`; for icons whose fallback face doesn't fill a cell.
+    #[allow(clippy::too_many_arguments, reason = "one glyph's full input")]
+    pub fn icon(&mut self, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, r: Rect, s: &str, rgb: Rgb, alpha: f32) {
+        let Some(g) = fonts.shape(s, StyleFlags(0)).into_iter().next() else { return };
+        let e = atlas.get(gpu, fonts, GlyphKey { font: 0, face: g.face, glyph: g.glyph, subpx: 0 });
+        if e.w == 0 {
+            return;
+        }
+        self.q.push(Quad {
+            pos: [(r.x + (r.w - i32::from(e.w)) / 2) as f32, (r.y + (r.h - i32::from(e.h)) / 2) as f32],
+            size: [f32::from(e.w), f32::from(e.h)],
+            uv: e.uv,
+            color: color(rgb, alpha),
+            kind: if e.color { 2 } else { 1 },
+        });
+    }
+
     /// `text` in `fonts`, which is table entry `font` (a pane's font, for IME preedit).
     #[allow(clippy::too_many_arguments, reason = "one text run's full input")]
     pub fn text_in(&mut self, gpu: &Gpu, atlas: &mut GlyphAtlas, fonts: &FontStack, font: FontId, x: i32, y: i32, s: &str, rgb: Rgb, alpha: f32) -> i32 {
