@@ -1860,7 +1860,7 @@ impl App {
             p.rect(gear, c, 1.0);
         }
         let gc = if self.view.settings().is_some() { accent } else { chrome::mix(col.bar_fg_dim, col.bar_fg, lit(&Hit::Gear)) };
-        p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), gear.x + (gear.w - m.w as i32) / 2, ty, "⚙", gc, 1.0);
+        p.icon(&self.gpu, &mut self.atlas, self.fonts.get(0), gear, "⚙", gc, 1.0);
         // Caption buttons, drawn like Windows 11's: a light wash on hover, red behind close.
         let glyph = (10 * self.win.dpi() / 96) as i32;
         let maximized = self.win.is_maximized();
