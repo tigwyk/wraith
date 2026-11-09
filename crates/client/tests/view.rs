@@ -660,6 +660,39 @@ fn palette_opens_filters_and_runs_an_action() {
 }
 
 #[test]
+fn rename_starts_from_the_current_name_and_sends_the_new_one() {
+    let mut v = view();
+    v.on_snapshot(snap(10), &ctx());
+    v.action(Action::RenameWorkspace, &ctx());
+    assert_eq!(v.palette().unwrap().query, "w");
+    v.palette_key(&key(KeyCode::Backspace), &ctx());
+    type_all(&mut v, " api ");
+    let out = v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap();
+    assert!(v.palette().is_none());
+    assert_eq!(out.msgs, vec![ClientMsg::Model(ModelCmd::RenameWorkspace(1, "api".into()))], "trimmed");
+    for typed in ["", "   "] {
+        v.open_rename(1);
+        v.palette_key(&key(KeyCode::Backspace), &ctx());
+        type_all(&mut v, typed);
+        assert!(v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap().msgs.is_empty(), "blank {typed:?} keeps the name");
+    }
+    v.open_rename(1);
+    assert!(v.palette_key(&key(KeyCode::Enter), &ctx()).unwrap().msgs.is_empty(), "unchanged sends nothing");
+}
+
+#[test]
+fn a_double_click_on_one_workspace_row_is_a_double_click() {
+    use std::time::Instant;
+    let mut v = view();
+    let t = Instant::now();
+    assert!(!v.workspace_double_click(2, t));
+    assert!(v.workspace_double_click(2, t + Duration::from_millis(100)));
+    assert!(!v.workspace_double_click(2, t + Duration::from_millis(200)), "a third press starts over");
+    assert!(!v.workspace_double_click(3, t + Duration::from_millis(250)), "another row");
+    assert!(!v.workspace_double_click(3, t + Duration::from_secs(2)), "too slow");
+}
+
+#[test]
 fn palette_hands_every_action_to_the_app() {
     // The app runs the ones that need its fonts, clipboard and config, and passes the rest to the view,
     // so no list of app-level actions has to be kept in step here.

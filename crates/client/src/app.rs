@@ -970,6 +970,11 @@ impl App {
             }
             match hit {
                 Hit::Workspace(w) => {
+                    if self.view.workspace_double_click(w, Instant::now()) {
+                        self.view.open_rename(w);
+                        self.dirty = true;
+                        return;
+                    }
                     let msgs = self.view.workspace_click(w);
                     return self.send_all(msgs);
                 }
@@ -2193,6 +2198,7 @@ impl App {
                 Mode::Palette => "› ",
                 Mode::Picker => "Workspace › ",
                 Mode::MoveTab => "Move tab to › ",
+                Mode::Rename(_) => "Rename workspace › ",
             };
             p.text(&self.gpu, &mut self.atlas, self.fonts.get(0), panel.x + pad_x, panel.y + 5, &format!("{title}{}{preedit}▏", pal.query), col.bar_fg, 1.0);
             for &(i, r) in &layout.rows {

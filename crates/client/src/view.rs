@@ -249,6 +249,8 @@ pub struct WindowView {
     requested_tab_for: Option<WorkspaceId>,
     dim_opacity: f32,
     double_click: Duration,
+    /// The last press on a sidebar workspace row, for double-click to rename.
+    last_ws_press: Option<(WorkspaceId, Instant)>,
     drag: Option<Drag>,
     /// The tab being dragged: along the tab bar (reorder) or over the sidebar (move tab).
     tab_drag: Option<TabDrag>,
@@ -293,6 +295,7 @@ impl WindowView {
             requested_tab_for: None,
             dim_opacity: 1.0,
             double_click,
+            last_ws_press: None,
             drag: None,
             tab_drag: None,
             sidebar_visible: false,
@@ -381,9 +384,26 @@ impl WindowView {
             }
             Mode::Picker => picker_items(&self.snap, &ctx.config.workspaces),
             Mode::MoveTab => self.workspace.map(|w| move_tab_items(&self.snap, w)).unwrap_or_default(),
+            Mode::Rename(_) => Vec::new(),
         };
         self.menu = None;
         self.palette = Some(Palette::new(mode, items));
+    }
+
+    /// Ask for a new name for `ws`, starting from its current one.
+    pub fn open_rename(&mut self, ws: WorkspaceId) {
+        let Some(name) = self.snap.workspace(ws).map(|w| w.name.clone()) else { return };
+        self.menu = None;
+        let mut p = Palette::new(Mode::Rename(ws), Vec::new());
+        p.query = name;
+        self.palette = Some(p);
+    }
+
+    /// A press on a workspace row: true when it is the second of a double click there.
+    pub fn workspace_double_click(&mut self, id: WorkspaceId, now: Instant) -> bool {
+        let dbl = self.last_ws_press.is_some_and(|(w, t)| w == id && now.duration_since(t) <= self.double_click);
+        self.last_ws_press = (!dbl).then_some((id, now));
+        dbl
     }
 
     /// IME or pasted text typed into the open palette.
@@ -457,6 +477,11 @@ impl WindowView {
     /// Run the selected row and close the palette.
     fn accept_palette(&mut self, ctx: &SpawnCtx) -> Out {
         let Some(p) = self.palette.take() else { return Out::default() };
+        if let Mode::Rename(ws) = p.mode {
+            let name = p.query.trim();
+            let unchanged = self.snap.workspace(ws).is_some_and(|w| w.name == name);
+            return if name.is_empty() || unchanged { Out::default() } else { Out::model(ModelCmd::RenameWorkspace(ws, name.to_string())) };
+        }
         p.accept().map_or_else(Out::default, |c| self.run_choice(c, p.mode, ctx))
     }
 
@@ -1168,6 +1193,10 @@ impl WindowView {
                 Out::default()
             }
             Action::WorkspacePicker => Out { ui: Some(Ui::Picker), ..Out::default() },
+            Action::RenameWorkspace => {
+                self.open_rename(ws);
+                Out::default()
+            }
             Action::MoveTabToWorkspace => Out { ui: Some(Ui::MoveTab), ..Out::default() },
             Action::NewWindow => Out { ui: Some(Ui::NewWindow), ..Out::default() },
             _ => Out::default(),
