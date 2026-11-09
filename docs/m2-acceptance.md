@@ -9,7 +9,7 @@ Automated: 34 test suites green (`cargo test --workspace`), raw `cargo clippy -D
 | Relaunch reattaches the same shell and screen | **Pass** (screenshot) | `2026-11-01-m2-2-reattached.png`: earlier commands still on screen, `%WRAITH_X%` = `kept`, title replayed |
 | Force-killed client (no Detach sent) → pane detached, next launch reattaches | **Pass** (screenshot) | `2026-11-01-m2-3-after-client-kill.png` |
 | `wr ctl server-stop` ends the server and its shells; `wr` then exits 2 | **Pass** (scripted) | |
-| Typing latency through the pipe under an output flood | **Pass** (automated) | `remote_input_round_trip_is_fast`: p99 < 3 ms, max < 10 ms |
+| Typing latency through the pipe under an output flood | **Pass** (automated) | `remote_input_round_trip_is_fast`: p99 < 3 ms, max < 10 ms (doubled on CI runners, which stall on their own) |
 | UI never holds pane output (M1 perf fix) through the server | **Pass** (automated) | `ui_thread_never_holds_pane_output` |
 | Eight simultaneous launches share one server | **Pass** (automated) | `concurrent_launches_share_one_server` |
 | Server death shows `[server stopped] Enter: reconnect` | partly | events disconnect within 1 s is tested (`server_death_disconnects_events`); the overlay and Enter→reconnect were not exercised in a window |
