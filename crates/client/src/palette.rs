@@ -35,6 +35,8 @@ pub enum Mode {
     Palette,
     Picker,
     MoveTab,
+    /// The query is the new name for this workspace; there are no rows.
+    Rename(WorkspaceId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -166,7 +168,7 @@ pub fn trigger_text(kb: &Keybind) -> String {
 fn group_of(a: Action) -> (usize, &'static str) {
     use Action::*;
     match a {
-        NewWorkspace | CloseWorkspace | NextWorkspace | PreviousWorkspace | WorkspacePicker => (0, "Workspaces"),
+        NewWorkspace | CloseWorkspace | RenameWorkspace | NextWorkspace | PreviousWorkspace | WorkspacePicker => (0, "Workspaces"),
         NewTab | CloseTab | NextTab | PreviousTab | GotoTab(_) | MoveTabToWorkspace | NewTabProfile(_) | OpenNewTabMenu => (1, "Tabs"),
         NewSplit(_) | GotoSplit(_) | ToggleSplitZoom | ResizeSplit(..) | EqualizeSplits | CloseSurface | Find => (2, "Panes"),
         _ => (3, "Window"),
