@@ -91,11 +91,16 @@ pub fn load_backend(dll: Option<&Path>) -> Backend {
 }
 
 /// `WRAITH_CONPTY_DLL`, else conpty.dll beside the running exe, else inbox (logged once).
+/// Debug builds also try the build tree's copy: cargo 1.100 runs test exes from their own directories.
 pub fn default_backend() -> &'static Backend {
     static B: OnceLock<Backend> = OnceLock::new();
     B.get_or_init(|| {
         let path = std::env::var_os("WRAITH_CONPTY_DLL").map(PathBuf::from).or_else(|| {
-            std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("conpty.dll")))
+            let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("conpty.dll")));
+            // Debug only: a release build must never load a DLL from a path baked in at build time.
+            #[cfg(debug_assertions)]
+            let beside = beside.filter(|p| p.exists()).or_else(|| option_env!("WRAITH_CONPTY_DEV_DLL").map(PathBuf::from));
+            beside
         });
         let b = load_backend(path.as_deref().filter(|p| p.exists()));
         if matches!(b, Backend::Inbox) {

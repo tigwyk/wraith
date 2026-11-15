@@ -20,9 +20,19 @@ fn main() {
         return;
     }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    // OUT_DIR = <target>/<profile>/build/<pkg>-<hash>/out
-    let profile = out.ancestors().nth(3).unwrap().to_path_buf();
+    // OUT_DIR = <target>/<profile>/build/<pkg>-<hash>/out, or since cargo 1.100
+    // <target>/<profile>/build/<pkg>/<hash>/out: the profile dir is the parent of `build` in both.
+    // shortcut: assumes build-dir == target-dir (cargo's default); revisit if `build.build-dir` gets set.
+    let profile = out
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR has no `build` component")
+        .to_path_buf();
     let dests = [profile.clone(), profile.join("deps")];
+    // Cargo 1.100 runs each test exe from its own directory, so nothing we copy lands beside it;
+    // debug builds fall back to this fixed path (see pty::default_backend).
+    println!("cargo:rustc-env=WRAITH_CONPTY_DEV_DLL={}", profile.join("conpty.dll").display());
 
     let result = match env::var_os("WRAITH_CONPTY_DIR") {
         Some(dir) => copy_dir(Path::new(&dir), &dests),
