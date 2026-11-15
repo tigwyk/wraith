@@ -49,7 +49,9 @@ pub fn run() -> Result<(), String> {
         return Err(format!("{} is not an installed Wraith; install with: irm https://tigwyk.github.io/wraith/install.ps1 | iex", dir.display()));
     }
     let mut ps = Command::new("powershell.exe");
-    ps.env("WR_VERSION", env!("CARGO_PKG_VERSION")).env("WR_PREFIX", dir);
+    // Run from PowerShell 7, we inherit its PSModulePath, and Windows PowerShell would load PowerShell 7
+    // modules that fail in it. Without the variable it builds its own default.
+    ps.env("WR_VERSION", env!("CARGO_PKG_VERSION")).env("WR_PREFIX", dir).env_remove("PSModulePath");
     // Inside a pane, stopping the server kills this console and everything in the pane's job: run
     // the update in its own window, outside that job, and leave it open to show how it went.
     if std::env::var_os("WRAITH_PANE_ID").is_some() {
