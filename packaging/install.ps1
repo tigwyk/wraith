@@ -20,7 +20,10 @@ if (-not $src -or -not (Test-Path (Join-Path $src 'wraith.exe'))) {
         "downloading Wraith $($rel.tag_name)"
         $zip = Join-Path $tmp $asset.name
         Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing
-        Expand-Archive $zip (Join-Path $tmp 'files')
+        # Not Expand-Archive: Windows PowerShell started under PowerShell 7 (as `wr update` does) inherits
+        # its PSModulePath and loads the PowerShell 7 Archive module, which fails here.
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $tmp 'files'))
         $run = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $tmp 'files\install.ps1'), '-Prefix', $Prefix
         if ($DryRun) { $run += '-DryRun' }
         & powershell.exe @run
