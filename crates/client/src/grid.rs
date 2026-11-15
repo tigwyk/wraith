@@ -83,6 +83,40 @@ struct CachedRow {
     sels: Vec<(u16, u16)>,
     /// Block/box characters drawn as exact rectangles: (cell, char, color, alpha).
     sprites: Vec<(u16, char, Rgb, f32)>,
+    /// The row's characters, for finding a URL under the pointer.
+    text: String,
+    /// The terminal soft-wrapped this row onto the next.
+    wrapped: bool,
+}
+
+fn cells(text: &str) -> usize {
+    text.chars().map(|c| c.width().unwrap_or(0)).sum()
+}
+
+/// The http(s) URL covering cell `col` of `text`, if any.
+// shortcut: plain-text URLs only; OSC 8 links need the server to report hyperlink ids.
+pub fn url_at(text: &str, col: usize) -> Option<&str> {
+    let mut cell = 0;
+    let at = text.char_indices().find(|&(_, c)| {
+        cell += c.width().unwrap_or(0);
+        cell > col
+    })?;
+    let stop = |c: char| c.is_whitespace() || c.is_control() || "\"<>`│┃|".contains(c);
+    let start = text[..at.0].rfind(stop).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+    let end = text[at.0..].find(stop).map_or(text.len(), |i| at.0 + i);
+    let token = &text[start..end];
+    let scheme = start + token.find("https://").or_else(|| token.find("http://"))?;
+    let mut url = &text[scheme..end];
+    // Sentence punctuation and an unmatched closing bracket after a URL are not part of it.
+    while let Some(last) = url.chars().next_back() {
+        let unmatched = |open, close| last == close && url.matches(close).count() > url.matches(open).count();
+        if ".,;:!?'".contains(last) || unmatched('(', ')') || unmatched('[', ']') {
+            url = &url[..url.len() - 1];
+        } else {
+            break;
+        }
+    }
+    (scheme..scheme + url.len()).contains(&at.0).then_some(url)
 }
 
 #[derive(Clone)]
@@ -325,6 +359,25 @@ impl GridRenderer {
         self.rows.iter().any(|r| !r.sels.is_empty())
     }
 
+    /// The URL under cell (x, y), if any.
+    pub fn url_at(&self, x: u16, y: u16) -> Option<String> {
+        let y = y as usize;
+        self.rows.get(y)?;
+        // Row `i` runs on into row `i + 1`: the terminal wrapped it, or (for programs that wrap long
+        // lines themselves) it is filled to the last column and the next row starts with text.
+        // shortcut: a program that wraps inside a margin or border is not detected; its URL opens cut at the row end.
+        let joins = |i: usize| {
+            let (r, next) = (&self.rows[i], &self.rows[i + 1]);
+            let filled = cells(&r.text) >= self.cols as usize && !r.text.ends_with(char::is_whitespace);
+            r.wrapped || (filled && next.text.starts_with(|c: char| !c.is_whitespace()))
+        };
+        let first = (0..y).rev().find(|&i| !joins(i)).map_or(0, |i| i + 1);
+        let last = (y..self.rows.len() - 1).find(|&i| !joins(i)).unwrap_or(self.rows.len() - 1);
+        let line: String = self.rows[first..=last].iter().map(|r| r.text.as_str()).collect();
+        let before: usize = self.rows[first..y].iter().map(|r| cells(&r.text)).sum();
+        url_at(&line, before + x as usize).map(str::to_string)
+    }
+
     pub fn cursor_pos(&self) -> Option<(u16, u16)> {
         self.cursor.filter(|c| c.visible).map(|c| (c.x, c.y))
     }
@@ -362,9 +415,10 @@ impl GridRenderer {
         self.search.clone_from(&frame.search);
         for row in &frame.dirty_rows {
             let Some(slot) = self.rows.get_mut(row.y as usize) else { continue };
-            let mut cached = CachedRow::default();
+            let mut cached = CachedRow { wrapped: row.wrapped, ..Default::default() };
             let mut cell: u16 = 0;
             for run in &row.runs {
+                cached.text.push_str(&run.text);
                 let width: u16 = run.text.chars().map(|c| c.width().unwrap_or(0) as u16).sum();
                 let inverse = run.flags.has(StyleFlags::INVERSE);
                 let mut fg = resolve(run.fg, self.fg, &self.palette);

@@ -11,7 +11,7 @@ use crossbeam_channel::Receiver;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, GetKeyboardLayout, GetKeyboardState, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_ESCAPE, VK_F4, VK_MENU, VK_SHIFT, VK_SPACE};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, IDRETRY, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_RETRYCANCEL, MB_YESNO, MessageBoxW, PostMessageW, SWP_NOACTIVATE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, WM_APP, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_SETCONTEXT, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
@@ -268,6 +268,16 @@ pub fn themes_dir() -> PathBuf {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
+}
+
+/// Open `url` in the default browser. Callers pass only http(s) URLs: ShellExecute would run any other path.
+fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    let url = wide(url);
+    let null = windows::core::PCWSTR::null();
+    unsafe {
+        let _ = ShellExecuteW(None, windows::core::w!("open"), windows::core::PCWSTR(url.as_ptr()), null, null, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL);
+    }
 }
 
 /// Not exported by the windows crate.
@@ -1031,6 +1041,13 @@ impl App {
         let (m, pad) = (self.fonts.get(look.font).metrics(), look.pad);
         let Some(pv) = self.view.panes.get_mut(&pane) else { return };
         let (ox, oy) = (pv.rect.x + pad.0, pv.rect.y + pad.1);
+        // Ctrl+click on a URL opens it, even when the program in the pane tracks the mouse.
+        if msg == WM_LBUTTONDOWN && unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0 {
+            let (cx, cy) = pixel_to_cell(x.max(ox) as f32, y.max(oy) as f32, (ox as f32, oy as f32), &m);
+            if let Some(url) = self.grids.get(&pane).and_then(|g| g.url_at(cx, cy)) {
+                return open_url(&url);
+            }
+        }
         if pv.mouse_tracking && !shift {
             let (button, action) = match msg {
                 WM_LBUTTONDOWN => (Some(MouseButton::Left), MouseAction::Press),
