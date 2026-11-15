@@ -274,3 +274,43 @@ fn has_selection_follows_the_frame() {
     r.grid.apply(&frame(false, vec![row(2, vec![run("ab", Color::Default, Color::Default, 0)])], None), &r.fonts);
     assert!(!r.grid.has_selection(), "cleared when the row loses it");
 }
+
+#[test]
+fn url_under_a_cell() {
+    use wraith_client::grid::url_at;
+    let t = "日本 see (https://a.io/x_(y)), ok";
+    // "日本" is 4 cells wide, so the URL starts at cell 10.
+    assert_eq!(url_at(t, 10), Some("https://a.io/x_(y)"));
+    assert_eq!(url_at(t, 27), Some("https://a.io/x_(y)"));
+    assert_eq!(url_at(t, 9), None, "the opening bracket");
+    assert_eq!(url_at(t, 28), None, "the closing bracket");
+    assert_eq!(url_at(t, 6), None, "a plain word");
+    assert_eq!(url_at(t, 99), None, "past the row");
+    assert_eq!(url_at("go to http://x.dev.", 18), None, "the sentence's full stop");
+    assert_eq!(url_at("file:///c:/x calc.exe", 3), None, "only http(s) is opened");
+}
+
+#[test]
+fn url_wrapped_across_rows() {
+    let mut r = rig();
+    let plain = |y, text: &str, wrapped| Row { y, runs: vec![run(text, Color::Default, Color::Default, 0)], wrapped };
+    let rows = vec![
+        // Soft-wrapped by the terminal (20 columns).
+        plain(0, "see https://a.io/abc", true),
+        plain(1, "defg/h ok           ", false),
+        // Wrapped by the program: no flag, but filled to the last column.
+        plain(2, "x http://b.io/123456", false),
+        plain(3, "789 end             ", false),
+        plain(4, "tail                ", false),
+    ];
+    r.grid.apply(&frame(true, rows, None), &r.fonts);
+    assert_eq!(r.grid.url_at(5, 0).as_deref(), Some("https://a.io/abcdefg/h"));
+    assert_eq!(r.grid.url_at(2, 1).as_deref(), Some("https://a.io/abcdefg/h"), "clicked on the second row");
+    assert_eq!(r.grid.url_at(8, 1), None);
+    assert_eq!(r.grid.url_at(1, 3).as_deref(), Some("http://b.io/123456789"));
+    assert_eq!(r.grid.url_at(5, 3), None, "row 3 does not run on into row 4");
+    // A URL that ends before the last column stops there.
+    r.grid.apply(&frame(false, vec![plain(0, "see https://a.io/ab ", false)], None), &r.fonts);
+    assert_eq!(r.grid.url_at(5, 0).as_deref(), Some("https://a.io/ab"));
+    assert_eq!(r.grid.url_at(2, 1), None);
+}

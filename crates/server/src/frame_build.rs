@@ -45,8 +45,8 @@ pub fn build_frame(snap: &Snapshot<'_, '_>, seq: u64, force_full: bool) -> Resul
                     _ => runs.push(StyleRun { fg, bg, flags, hyperlink_id: 0, text: text.clone() }),
                 }
             }
-            // shortcut: soft-wrap flag and hyperlink ids not reported yet; needed for selection-unwrap and OSC 8 (M3).
-            dirty_rows.push(Row { y, runs, wrapped: false });
+            // shortcut: hyperlink ids not reported yet; needed for OSC 8 (M3).
+            dirty_rows.push(Row { y, runs, wrapped: row.raw_row()?.is_wrapped()? });
         }
         row.set_dirty(false)?;
         y += 1;
